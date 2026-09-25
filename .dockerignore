@@ -1,0 +1,10 @@
+# Keep the build context small and deterministic: the image only needs the
+# server sources (and proto for reference); everything else is excluded.
+.git
+**/bin
+**/obj
+**/TestResults
+server/build
+client
+docs
+*.kvs

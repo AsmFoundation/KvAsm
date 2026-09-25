@@ -1,0 +1,21 @@
+<Project>
+  <!--
+    Central package management: one version per dependency for the whole
+    solution, so the library and its tests can never drift apart.
+    Grpc.* packages move in lockstep and must share a version.
+  -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="Google.Protobuf" Version="3.36.2" />
+    <PackageVersion Include="Grpc.HealthCheck" Version="2.84.0" />
+    <PackageVersion Include="Grpc.Net.Client" Version="2.84.0" />
+    <PackageVersion Include="Grpc.Tools" Version="2.84.0" />
+    <PackageVersion Include="Testcontainers" Version="4.15.0" />
+    <!-- Runs on Microsoft.Testing.Platform (opted in via global.json), so the
+         VSTest bridge packages (Microsoft.NET.Test.Sdk,
+         xunit.runner.visualstudio) are deliberately absent. -->
+    <PackageVersion Include="xunit.v3" Version="4.0.1" />
+  </ItemGroup>
+</Project>

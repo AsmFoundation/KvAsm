@@ -1,0 +1,28 @@
+# h2spec v2.6.0 cases that fail against kvnode linked with nghttp2 1.70.0.
+# Format: "<package> | <case>", exactly as in h2spec's JUnit output.
+#
+# run.sh (phase 6) fails the build on any failure or skip NOT listed here,
+# and prints a note when a listed case starts passing (then delete its line).
+# None of these is kvnode code; all are nghttp2 library behavior:
+#
+#  * http2/5.1.1 — nghttp2 itself: the reference server nghttpd fails it too
+#    (measured with Debian's nghttpd 1.64.0: 145/146 passed).
+#  * everything else — nghttp2 v1.65.0 (2025-03-02) removed RFC 7540 stream
+#    priorities (nghttp2 PR #2287) and closed-stream tracking (PR #2289).
+#    PRIORITY frames are no longer validated, and frames arriving on an
+#    already-closed stream are ignored instead of raising STREAM_CLOSED;
+#    the window-overflow case on a closed stream ends the connection instead
+#    of the stream. The same server code linked with nghttp2 1.64.0 passes
+#    all seven. Staying on <= 1.68.0 is not an option: CVE-2026-27135 (high,
+#    remote assertion-failure DoS via nghttp2_session_terminate_session,
+#    which kvnode calls for idle timeouts) is fixed in 1.68.1.
+#
+# Details and the decision record: docs/adr/0002-http2-library-nghttp2.md.
+http2/5.1 | closed: Sends a DATA frame after sending RST_STREAM frame
+http2/5.1 | closed: Sends a HEADERS frame after sending RST_STREAM frame
+http2/5.1 | closed: Sends a DATA frame
+http2/5.1 | closed: Sends a HEADERS frame
+http2/5.1.1 | Sends stream identifier that is numerically smaller than previous
+http2/5.3.1 | Sends PRIORITY frame that depend on itself
+http2/6.3 | Sends a PRIORITY frame with 0x0 stream identifier
+http2/6.9.1 | Sends multiple WINDOW_UPDATE frames increasing the flow control window to above 2^31-1 on a stream

@@ -1,0 +1,69 @@
+// KvNode gRPC contract, version 1.
+//
+// Transport: HTTP/2 cleartext (h2c, prior knowledge) on the server port
+// (default 50051). Every call is unary.
+//
+// Keys are opaque bytes compared EXACTLY: two different keys can never be
+// confused, whatever their hashes. Limits are enforced by the server and are
+// configurable (defaults: key 1..1024 bytes, value 0..1 MiB).
+//
+// Client contract for long keys (docs/PROTOCOL.md): official clients send a
+// key longer than 64 bytes as the 65 bytes 0xFF || SHA-512(key). The server
+// stores whatever key it receives; clients sharing a server must agree on
+// this rule (it is on by default) or a long key is stored under two names.
+//
+// The server also implements the standard grpc.health.v1.Health/Check
+// (service "" or "kvnode.v1.KvNode": SERVING; NOT_SERVING while draining).
+//
+// Status codes:
+//   OK                  the call executed (Get of a missing key is OK with found=false)
+//   INVALID_ARGUMENT    empty/oversized key, oversized value, malformed message
+//   RESOURCE_EXHAUSTED  store at key capacity or memory limit; request too large
+//   UNIMPLEMENTED       unknown method, or a message compressed with a codec
+//                       other than identity (grpc-accept-encoding says which)
+//   INTERNAL            protocol violations (more than one request message,
+//                       compressed flag without a grpc-encoding), out of memory
+//   NOT_FOUND           health check for a service other than the above
+syntax = "proto3";
+
+package kvnode.v1;
+
+option csharp_namespace = "KvNode.Client.V1";
+
+service KvNode {
+  // Returns the current value of a key.
+  rpc Get(GetRequest) returns (GetResponse);
+  // Creates or replaces the value of a key.
+  rpc Put(PutRequest) returns (PutResponse);
+  // Removes a key.
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+message GetRequest {
+  bytes key = 1;
+}
+
+message GetResponse {
+  // False when the key does not exist; value is then empty.
+  bool found = 1;
+  bytes value = 2;
+}
+
+message PutRequest {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+message PutResponse {
+  // True when the key did not exist before this call.
+  bool created = 1;
+}
+
+message DeleteRequest {
+  bytes key = 1;
+}
+
+message DeleteResponse {
+  // True when the key existed and was removed.
+  bool deleted = 1;
+}

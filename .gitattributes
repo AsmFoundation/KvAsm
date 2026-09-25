@@ -1,0 +1,10 @@
+# Normalize to LF everywhere: the server is built and run inside Debian
+# containers, where CRLF breaks shell shebangs and Makefile recipes. The
+# working tree is also bind-mounted into those containers from Windows, so
+# checkout must not convert to CRLF.
+* text=auto eol=lf
+
+# Binary artifacts that must never be normalized.
+*.png   binary
+*.snap  binary
+*.kvs   binary

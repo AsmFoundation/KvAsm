@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net8.0: current LTS consumers; net10.0: latest runtime and APIs. -->
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <RootNamespace>KvNode.Client</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsAotCompatible>true</IsAotCompatible>
+    <PackageId>KvNode.Client</PackageId>
+    <Version>0.1.0</Version>
+    <Description>.NET client for KvNode, the gRPC key-value server written in x86-64 assembly: Get/Put/Delete, health checks, long-key compaction and snapshot file writing.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" />
+    <PackageReference Include="Grpc.HealthCheck" />
+    <PackageReference Include="Grpc.Net.Client" />
+    <PackageReference Include="Grpc.Tools" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The one contract shared with the server and every other client. -->
+    <Protobuf Include="..\..\..\..\proto\kvnode\v1\kvnode.proto"
+              ProtoRoot="..\..\..\..\proto"
+              GrpcServices="Client"
+              Link="Protos\kvnode\v1\kvnode.proto" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="KvNode.Client.Tests" />
+  </ItemGroup>
+
+</Project>

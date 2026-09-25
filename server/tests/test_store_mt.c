@@ -1,0 +1,226 @@
+/*
+ * test_store_mt.c — concurrency torture test for the store.
+ *
+ * Writers (each owning a disjoint set of key ids) put new versions and delete
+ * keys while readers run lock-free lookups. Every value is self-describing:
+ *   [0..8) key id, [8..16) version, [16..24) checksum, then filler bytes
+ *   derived from (id, version).
+ * Reader checks (any failure is counted and fails the test):
+ *   * the value belongs to the requested id (never another key's value),
+ *   * id/version/checksum/filler are consistent (never a torn or freed
+ *     record: freed memory would be overwritten by malloc/free metadata),
+ *   * per reader, the version of a key never goes backwards (a single writer
+ *     owns each id and only increases versions),
+ *   * "stable" ids — inserted before the threads start and never deleted —
+ *     are never reported missing, even while cuckoo relocations move them.
+ * The table runs near its maximum load so relocations happen constantly.
+ * A second phase uses 16 hot keys to maximize version retries and
+ * reclamation churn. At the end, with all readers offline, reclamation must
+ * drain limbo and the memory accounting must equal the live records exactly.
+ */
+#include <pthread.h>
+#include <stdatomic.h>
+
+#include "kvnode_abi.h"
+#include "test_common.h"
+
+enum { MAX_THREADS = 32 };
+
+typedef struct {
+  KvTable *t;
+  uint32_t nids, nstable, nwriters, seconds;
+  atomic_int stop;
+  atomic_ullong errors, reads, hits, writes, deletes, full, missing_stable;
+} Shared;
+
+typedef struct {
+  Shared *sh;
+  uint32_t idx;
+} ThreadArg;
+
+/** Fixed-size key for an id (16 bytes). */
+static void key_of(uint32_t id, uint8_t key[16]) {
+  uint64_t a = id, b = (uint64_t)id * 0x9E3779B97F4A7C15ull;
+  memcpy(key, &a, 8);
+  memcpy(key + 8, &b, 8);
+}
+
+/** Builds the self-checking value; returns its length (24..120). */
+static size_t value_of(uint32_t id, uint64_t version, uint8_t *out) {
+  uint64_t s = ((uint64_t)id << 32) ^ version ^ 0xD1B54A32D192ED03ull;
+  size_t filler = rng_next(&s) % 97;
+  uint64_t idv = id, sum = (uint64_t)id * 31 + version * 131 + filler;
+  memcpy(out, &idv, 8);
+  memcpy(out + 8, &version, 8);
+  memcpy(out + 16, &sum, 8);
+  for (size_t i = 0; i < filler; i++) out[24 + i] = (uint8_t)rng_next(&s);
+  return 24 + filler;
+}
+
+/** @return 1 if (buf,len) is a consistent value for id; sets *version. */
+static int value_ok(uint32_t id, const uint8_t *buf, size_t len, uint64_t *version) {
+  uint8_t expect[128];
+  if (len < 24 || len > 128) return 0;
+  uint64_t idv, ver;
+  memcpy(&idv, buf, 8);
+  memcpy(&ver, buf + 8, 8);
+  if (idv != id) return 0;
+  size_t n = value_of(id, ver, expect);
+  if (n != len || memcmp(expect, buf, len) != 0) return 0;
+  *version = ver;
+  return 1;
+}
+
+/** Writer thread: puts (85%) and deletes (15%, never stable ids) of owned ids. */
+static void *writer_main(void *p) {
+  ThreadArg *a = p;
+  Shared *sh = a->sh;
+  uint64_t s = 0xABCDEF + a->idx, *ver = calloc(sh->nids, sizeof(uint64_t));
+  uint8_t key[16], val[128];
+  while (!atomic_load_explicit(&sh->stop, memory_order_relaxed)) {
+    uint32_t id = (uint32_t)(rng_next(&s) % sh->nids);
+    id -= id % sh->nwriters;
+    id += a->idx;
+    if (id >= sh->nids) continue;
+    key_of(id, key);
+    uint64_t h[2];
+    kv_store_hash(sh->t, key, 16, h);
+    if (id >= sh->nstable && rng_next(&s) % 100 < 15) {
+      kv_store_delete(sh->t, key, 16, h[0], h[1]);
+      atomic_fetch_add_explicit(&sh->deletes, 1, memory_order_relaxed);
+    } else {
+      size_t n = value_of(id, ++ver[id], val);
+      int64_t rc = kv_store_put(sh->t, key, 16, val, n, h[0], h[1]);
+      if (rc == -ENOSPC) atomic_fetch_add_explicit(&sh->full, 1, memory_order_relaxed);
+      else if (rc < 0) atomic_fetch_add_explicit(&sh->errors, 1, memory_order_relaxed);
+      atomic_fetch_add_explicit(&sh->writes, 1, memory_order_relaxed);
+    }
+  }
+  free(ver);
+  return NULL;
+}
+
+/** Reader thread: lock-free gets with full validation; QSBR slot = idx. */
+static void *reader_main(void *p) {
+  ThreadArg *a = p;
+  Shared *sh = a->sh;
+  uint64_t s = 0x12345 + a->idx, *seen = calloc(sh->nids, sizeof(uint64_t));
+  uint64_t errors = 0, reads = 0, hits = 0, missing = 0;
+  uint8_t key[16];
+  kv_qsbr_online(sh->t, a->idx);
+  while (!atomic_load_explicit(&sh->stop, memory_order_relaxed)) {
+    for (int i = 0; i < 64; i++) {
+      uint32_t id = (uint32_t)(rng_next(&s) % sh->nids);
+      key_of(id, key);
+      uint64_t h[2];
+      kv_store_hash(sh->t, key, 16, h);
+      const KvRec *r = kv_store_get(sh->t, key, 16, h[0], h[1]);
+      reads++;
+      if (!r) {
+        if (id < sh->nstable) missing++;
+        continue;
+      }
+      hits++;
+      uint64_t v;
+      if (r->key_len != 16 || memcmp(r->data, key, 16) != 0 ||
+          !value_ok(id, kv_rec_value(r), r->val_len, &v)) {
+        errors++;
+        continue;
+      }
+      if (v < seen[id]) errors++; /* time went backwards for this key */
+      seen[id] = v;
+    }
+    kv_qsbr_quiescent(sh->t, a->idx); /* drop references between batches */
+    if ((rng_next(&s) & 255) == 0) {  /* occasionally idle, like epoll_wait */
+      kv_qsbr_offline(sh->t, a->idx);
+      kv_qsbr_online(sh->t, a->idx);
+    }
+  }
+  kv_qsbr_offline(sh->t, a->idx);
+  atomic_fetch_add(&sh->errors, errors);
+  atomic_fetch_add(&sh->reads, reads);
+  atomic_fetch_add(&sh->hits, hits);
+  atomic_fetch_add(&sh->missing_stable, missing);
+  free(seen);
+  return NULL;
+}
+
+/**
+ * Runs one phase and checks all invariants.
+ * @param name label. @param capacity store capacity. @param nids key space.
+ * @param nstable never-deleted ids. @param nw writers. @param nr readers.
+ * @param seconds duration.
+ */
+static void run_phase(const char *name, uint64_t capacity, uint32_t nids, uint32_t nstable,
+                      uint32_t nw, uint32_t nr, uint32_t seconds) {
+  uint8_t seed[16];
+  uint64_t s = 99;
+  rng_fill(&s, seed, 16);
+  Shared sh = {.nids = nids, .nstable = nstable, .nwriters = nw, .seconds = seconds};
+  sh.t = kv_store_create(capacity, nr, seed, 0);
+  CHECK(sh.t != NULL);
+  uint8_t key[16], val[128];
+  for (uint32_t id = 0; id < nstable; id++) {
+    key_of(id, key);
+    uint64_t h[2];
+    kv_store_hash(sh.t, key, 16, h);
+    size_t n = value_of(id, 0, val);
+    CHECK(kv_store_put(sh.t, key, 16, val, n, h[0], h[1]) == 1);
+  }
+  pthread_t th[MAX_THREADS];
+  ThreadArg args[MAX_THREADS];
+  for (uint32_t i = 0; i < nr; i++) {
+    args[i] = (ThreadArg){&sh, i};
+    pthread_create(&th[i], NULL, reader_main, &args[i]);
+  }
+  for (uint32_t i = 0; i < nw; i++) {
+    args[nr + i] = (ThreadArg){&sh, i};
+    pthread_create(&th[nr + i], NULL, writer_main, &args[nr + i]);
+  }
+  sleep(seconds);
+  atomic_store(&sh.stop, 1);
+  for (uint32_t i = 0; i < nr + nw; i++) pthread_join(th[i], NULL);
+
+  /* Quiescent end state: all readers offline => everything retired is free-able. */
+  kv_store_reclaim(sh.t);
+  KvStats st;
+  kv_store_stats(sh.t, &st);
+  uint64_t live_bytes = 0, live = 0;
+  kv_qsbr_online(sh.t, 0);
+  for (uint32_t id = 0; id < nids; id++) {
+    key_of(id, key);
+    uint64_t h[2];
+    kv_store_hash(sh.t, key, 16, h);
+    const KvRec *r = kv_store_get(sh.t, key, 16, h[0], h[1]);
+    if (r) {
+      live++;
+      live_bytes += 24 + 16 + r->val_len;
+      uint64_t v;
+      CHECK(value_ok(id, kv_rec_value(r), r->val_len, &v));
+    } else {
+      CHECK(id >= nstable);
+    }
+  }
+  kv_qsbr_offline(sh.t, 0);
+  CHECK_EQ_U64(st.limbo_count, 0);
+  CHECK_EQ_U64(st.count, live);
+  CHECK_EQ_U64(st.mem_used, live_bytes);
+  CHECK_EQ_U64(atomic_load(&sh.errors), 0);
+  CHECK_EQ_U64(atomic_load(&sh.missing_stable), 0);
+  printf("  %-10s %2u readers %2u writers %us: %llu reads (%llu hits), %llu writes, %llu deletes,"
+         " %llu full; live %llu (load %.0f%%), bfs %llu, moves %llu, freed %llu\n",
+         name, nr, nw, seconds, (unsigned long long)atomic_load(&sh.reads),
+         (unsigned long long)atomic_load(&sh.hits), (unsigned long long)atomic_load(&sh.writes),
+         (unsigned long long)atomic_load(&sh.deletes), (unsigned long long)atomic_load(&sh.full),
+         (unsigned long long)live, 100.0 * (double)live / (double)(st.nbuckets * 6),
+         (unsigned long long)st.bfs, (unsigned long long)st.moves, (unsigned long long)st.freed);
+  kv_store_destroy(sh.t);
+}
+
+/** Entry point. @return 0 when no invariant was violated. */
+int main(void) {
+  /* capacity = 5 * 32768 => up to 83% index load; ids > capacity => ENOSPC churn */
+  run_phase("near-full", 163840, 180000, 20000, 4, 8, 4);
+  run_phase("hot-keys", 1024, 16, 4, 4, 8, 2);
+  return test_finish("test_store_mt");
+}

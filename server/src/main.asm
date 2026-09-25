@@ -1,0 +1,464 @@
+; =============================================================================
+; main.asm — KvNode process entry point.
+;
+; Startup (fail fast, in this order, before any client can connect):
+;   1. ignore SIGPIPE (sockets also use MSG_NOSIGNAL; belt and braces)
+;   2. load and validate configuration from the environment      (exit 2)
+;   3. refuse a port another process holds (kv_port_probe) — before the
+;      possibly long snapshot load, so a misconfigured restart fails in
+;      milliseconds                                               (exit 1)
+;   4. draw a 16-byte SipHash key from getrandom                 (exit 1)
+;   5. create the store; load the snapshot if configured         (exit 1)
+;   6. block SIGTERM/SIGINT in this thread (workers inherit the mask, so the
+;      signals are only ever consumed by sigwaitinfo below)
+;   7. create every worker (binding all listeners), then start them
+; Shutdown: sigwaitinfo returns on SIGTERM/SIGINT (works as PID 1 in a
+; container, where default signal actions are ignored); every worker drains
+; its connections within KVNODE_SHUTDOWN_GRACE_SEC, then the process exits 0.
+; =============================================================================
+
+default rel
+bits 64
+
+%include "kvnode.inc"
+%include "server.inc"
+%include "log.inc"                      ; LOGBUF_BYTES sizes main's log slot
+
+%define SIGINT          2
+%define SIGPIPE         13
+%define SIGTERM         15
+%define SIG_BLOCK       0
+%define SIG_IGN         1
+%define CLOCK_MONOTONIC 1
+%define VERSION_STR     "0.1.0"
+
+extern signal
+extern sigemptyset
+extern sigaddset
+extern pthread_sigmask
+extern sigwaitinfo
+extern calloc
+extern free
+extern clock_gettime
+extern kv_config_load
+extern kv_store_create
+extern kv_store_destroy
+extern kv_store_reclaim
+extern kv_store_stats
+extern kv_snapshot_load
+extern kv_grpc_callbacks_new
+extern kv_port_probe
+extern kv_worker_create
+extern kv_worker_start
+extern kv_worker_stop
+extern kv_worker_join
+extern nghttp2_session_callbacks_del
+extern kv_logb_init
+extern kv_logb_str
+extern kv_logb_cstr
+extern kv_logb_u64
+extern kv_logb_emit
+extern kv_logbuf_size
+
+; main's frame
+%define F_SET       0               ; sigset_t (128 bytes)
+%define F_INFO      128             ; siginfo_t (128 bytes)
+%define F_SEED      256             ; 16-byte SipHash key
+%define F_STATS     272             ; per-worker stats (3 x u64)
+%define F_TOTALS    296             ; summed stats (3 x u64)
+%define F_TS        320             ; struct timespec
+%define F_T0        336
+%define F_LOG       352             ; LogBuf lives here, LOGBUF_BYTES long
+%define F_FRAME     (F_LOG + LOGBUF_BYTES)
+
+; The prologue does 6 pushes and `sub rsp, F_FRAME + 8`; calls are only
+; 16-byte aligned if F_FRAME is a multiple of 16 (entry rsp is 8 mod 16,
+; 6 pushes keep it there, the extra 8 fixes it). Checked here so a LOG_CAP
+; or frame-field change cannot misalign every call main makes.
+%if (F_FRAME % 16) != 0 || (F_LOG % 16) != 0
+    %error "main frame: F_LOG and F_FRAME must be multiples of 16"
+%endif
+
+section .rodata
+lvl_info:   db "INFO", 0
+lvl_error:  db "ERROR", 0
+CSTR_starting:  db ' msg="starting" version=', VERSION_STR
+L_starting      equ $ - CSTR_starting
+k_port:     db " port="
+k_workers:  db " workers="
+k_capacity: db " capacity="
+k_maxkey:   db " max_key_bytes="
+k_maxval:   db " max_value_bytes="
+k_maxmem:   db " max_memory_bytes="
+k_streams:  db " max_streams="
+k_snapshot: db " snapshot="
+k_none:     db "none", 0
+m_listen:   db ' msg="listening" transport=h2c'
+L_listen    equ $ - m_listen
+m_loaded:   db ' msg="snapshot loaded" records='
+L_loaded    equ $ - m_loaded
+k_ms:       db " ms="
+k_keys:     db " keys="
+m_shutdown: db ' msg="shutdown requested" signal='
+L_shutdown  equ $ - m_shutdown
+m_stopped:  db ' msg="stopped" connections='
+L_stopped   equ $ - m_stopped
+k_requests: db " requests="
+k_errors:   db " errors="
+m_f_seed:   db ' msg="getrandom failed"'
+L_f_seed    equ $ - m_f_seed
+m_f_store:  db ' msg="cannot create store"'
+L_f_store   equ $ - m_f_store
+m_f_snap:   db ' msg="snapshot load failed, refusing to start"'
+L_f_snap    equ $ - m_f_snap
+m_f_worker: db ' msg="worker startup failed"'
+L_f_worker  equ $ - m_f_worker
+m_f_port:   db ' msg="port already in use, refusing to share it"'
+L_f_port    equ $ - m_f_port
+k_errno:    db " errno="
+
+; Section-level alignment instead of `alignb`: NASM 2.16's alignb macro emits
+; [warning push]/[warning pop], which -w+all -w+error rejects as unknown.
+; Config is written once before any thread starts, then only read, so it
+; needs no cache-line isolation; 64 just keeps it off a split line.
+section .bss align=64
+g_cfg:      resb Config_size
+
+section .text
+
+global main
+
+; -----------------------------------------------------------------------------
+; LOGLIT lit, len — append a literal to the LogBuf at [rsp + F_LOG].
+; -----------------------------------------------------------------------------
+%macro LOGLIT 2
+    lea     rdi, [rsp + F_LOG]
+    lea     rsi, [%1]
+    mov     edx, %2
+    call    kv_logb_str wrt ..plt
+%endmacro
+
+; LOGNUM reg_or_mem — append an unsigned number.
+%macro LOGNUM 1
+    lea     rdi, [rsp + F_LOG]
+    mov     rsi, %1
+    call    kv_logb_u64 wrt ..plt
+%endmacro
+
+; LOGBEGIN level_label / LOGEND
+%macro LOGBEGIN 1
+    lea     rdi, [rsp + F_LOG]
+    lea     rsi, [%1]
+    call    kv_logb_init wrt ..plt
+%endmacro
+%macro LOGEND 0
+    lea     rdi, [rsp + F_LOG]
+    call    kv_logb_emit wrt ..plt
+%endmacro
+
+; =============================================================================
+; main — see the file header.
+; @param  edi  argc (unused: configuration comes from the environment)
+; @param  rsi  argv (unused)
+; @returns eax = 0 after a clean shutdown, 1 on a runtime/startup failure,
+;          2 on invalid configuration.
+; =============================================================================
+main:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, F_FRAME + 8            ; 6 pushes + frame + 8 => 16-aligned
+
+    mov     edi, SIGPIPE
+    mov     esi, SIG_IGN
+    call    signal wrt ..plt
+
+    lea     rdi, [g_cfg]
+    call    kv_config_load wrt ..plt
+    test    rax, rax
+    jz      .config_ok
+    mov     eax, 2
+    jmp     .return
+.config_ok:
+    lea     r15, [g_cfg]
+
+    LOGBEGIN lvl_info
+    LOGLIT  CSTR_starting, L_starting
+    LOGLIT  k_port, 6
+    LOGNUM  [r15 + Config.port]
+    LOGLIT  k_workers, 9
+    LOGNUM  [r15 + Config.workers]
+    LOGLIT  k_capacity, 10
+    LOGNUM  [r15 + Config.capacity]
+    LOGLIT  k_maxkey, 15
+    LOGNUM  [r15 + Config.max_key]
+    LOGLIT  k_maxval, 17
+    LOGNUM  [r15 + Config.max_value]
+    LOGLIT  k_maxmem, 18
+    LOGNUM  [r15 + Config.max_memory]
+    LOGLIT  k_streams, 13
+    LOGNUM  [r15 + Config.max_streams]
+    LOGLIT  k_snapshot, 10
+    lea     rdi, [rsp + F_LOG]
+    mov     rsi, [r15 + Config.snapshot]
+    test    rsi, rsi
+    jnz     .snap_name
+    lea     rsi, [k_none]
+.snap_name:
+    call    kv_logb_cstr wrt ..plt
+    LOGEND
+
+    ; Refuse to join another process's SO_REUSEPORT group (kv_port_probe
+    ; explains the split-brain this prevents).
+    mov     rdi, [r15 + Config.port]
+    call    kv_port_probe wrt ..plt
+    test    rax, rax
+    jz      .port_ok
+    neg     rax
+    mov     r12, rax                    ; errno (98 = EADDRINUSE)
+    LOGBEGIN lvl_error
+    LOGLIT  m_f_port, L_f_port
+    LOGLIT  k_port, 6
+    LOGNUM  [r15 + Config.port]
+    LOGLIT  k_errno, 7
+    LOGNUM  r12
+    LOGEND
+    mov     eax, 1
+    jmp     .return
+.port_ok:
+
+    ; SipHash key: must be unpredictable, or bucket placement becomes
+    ; predictable to anyone who can choose keys.
+    lea     rdi, [rsp + F_SEED]
+    mov     esi, 16
+    xor     edx, edx
+    mov     eax, SYS_getrandom
+    syscall
+    cmp     rax, 16
+    je      .seed_ok
+    LOGBEGIN lvl_error
+    LOGLIT  m_f_seed, L_f_seed
+    LOGEND
+    mov     eax, 1
+    jmp     .return
+.seed_ok:
+    mov     rdi, [r15 + Config.capacity]
+    mov     rsi, [r15 + Config.workers]
+    lea     rdx, [rsp + F_SEED]
+    mov     rcx, [r15 + Config.max_memory]
+    call    kv_store_create wrt ..plt
+    mov     qword [rsp + F_SEED], 0     ; the store keeps its own copy
+    mov     qword [rsp + F_SEED + 8], 0
+    test    rax, rax
+    jnz     .store_ok
+    LOGBEGIN lvl_error
+    LOGLIT  m_f_store, L_f_store
+    LOGEND
+    mov     eax, 1
+    jmp     .return
+.store_ok:
+    mov     rbx, rax                    ; table
+
+    mov     rsi, [r15 + Config.snapshot]
+    test    rsi, rsi
+    jz      .signals
+    call    now_ms
+    mov     [rsp + F_T0], rax
+    mov     rdi, rbx
+    mov     rsi, [r15 + Config.snapshot]
+    mov     rdx, r15
+    call    kv_snapshot_load wrt ..plt
+    test    rax, rax
+    jns     .snap_ok
+    LOGBEGIN lvl_error
+    LOGLIT  m_f_snap, L_f_snap
+    LOGEND
+    mov     rdi, rbx
+    call    kv_store_destroy wrt ..plt
+    mov     eax, 1
+    jmp     .return
+.snap_ok:
+    mov     r12, rax
+    mov     rdi, rbx
+    call    kv_store_reclaim wrt ..plt  ; duplicates in the file: free replaced records now
+    call    now_ms
+    sub     rax, [rsp + F_T0]
+    mov     r13, rax
+    LOGBEGIN lvl_info
+    LOGLIT  m_loaded, L_loaded
+    LOGNUM  r12
+    LOGLIT  k_ms, 4
+    LOGNUM  r13
+    LOGEND
+
+.signals:
+    lea     rdi, [rsp + F_SET]
+    call    sigemptyset wrt ..plt
+    lea     rdi, [rsp + F_SET]
+    mov     esi, SIGTERM
+    call    sigaddset wrt ..plt
+    lea     rdi, [rsp + F_SET]
+    mov     esi, SIGINT
+    call    sigaddset wrt ..plt
+    mov     edi, SIG_BLOCK
+    lea     rsi, [rsp + F_SET]
+    xor     edx, edx
+    call    pthread_sigmask wrt ..plt
+
+    call    kv_grpc_callbacks_new wrt ..plt
+    test    rax, rax
+    jz      .worker_failed_early
+    mov     rbp, rax                    ; callbacks
+
+    mov     rdi, [r15 + Config.workers]
+    mov     esi, 8
+    call    calloc wrt ..plt
+    test    rax, rax
+    jz      .worker_failed_early
+    mov     r14, rax                    ; Worker*[]
+    xor     r12d, r12d
+.create:
+    cmp     r12, [r15 + Config.workers]
+    jae     .start
+    mov     rdi, r12
+    mov     rsi, rbx
+    mov     rdx, r15
+    mov     rcx, rbp
+    call    kv_worker_create wrt ..plt
+    test    rax, rax
+    jz      .worker_failed
+    mov     [r14 + r12*8], rax
+    inc     r12
+    jmp     .create
+.start:
+    xor     r12d, r12d
+.start_next:
+    cmp     r12, [r15 + Config.workers]
+    jae     .running
+    mov     rdi, [r14 + r12*8]
+    call    kv_worker_start wrt ..plt
+    test    eax, eax
+    jnz     .worker_failed              ; (pthread_create failure: fatal)
+    inc     r12
+    jmp     .start_next
+
+.running:
+    LOGBEGIN lvl_info
+    LOGLIT  m_listen, L_listen
+    LOGLIT  k_port, 6
+    LOGNUM  [r15 + Config.port]
+    LOGLIT  k_workers, 9
+    LOGNUM  [r15 + Config.workers]
+    LOGEND
+
+.wait_signal:
+    lea     rdi, [rsp + F_SET]
+    lea     rsi, [rsp + F_INFO]
+    call    sigwaitinfo wrt ..plt
+    test    eax, eax
+    js      .wait_signal                ; EINTR: keep waiting
+    mov     r13d, eax
+    LOGBEGIN lvl_info
+    LOGLIT  m_shutdown, L_shutdown
+    LOGNUM  r13
+    LOGEND
+
+    xor     r12d, r12d
+.stop_next:
+    cmp     r12, [r15 + Config.workers]
+    jae     .join
+    mov     rdi, [r14 + r12*8]
+    call    kv_worker_stop wrt ..plt
+    inc     r12
+    jmp     .stop_next
+.join:
+    xor     eax, eax
+    mov     [rsp + F_TOTALS], rax
+    mov     [rsp + F_TOTALS + 8], rax
+    mov     [rsp + F_TOTALS + 16], rax
+    xor     r12d, r12d
+.join_next:
+    cmp     r12, [r15 + Config.workers]
+    jae     .joined
+    mov     rdi, [r14 + r12*8]
+    lea     rsi, [rsp + F_STATS]
+    call    kv_worker_join wrt ..plt
+    mov     rax, [rsp + F_STATS]
+    add     [rsp + F_TOTALS], rax
+    mov     rax, [rsp + F_STATS + 8]
+    add     [rsp + F_TOTALS + 8], rax
+    mov     rax, [rsp + F_STATS + 16]
+    add     [rsp + F_TOTALS + 16], rax
+    inc     r12
+    jmp     .join_next
+.joined:
+    sub     rsp, 112                    ; KvStats (14 x u64), alignment kept
+    mov     rdi, rbx
+    mov     rsi, rsp
+    call    kv_store_stats wrt ..plt
+    mov     r13, [rsp]                  ; live keys
+    add     rsp, 112
+    LOGBEGIN lvl_info
+    LOGLIT  m_stopped, L_stopped
+    LOGNUM  [rsp + F_TOTALS]
+    LOGLIT  k_requests, 10
+    LOGNUM  [rsp + F_TOTALS + 8]
+    LOGLIT  k_errors, 8
+    LOGNUM  [rsp + F_TOTALS + 16]
+    LOGLIT  k_keys, 6
+    LOGNUM  r13
+    LOGEND
+    mov     rdi, r14
+    call    free wrt ..plt
+    mov     rdi, rbp
+    call    nghttp2_session_callbacks_del wrt ..plt
+    mov     rdi, rbx
+    call    kv_store_destroy wrt ..plt
+    xor     eax, eax
+    jmp     .return
+
+.worker_failed:
+    ; Workers created so far never started (or some did): stop and join
+    ; the started ones would need bookkeeping; a startup failure is fatal and
+    ; the process exits immediately, letting the kernel reclaim resources.
+.worker_failed_early:
+    LOGBEGIN lvl_error
+    LOGLIT  m_f_worker, L_f_worker
+    LOGEND
+    mov     eax, 1
+.return:
+    add     rsp, F_FRAME + 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; now_ms — monotonic milliseconds. Internal.
+; @returns rax = CLOCK_MONOTONIC in ms.
+; =============================================================================
+now_ms:
+    sub     rsp, 24
+    mov     edi, CLOCK_MONOTONIC
+    mov     rsi, rsp
+    call    clock_gettime wrt ..plt
+    mov     rax, [rsp]
+    imul    rax, rax, 1000
+    mov     rcx, [rsp + 8]
+    push    rax
+    mov     rax, rcx
+    xor     edx, edx
+    mov     ecx, 1000000
+    div     rcx
+    pop     rcx
+    add     rax, rcx
+    add     rsp, 24
+    ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits
