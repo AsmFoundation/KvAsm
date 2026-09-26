@@ -51,7 +51,7 @@ INCLUDES  := $(wildcard include/*.inc)
 # Modules shared by the server, the tests and the benchmarks.
 CORE_ASM  := src/siphash.asm src/util.asm src/cuckoo.asm src/wlock.asm \
              src/store.asm src/proto.asm src/log.asm src/snapshot.asm src/abi.asm \
-             src/pool.asm src/hcache.asm
+             src/pool.asm src/hcache.asm src/hpack.asm
 CORE_OBJ  := $(CORE_ASM:src/%.asm=$(BUILD)/obj/%.o)
 
 # Network server on top of the core (needs nghttp2).
@@ -61,7 +61,7 @@ SERVER_BIN := $(BUILD)/kvnode
 
 # test_abi runs first: every other test trusts the C mirror of the layouts.
 TESTS     := test_abi test_nghttp2_abi test_siphash test_util test_proto \
-             test_store test_store_mt test_snapshot test_pool
+             test_store test_store_mt test_snapshot test_pool test_hpack
 TEST_BINS := $(TESTS:%=$(BUILD)/tests/%)
 
 # Data-structure bake-off (docs/adr/0001): the rival structures only exist
@@ -124,6 +124,13 @@ $(BENCH_BIN): bench/bench_ds.c $(CORE_OBJ) $(BENCH_OBJ) tests/test_common.h test
 
 $(BUILD)/tests/test_nghttp2_abi: tests/test_nghttp2_abi.c $(CORE_OBJ) tests/test_common.h | $(BUILD)/tests
 	$(CC) $(CFLAGS) $(LDFLAGS) -I $(NGHTTP2_PREFIX)/include -o $@ $< $(CORE_OBJ) $(LDLIBS)
+
+# test_hpack links nghttp2 purely as an oracle: its deflater produces the
+# random blocks and its inflater cross-checks the RFC vectors, so the native
+# decoder is compared with an independent implementation, not with itself.
+$(BUILD)/tests/test_hpack: tests/test_hpack.c $(CORE_OBJ) tests/test_common.h tests/kvnode_abi.h | $(BUILD)/tests
+	$(CC) $(CFLAGS) $(LDFLAGS) -I $(NGHTTP2_PREFIX)/include -o $@ $< $(CORE_OBJ) \
+	    $(NGHTTP2_PREFIX)/lib/libnghttp2.a $(LDLIBS)
 
 $(BUILD)/tests/%: tests/%.c $(CORE_OBJ) tests/test_common.h tests/kvnode_abi.h | $(BUILD)/tests
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(CORE_OBJ) $(LDLIBS)
