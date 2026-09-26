@@ -55,6 +55,8 @@ extern kv_siphash128
 extern kv_cuckoo_get
 extern kv_cuckoo_upsert
 extern kv_cuckoo_remove
+extern kv_cuckoo_prefetch
+extern kv_cuckoo_prefetch_records
 extern kv_mutex_lock
 extern kv_mutex_unlock
 
@@ -71,6 +73,8 @@ global kv_store_stats
 global kv_qsbr_online
 global kv_qsbr_offline
 global kv_qsbr_quiescent
+global kv_store_prefetch
+global kv_store_prefetch_records
 
 ; =============================================================================
 ; kv_store_create — allocate an empty store.
@@ -313,6 +317,24 @@ kv_store_hash:
 ; =============================================================================
 kv_store_get:
     jmp     kv_cuckoo_get wrt ..plt
+
+; =============================================================================
+; kv_store_prefetch — warm a key's two candidate buckets (a hint; see
+; kv_cuckoo_prefetch).
+; @param  rdi  Table*   @param rsi  h1   @param rdx  h2
+; @returns nothing.
+; =============================================================================
+kv_store_prefetch:
+    jmp     kv_cuckoo_prefetch wrt ..plt
+
+; =============================================================================
+; kv_store_prefetch_records — warm the records whose tags match (a hint; see
+; kv_cuckoo_prefetch_records). Call after kv_store_prefetch had time to land.
+; @param  rdi  Table*   @param rsi  h1   @param rdx  h2
+; @returns nothing.
+; =============================================================================
+kv_store_prefetch_records:
+    jmp     kv_cuckoo_prefetch_records wrt ..plt
 
 ; =============================================================================
 ; kv_store_put — insert or replace a key's value.

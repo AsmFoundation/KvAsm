@@ -61,6 +61,21 @@ COPY server/ server/
 RUN make -C server NGHTTP2_PREFIX=/opt/nghttp2 all test itest \
  && strip --strip-debug -o /kvnode server/build/kvnode
 
+# ---- benchmark client (benchmarks/): not part of the server image ----------
+# kvbench shares the toolchain (and therefore the pinned nghttp2) with the
+# server, is unit-tested here, and ships as a static binary in its own
+# scratch image. These stages come before `runtime` so that a plain
+# `docker build .` still produces the server.
+FROM toolchain AS kvbench-build
+WORKDIR /src
+COPY benchmarks/kvbench/ benchmarks/kvbench/
+RUN make -C benchmarks/kvbench NGHTTP2_PREFIX=/opt/nghttp2 all test
+
+FROM scratch AS kvbench
+COPY --from=kvbench-build /src/benchmarks/kvbench/build/kvbench /usr/local/bin/kvbench
+USER 65534:65534
+ENTRYPOINT ["/usr/local/bin/kvbench"]
+
 FROM scratch AS runtime
 LABEL org.opencontainers.image.title="KvNode" \
       org.opencontainers.image.description="gRPC key-value server written in x86-64 assembly" \

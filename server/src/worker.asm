@@ -90,13 +90,19 @@ extern kv_qsbr_offline
 extern kv_qsbr_quiescent
 extern kv_store_reclaim
 extern kv_grpc_free_streams
+extern kv_grpc_run_batch
 extern kv_logb_init
 extern kv_logb_str
 extern kv_logb_u64
 extern kv_logb_emit
 extern kv_logbuf_size
-extern nghttp2_session_server_new
+extern nghttp2_session_server_new3
 extern nghttp2_session_del
+extern kv_pool_malloc
+extern kv_pool_free
+extern kv_pool_calloc
+extern kv_pool_realloc
+extern kv_pool_destroy
 extern nghttp2_session_mem_recv2
 extern nghttp2_session_mem_send2
 extern nghttp2_session_want_read
@@ -241,6 +247,20 @@ kv_worker_create:
     mov     qword [rbx + Worker.epfd], -1
     mov     qword [rbx + Worker.listen_fd], -1
     mov     qword [rbx + Worker.event_fd], -1
+    ; nghttp2_mem for this worker's sessions: every allocation a session makes
+    ; (and every Stream) comes from the worker's own pool (pool.asm). nghttp2
+    ; copies this struct into each session, so it only has to exist at
+    ; session creation; the pool it points to lives as long as the worker.
+    lea     rax, [rbx + Worker.pool]
+    mov     [rbx + Worker.mem], rax
+    lea     rax, [rel kv_pool_malloc]   ; same executable: PC-relative, no GOT
+    mov     [rbx + Worker.mem + 8], rax
+    lea     rax, [rel kv_pool_free]
+    mov     [rbx + Worker.mem + 16], rax
+    lea     rax, [rel kv_pool_calloc]
+    mov     [rbx + Worker.mem + 24], rax
+    lea     rax, [rel kv_pool_realloc]
+    mov     [rbx + Worker.mem + 32], rax
 
     mov     edi, READ_CHUNK
     call    malloc wrt ..plt
@@ -444,6 +464,8 @@ worker_free:
     call    free wrt ..plt
     mov     rdi, [rbx + Worker.events]
     call    free wrt ..plt
+    lea     rdi, [rbx + Worker.pool]    ; every session and stream is gone by now
+    call    kv_pool_destroy wrt ..plt
     mov     rdi, rbx
     call    free wrt ..plt
     pop     rbx
@@ -855,7 +877,9 @@ conn_open:
     lea     rdi, [rbp + Conn.session]
     mov     rsi, [rbx + Worker.callbacks]
     mov     rdx, rbp                    ; user_data = Conn*
-    call    nghttp2_session_server_new wrt ..plt
+    xor     ecx, ecx                    ; default options
+    lea     r8, [rbx + Worker.mem]      ; allocate from this worker's pool
+    call    nghttp2_session_server_new3 wrt ..plt
     test    eax, eax
     jnz     .free_conn
 
@@ -979,6 +1003,10 @@ conn_event:
     call    nghttp2_session_mem_recv2 wrt ..plt   ; runs the gRPC callbacks
     test    rax, rax
     js      .destroy                    ; fatal protocol/flood/callback error
+    mov     rdi, rbp
+    call    kv_grpc_run_batch wrt ..plt ; answer the GETs this read queued
+    test    eax, eax
+    js      .destroy                    ; nghttp2 refused a response (out of memory)
 .flush:
     mov     rdi, rbx
     mov     rsi, rbp

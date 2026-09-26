@@ -47,6 +47,8 @@ section .text
 global kv_cuckoo_get
 global kv_cuckoo_upsert
 global kv_cuckoo_remove
+global kv_cuckoo_prefetch
+global kv_cuckoo_prefetch_records
 
 ; -----------------------------------------------------------------------------
 ; LOCATE — derive tag and both bucket pointers for (h1, h2).
@@ -78,6 +80,98 @@ global kv_cuckoo_remove
     mov     rbp, 0x0101010101010101
     imul    rbp, rbx                    ; tag in every byte, for SWAR matching
 %endmacro
+
+; -----------------------------------------------------------------------------
+; BUCKETS_OF table, h1, h2 — the two candidate bucket addresses of a key into
+; r8 (B1) and r10 (B2), and the tag into rcx: exactly LOCATE's arithmetic,
+; on caller-saved registers only (for the leaf prefetch functions).
+; Uses rax, rcx, r8, r9, r10.
+; -----------------------------------------------------------------------------
+%macro BUCKETS_OF 3
+    mov     rcx, %3
+    shr     rcx, 56
+    mov     eax, 1
+    test    ecx, ecx
+    cmovz   ecx, eax                    ; tag 0 is reserved for empty slots
+    mov     r9, [%1 + Table.mask]
+    mov     r8, %2
+    and     r8, r9                      ; b1
+    mov     rax, ALT_MUL
+    imul    rax, rcx
+    shr     rax, 32
+    or      rax, 1
+    and     rax, r9
+    xor     rax, r8                     ; b2
+    mov     r10, [%1 + Table.buckets]
+    shl     r8, 6
+    add     r8, r10
+    shl     rax, 6
+    add     r10, rax
+%endmacro
+
+; =============================================================================
+; kv_cuckoo_prefetch — start loading a key's two candidate buckets.
+;
+; @param  rdi  Table*   @param rsi  h1   @param rdx  h2
+; @returns nothing. Clobbers rax, rcx, r8, r9, r10.
+; @remarks Why: under GET load the bucket's first cache miss was the single
+;          hottest instruction in KvNode (50% of the lookup's samples, on the
+;          tag load). A request can be hashed long before it is looked up;
+;          issuing both bucket loads at parse time lets the misses of a whole
+;          batch of requests overlap instead of stalling one after another.
+;          A pure hint: reads only the Table header, never faults.
+; =============================================================================
+kv_cuckoo_prefetch:
+    BUCKETS_OF rdi, rsi, rdx
+    prefetcht0 [r8]
+    prefetcht0 [r10]
+    ret
+
+; =============================================================================
+; kv_cuckoo_prefetch_records — second prefetch stage: records of tag matches.
+;
+; @param  rdi  Table*   @param rsi  h1   @param rdx  h2
+; @returns nothing. Clobbers rax, rcx, rdx, rsi, rdi, r8 .. r11.
+; @remarks Meant to run once the buckets arrived (after kv_cuckoo_prefetch
+;          and other work): scans both tag words with the exact SWAR match and
+;          prefetches the first two lines of each candidate record — the key
+;          compare and the value copy of the real lookup then hit the cache.
+;          Racing writers are harmless: tags and pointers are read with plain
+;          aligned loads, and a prefetch of a stale or freed address is only
+;          a wasted hint (prefetch never faults). No versions are checked —
+;          correctness stays with kv_cuckoo_get.
+; =============================================================================
+kv_cuckoo_prefetch_records:
+    BUCKETS_OF rdi, rsi, rdx
+    mov     r11, 0x0101010101010101
+    imul    r11, rcx                    ; tag in every byte
+    mov     rdi, r8
+    call    .bucket                     ; B1 (a local call; .bucket makes none)
+    mov     rdi, r10                    ; B2: fall through, .bucket's ret returns to our caller
+.bucket:
+    mov     rax, [rdi + Bucket.tags]
+    xor     rax, r11                    ; matching tag bytes become 0
+    mov     rdx, 0x7F7F7F7F7F7F7F7F
+    mov     rsi, rax
+    and     rsi, rdx
+    add     rsi, rdx
+    or      rsi, rax
+    or      rsi, rdx
+    not     rsi                         ; exact: 0x80 exactly where a byte was 0
+    mov     rdx, BK_TAGMASK
+    and     rsi, rdx                    ; only the six slot tags
+    jz      .none
+.match:
+    bsf     rcx, rsi
+    shr     ecx, 3                      ; byte index = slot index
+    mov     rax, [rdi + Bucket.slot + rcx*8]
+    prefetcht0 [rax]                    ; header + key (+ value start)
+    prefetcht0 [rax + 64]               ; rest of a typical small value
+    lea     rax, [rsi - 1]
+    and     rsi, rax                    ; clear the lowest match (baseline x86-64, no BMI)
+    jnz     .match
+.none:
+    ret
 
 ; =============================================================================
 ; kv_cuckoo_get — lock-free lookup, callable from any thread.

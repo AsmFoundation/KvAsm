@@ -1,6 +1,12 @@
 # Server build outputs (objects, binaries, test executables, bench results).
 /server/build/
 
+# Benchmark client build outputs and Python bytecode. Benchmark *results*
+# (benchmarks/results/) are committed on purpose: they are the evidence
+# behind the published report.
+/benchmarks/kvbench/build/
+__pycache__/
+
 # .NET build outputs and IDE state.
 bin/
 obj/

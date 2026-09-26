@@ -39,18 +39,22 @@ bits 64
 %define GRPC_RESOURCE_EXHAUSTED 8
 %define GRPC_UNIMPLEMENTED      12
 %define GRPC_INTERNAL           13
-%define MIN_REQ_CAP             256
+; First request-buffer size: 240 + the pool's 16-byte header fills a 256-byte
+; block exactly (a GetRequest is 23 bytes; a Put of a 100-byte value ~130).
+%define MIN_REQ_CAP             240
 
-extern calloc
-extern malloc
-extern realloc
-extern free
+extern kv_pool_malloc
+extern kv_pool_free
+extern kv_pool_calloc
+extern kv_pool_realloc
 extern memcpy
 extern kv_keyeq
 extern kv_store_hash
 extern kv_store_get
 extern kv_store_put
 extern kv_store_delete
+extern kv_store_prefetch
+extern kv_store_prefetch_records
 extern kv_pb_decode_kv
 extern kv_pb_varint_len
 extern kv_pb_write_varint
@@ -186,6 +190,7 @@ section .text
 
 global kv_grpc_callbacks_new
 global kv_grpc_free_streams
+global kv_grpc_run_batch
 
 ; =============================================================================
 ; kv_grpc_callbacks_new — the callback table shared by every session.
@@ -247,29 +252,77 @@ kv_grpc_free_streams:
     call    stream_free
     jmp     .next
 .done:
-    mov     qword [r12 + Conn.streams], 0
-    mov     qword [r12 + Conn.buffered], 0
+    xor     eax, eax
+    mov     [r12 + Conn.streams], rax
+    mov     [r12 + Conn.buffered], rax
+    mov     [r12 + Conn.cur_stream], rax  ; the cache must never outlive its stream
+    mov     [r12 + Conn.batch_head], rax  ; nor may a batch of freed streams
+    mov     [r12 + Conn.batch_tail], rax
     add     rsp, 8
     pop     r12
     pop     rbx
     ret
 
 ; =============================================================================
-; stream_free — release a Stream and its buffers. Internal.
-; @param  rdi  Stream*   @returns nothing.
+; stream_lookup — Stream* of a stream id, answered from the connection's
+; one-entry cache when possible. Internal.
+; @param  rdi  session   @param esi  stream id   @param rdx  Conn*
+; @returns rax = Stream*, or 0 when nghttp2 knows no user data for the id.
+;          Clobbers caller-saved registers.
+; @remarks Why: every header, DATA chunk and frame callback names its stream
+;          by id, and nghttp2 resolves ids through a hash map. A request's
+;          callbacks arrive back to back, so the last stream answers almost
+;          all of them. Safe because stream ids are never reused within a
+;          connection and the entry is cleared whenever its Stream is freed.
+; =============================================================================
+stream_lookup:
+    movsxd  rax, esi                    ; ids are stored sign-extended (all positive)
+    cmp     rax, [rdx + Conn.cur_id]
+    jne     .miss
+    mov     rax, [rdx + Conn.cur_stream]
+    test    rax, rax
+    jz      .miss
+    ret
+.miss:
+    push    rbx                         ; 1 push: rsp 16-aligned for the call
+    mov     rbx, rdx
+    call    nghttp2_session_get_stream_user_data wrt ..plt  ; rdi/esi still as passed
+    test    rax, rax
+    jz      .out
+    mov     [rbx + Conn.cur_stream], rax
+    mov     rcx, [rax + Stream.id]
+    mov     [rbx + Conn.cur_id], rcx
+.out:
+    pop     rbx
+    ret
+
+; =============================================================================
+; stream_free — release a Stream and its buffers to the worker's pool. Internal.
+; @param  rdi  Stream* (its conn and conn's worker must still be alive)
+; @returns nothing.
 ; =============================================================================
 stream_free:
     push    rbx
+    push    r12
+    sub     rsp, 8                      ; 2 pushes + 8: rsp 16-aligned for calls
     mov     rbx, rdi
+    mov     rax, [rbx + Stream.conn]
+    mov     rax, [rax + Conn.worker]
+    lea     r12, [rax + Worker.pool]
     mov     rdi, [rbx + Stream.req_buf]
-    call    free wrt ..plt
+    mov     rsi, r12
+    call    kv_pool_free
     test    qword [rbx + Stream.flags], ST_STATIC_RESP
     jnz     .static_resp                ; .rodata text: freeing it would crash
     mov     rdi, [rbx + Stream.resp_buf]
-    call    free wrt ..plt
+    mov     rsi, r12
+    call    kv_pool_free
 .static_resp:
     mov     rdi, rbx
-    call    free wrt ..plt
+    mov     rsi, r12
+    call    kv_pool_free
+    add     rsp, 8
+    pop     r12
     pop     rbx
     ret
 
@@ -293,7 +346,9 @@ on_begin_headers:
     movsxd  r13, dword [rsi + FRAME_HD_STREAM_ID]
     mov     edi, 1
     mov     esi, Stream_size
-    call    calloc wrt ..plt
+    mov     rax, [r12 + Conn.worker]
+    lea     rdx, [rax + Worker.pool]
+    call    kv_pool_calloc
     test    rax, rax
     jz      .nomem
     mov     [rax + Stream.conn], r12
@@ -305,6 +360,8 @@ on_begin_headers:
     mov     [rcx + Stream.prev], rax
 .linked:
     mov     [r12 + Conn.streams], rax
+    mov     [r12 + Conn.cur_stream], rax  ; its headers follow immediately
+    mov     [r12 + Conn.cur_id], r13
     mov     rdi, rbx
     mov     esi, r13d
     mov     rdx, rax
@@ -366,7 +423,8 @@ on_header:
     mov     r14, r8                     ; value
     mov     r15, r9                     ; valuelen
     mov     esi, [rsi + FRAME_HD_STREAM_ID]
-    call    nghttp2_session_get_stream_user_data wrt ..plt
+    mov     rdx, [rsp + 56]             ; Conn*: 8th argument, above 5 pushes + return
+    call    stream_lookup
     test    rax, rax
     jz      .out
     mov     rbx, rax                    ; Stream*
@@ -487,7 +545,8 @@ on_data_chunk_recv:
     mov     r14, r9                     ; Conn*
     mov     r15d, edx                   ; stream id
     mov     esi, edx
-    call    nghttp2_session_get_stream_user_data wrt ..plt
+    mov     rdx, r14
+    call    stream_lookup
     test    rax, rax
     jz      .out
     mov     rbx, rax
@@ -523,7 +582,9 @@ on_data_chunk_recv:
     push    r8
     mov     rdi, [rbx + Stream.req_buf]
     mov     rsi, rdx
-    call    realloc wrt ..plt
+    mov     rax, [r14 + Conn.worker]
+    lea     rdx, [rax + Worker.pool]
+    call    kv_pool_realloc
     pop     r8
     pop     rdx
     test    rax, rax
@@ -550,7 +611,9 @@ on_data_chunk_recv:
     mov     rax, [rbx + Stream.req_cap]
     sub     [r14 + Conn.buffered], rax
     mov     rdi, [rbx + Stream.req_buf]
-    call    free wrt ..plt
+    mov     rax, [r14 + Conn.worker]
+    lea     rsi, [rax + Worker.pool]
+    call    kv_pool_free
     xor     eax, eax
     mov     [rbx + Stream.req_buf], rax
     mov     [rbx + Stream.req_len], rax
@@ -577,33 +640,59 @@ on_stream_close:
     push    r12
     sub     rsp, 8
     mov     r12, rcx
-    call    nghttp2_session_get_stream_user_data wrt ..plt
+    mov     rdx, rcx
+    call    stream_lookup
     test    rax, rax
     jz      .out
     mov     rbx, rax
-    mov     rcx, [rbx + Stream.prev]    ; unlink
-    mov     rdx, [rbx + Stream.next]
-    test    rcx, rcx
-    jz      .head
-    mov     [rcx + Stream.next], rdx
-    jmp     .fix
-.head:
-    mov     [r12 + Conn.streams], rdx
-.fix:
-    test    rdx, rdx
-    jz      .unlinked
-    mov     [rdx + Stream.prev], rcx
-.unlinked:
-    mov     rax, [rbx + Stream.req_cap]
-    sub     [r12 + Conn.buffered], rax
-    mov     rdi, rbx
-    call    stream_free
+    cmp     [r12 + Conn.cur_stream], rbx
+    jne     .uncached
+    mov     qword [r12 + Conn.cur_stream], 0  ; about to be freed: drop from the cache
+.uncached:
+    ; A GET queued in this read's batch was reset by the peer: it is still
+    ; referenced by Conn.batch, so only mark it; kv_grpc_run_batch frees it
+    ; instead of answering (answering a closed stream would be a bug).
+    test    qword [rbx + Stream.flags], ST_BATCHED
+    jz      .free_now
+    or      qword [rbx + Stream.flags], ST_CLOSED
+    jmp     .out
+.free_now:
+    mov     rdi, r12
+    mov     rsi, rbx
+    call    stream_unlink_free
 .out:
     xor     eax, eax
     add     rsp, 8
     pop     r12
     pop     rbx
     ret
+
+; =============================================================================
+; stream_unlink_free — remove a Stream from its connection and free it.
+; Internal.
+; @param  rdi  Conn*   @param rsi  Stream*
+; @returns nothing.
+; @remarks Also returns the stream's buffered request bytes to the
+;          connection's budget.
+; =============================================================================
+stream_unlink_free:
+    mov     rcx, [rsi + Stream.prev]
+    mov     rdx, [rsi + Stream.next]
+    test    rcx, rcx
+    jz      .head
+    mov     [rcx + Stream.next], rdx
+    jmp     .fix
+.head:
+    mov     [rdi + Conn.streams], rdx
+.fix:
+    test    rdx, rdx
+    jz      .unlinked
+    mov     [rdx + Stream.prev], rcx
+.unlinked:
+    mov     rax, [rsi + Stream.req_cap]
+    sub     [rdi + Conn.buffered], rax
+    mov     rdi, rsi
+    jmp     stream_free                 ; tail call (keeps the caller's alignment)
 
 ; =============================================================================
 ; on_frame_recv — nghttp2_on_frame_recv_callback: dispatch complete requests.
@@ -627,7 +716,8 @@ on_frame_recv:
     mov     r12, rdx
     mov     r13d, [rsi + FRAME_HD_STREAM_ID]
     mov     esi, r13d
-    call    nghttp2_session_get_stream_user_data wrt ..plt
+    mov     rdx, r12
+    call    stream_lookup
     test    rax, rax
     jz      .done
     test    qword [rax + Stream.flags], ST_RESPONDED
@@ -771,57 +861,35 @@ dispatch:
     mov     rdi, rax                    ; 1 => PutResponse{created=true}
     jmp     .bool_reply
 
-    ; ---- Get ----
+    ; ---- Get: deferred into the connection's batch ----
+    ; The lookup itself runs in kv_grpc_run_batch once the whole read is
+    ; parsed. Here: remember the key (it points into req_buf, which lives as
+    ; long as the Stream) and its hashes, and start loading both candidate
+    ; buckets now, so the cache misses of every GET in this read overlap.
 .get:
+    mov     rax, [rsp + PbKv.key]
+    mov     [rbx + Stream.key], rax
+    mov     rax, [rsp + PbKv.key_len]
+    mov     [rbx + Stream.key_len], rax
+    mov     rsi, [rsp + 40]
+    mov     [rbx + Stream.h1], rsi
+    mov     rdx, [rsp + 48]
+    mov     [rbx + Stream.h2], rdx
     mov     rdi, r14
-    mov     rsi, [rsp + PbKv.key]
-    mov     rdx, [rsp + PbKv.key_len]
-    mov     rcx, [rsp + 40]
-    mov     r8, [rsp + 48]
-    call    kv_store_get wrt ..plt
+    call    kv_store_prefetch wrt ..plt
+    or      qword [rbx + Stream.flags], ST_BATCHED
+    mov     qword [rbx + Stream.batch_next], 0
+    mov     rax, [r12 + Conn.batch_tail] ; FIFO: answer in arrival order
     test    rax, rax
-    jz      .get_missing
-    mov     r15, rax                    ; Rec* (valid while this worker is online)
-    mov     ebp, [r15 + Rec.val_len]
-    ; payload = 08 01 [12 varint(vlen) value]  (empty value field omitted)
-    mov     r13d, 2
-    test    rbp, rbp
-    jz      .get_alloc
-    mov     rdi, rbp
-    call    kv_pb_varint_len wrt ..plt
-    lea     r13, [r13 + rax + 1]
-    add     r13, rbp
-.get_alloc:
-    lea     rdi, [r13 + GRPC_PREFIX]
-    call    malloc wrt ..plt
-    test    rax, rax
-    jz      .e_oom
-    mov     [rbx + Stream.resp_buf], rax
-    lea     rcx, [r13 + GRPC_PREFIX]
-    mov     [rbx + Stream.resp_len], rcx
-    mov     rdi, rax
-    mov     rsi, r13
-    call    write_prefix
-    mov     rdi, [rbx + Stream.resp_buf]
-    mov     word [rdi + GRPC_PREFIX], 0x0108   ; field 1 (found) = true
-    test    rbp, rbp
-    jz      .submit_ok
-    mov     byte [rdi + GRPC_PREFIX + 2], 0x12 ; field 2 (value), length-delimited
-    lea     rdi, [rdi + GRPC_PREFIX + 3]
-    mov     rsi, rbp
-    call    kv_pb_write_varint wrt ..plt
-    mov     rdi, [rbx + Stream.resp_buf]
-    lea     rdi, [rdi + GRPC_PREFIX + 3 + rax]
-    mov     ecx, [r15 + Rec.key_len]
-    add     rcx, 7
-    and     rcx, -8
-    lea     rsi, [r15 + Rec.data + rcx]  ; value follows the padded key
-    mov     rdx, rbp
-    call    memcpy wrt ..plt
-    jmp     .submit_ok
-.get_missing:
-    xor     edi, edi                    ; GetResponse{} (found=false)
-    jmp     .bool_reply
+    jz      .batch_first
+    mov     [rax + Stream.batch_next], rbx
+    jmp     .batch_linked
+.batch_first:
+    mov     [r12 + Conn.batch_head], rbx
+.batch_linked:
+    mov     [r12 + Conn.batch_tail], rbx
+    xor     eax, eax
+    jmp     .out
 
     ; ---- grpc.health.v1.Health/Check ----
     ; service "" (whole server) or "kvnode.v1.KvNode" => SERVING (1), or
@@ -853,7 +921,9 @@ dispatch:
 .bool_reply:
     mov     r13, rdi
     mov     edi, GRPC_PREFIX + 2
-    call    malloc wrt ..plt
+    mov     rax, [r12 + Conn.worker]
+    lea     rsi, [rax + Worker.pool]
+    call    kv_pool_malloc
     test    rax, rax
     jz      .e_oom
     mov     [rbx + Stream.resp_buf], rax
@@ -974,6 +1044,267 @@ dispatch:
     pop     r13
     pop     r12
     pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; kv_grpc_run_batch — answer every GET queued while parsing the last read.
+;
+; @param  rdi  Conn*
+; @returns eax = 0, or -1 if nghttp2 could not accept a response (out of
+;          memory inside the session: the caller destroys the connection).
+; @remarks Called by the worker right after nghttp2_session_mem_recv2, on the
+;          connection's thread, while the worker is QSBR-online (records stay
+;          valid while their values are copied).
+;          Two passes, a software pipeline across requests:
+;            1. prefetch the candidate records (the buckets were prefetched at
+;               parse time and have arrived by now);
+;            2. run each lookup — bucket and record lines are warm — and
+;               submit its response.
+;          Streams the peer reset meanwhile (ST_CLOSED) are freed, not
+;          answered. The batch is detached before pass 2, so nothing can
+;          observe a half-processed list.
+; =============================================================================
+kv_grpc_run_batch:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14                         ; 5 pushes: rsp 16-aligned for calls
+    mov     r12, rdi
+    mov     rbx, [r12 + Conn.batch_head]
+    xor     ebp, ebp                    ; result
+    test    rbx, rbx
+    jz      .out
+    mov     rax, [r12 + Conn.worker]
+    mov     r13, [rax + Worker.table]
+.prefetch:
+    mov     rdi, r13
+    mov     rsi, [rbx + Stream.h1]
+    mov     rdx, [rbx + Stream.h2]
+    call    kv_store_prefetch_records wrt ..plt
+    mov     rbx, [rbx + Stream.batch_next]
+    test    rbx, rbx
+    jnz     .prefetch
+    mov     rbx, [r12 + Conn.batch_head]
+    xor     eax, eax
+    mov     [r12 + Conn.batch_head], rax
+    mov     [r12 + Conn.batch_tail], rax
+.answer:
+    mov     r14, [rbx + Stream.batch_next]
+    and     qword [rbx + Stream.flags], ~ST_BATCHED
+    test    qword [rbx + Stream.flags], ST_CLOSED
+    jnz     .closed
+    mov     rdi, [r12 + Conn.session]
+    mov     rsi, r12
+    mov     rdx, rbx
+    call    get_execute
+    test    eax, eax
+    jz      .next
+    mov     ebp, -1                     ; keep answering the rest; report at the end
+    jmp     .next
+.closed:
+    mov     rdi, r12
+    mov     rsi, rbx
+    call    stream_unlink_free
+.next:
+    mov     rbx, r14
+    test    rbx, rbx
+    jnz     .answer
+.out:
+    mov     eax, ebp
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; get_execute — look up a batched GET and submit its response. Internal.
+; @param  rdi  session   @param rsi  Conn*   @param rdx  Stream* (key, h1, h2 set)
+; @returns eax = 0, or nghttp2's error code if the response was not accepted.
+; @remarks Response: GetResponse{found = true, value} as 08 01 12 <len> <value>
+;          (the value field is omitted for an empty value); a miss is the
+;          empty message (found = false); out of memory is Trailers-Only
+;          INTERNAL.
+; =============================================================================
+get_execute:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8                      ; 6 pushes + 8: rsp 16-aligned for calls
+    mov     r14, rdi                    ; session
+    mov     r12, rsi                    ; Conn*
+    mov     rbx, rdx                    ; Stream*
+    mov     rax, [r12 + Conn.worker]
+    mov     rdi, [rax + Worker.table]
+    mov     rsi, [rbx + Stream.key]
+    mov     rdx, [rbx + Stream.key_len]
+    mov     rcx, [rbx + Stream.h1]
+    mov     r8, [rbx + Stream.h2]
+    call    kv_store_get wrt ..plt
+    test    rax, rax
+    jz      .missing
+    mov     r15, rax                    ; Rec* (valid while this worker is online)
+    mov     ebp, [r15 + Rec.val_len]
+    mov     r13d, 2                     ; 08 01
+    test    rbp, rbp
+    jz      .alloc
+    mov     rdi, rbp
+    call    kv_pb_varint_len wrt ..plt
+    lea     r13, [r13 + rax + 1]        ; + 12 <varint len>
+    add     r13, rbp                    ; + value
+.alloc:
+    lea     rdi, [r13 + GRPC_PREFIX]
+    mov     rax, [r12 + Conn.worker]
+    lea     rsi, [rax + Worker.pool]
+    call    kv_pool_malloc
+    test    rax, rax
+    jz      .oom
+    mov     [rbx + Stream.resp_buf], rax
+    lea     rcx, [r13 + GRPC_PREFIX]
+    mov     [rbx + Stream.resp_len], rcx
+    mov     rdi, rax
+    mov     rsi, r13
+    call    write_prefix
+    mov     rdi, [rbx + Stream.resp_buf]
+    mov     word [rdi + GRPC_PREFIX], 0x0108   ; field 1 (found) = true
+    test    rbp, rbp
+    jz      .submit
+    mov     byte [rdi + GRPC_PREFIX + 2], 0x12 ; field 2 (value), length-delimited
+    lea     rdi, [rdi + GRPC_PREFIX + 3]
+    mov     rsi, rbp
+    call    kv_pb_write_varint wrt ..plt
+    mov     rdi, [rbx + Stream.resp_buf]
+    lea     rdi, [rdi + GRPC_PREFIX + 3 + rax]
+    mov     ecx, [r15 + Rec.key_len]
+    add     rcx, 7
+    and     rcx, -8
+    lea     rsi, [r15 + Rec.data + rcx]  ; value follows the padded key
+    mov     rdx, rbp
+    call    memcpy wrt ..plt
+.submit:
+    mov     rdi, r14
+    mov     rsi, rbx
+    call    respond_message
+    jmp     .out
+.missing:
+    mov     rdi, r14
+    mov     rsi, r12
+    mov     rdx, rbx
+    xor     ecx, ecx                    ; GetResponse{} (found = false)
+    call    respond_varint
+    jmp     .out
+.oom:
+    mov     rdi, r14
+    mov     rsi, r12
+    mov     rdx, rbx
+    lea     rcx, [nv_e_oom]
+    mov     r8d, 4
+    call    respond_error
+.out:
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; respond_message — submit HEADERS + the stream's resp_buf as DATA + trailers.
+; Internal.
+; @param  rdi  session   @param rsi  Stream* (resp_buf/resp_len set)
+; @returns eax = nghttp2_submit_response2's result (0 on success).
+; @remarks nghttp2 copies the data-provider struct, so a stack-resident one
+;          is fine; resp_read streams resp_buf and adds the grpc-status
+;          trailers on the last chunk.
+; =============================================================================
+respond_message:
+    sub     rsp, 24                     ; [0..16) nghttp2_data_provider2; rsp aligned
+    mov     qword [rsi + Stream.resp_off], 0
+    mov     [rsp], rsi                  ; provider.source.ptr = Stream*
+    lea     rax, [resp_read]
+    mov     [rsp + 8], rax              ; provider.read_callback
+    mov     esi, [rsi + Stream.id]      ; (the id is read before rsi is replaced)
+    lea     rdx, [nv_ok]
+    mov     ecx, 2
+    lea     r8, [rsp]
+    call    nghttp2_submit_response2 wrt ..plt
+    add     rsp, 24
+    ret
+
+; =============================================================================
+; respond_error — Trailers-Only gRPC error (single HEADERS frame). Internal.
+; @param  rdi  session   @param rsi  Conn*   @param rdx  Stream*
+; @param  rcx  nghttp2_nv array   @param r8  entry count
+; @returns eax = nghttp2_submit_response2's result.
+; =============================================================================
+respond_error:
+    mov     rax, [rsi + Conn.worker]
+    inc     qword [rax + Worker.st_errors]
+    mov     esi, [rdx + Stream.id]
+    mov     rdx, rcx
+    mov     rcx, r8
+    xor     r8d, r8d                    ; no data provider: END_STREAM on HEADERS
+    jmp     nghttp2_submit_response2 wrt ..plt  ; tail call
+
+; =============================================================================
+; respond_varint — reply with a message whose only field is 1 = value.
+; Internal.
+; @param  rdi  session   @param rsi  Conn*   @param rdx  Stream*
+; @param  rcx  value (0..127); 0 sends the empty message (proto3 default)
+; @returns eax = nghttp2's result (0 on success).
+; =============================================================================
+respond_varint:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 8                      ; 4 pushes + 8: rsp 16-aligned for calls
+    mov     rbx, rdi
+    mov     r12, rsi
+    mov     r13, rdx
+    mov     r14, rcx
+    mov     edi, GRPC_PREFIX + 2
+    mov     rax, [r12 + Conn.worker]
+    lea     rsi, [rax + Worker.pool]
+    call    kv_pool_malloc
+    test    rax, rax
+    jz      .oom
+    mov     [r13 + Stream.resp_buf], rax
+    xor     esi, esi
+    test    r14, r14
+    jz      .len
+    mov     esi, 2
+    mov     byte [rax + GRPC_PREFIX], 0x08     ; field 1, wire type varint
+    mov     [rax + GRPC_PREFIX + 1], r14b      ; < 128: a single varint byte
+.len:
+    lea     rcx, [rsi + GRPC_PREFIX]
+    mov     [r13 + Stream.resp_len], rcx
+    mov     rdi, rax
+    call    write_prefix
+    mov     rdi, rbx
+    mov     rsi, r13
+    call    respond_message
+    jmp     .out
+.oom:
+    mov     rdi, rbx
+    mov     rsi, r12
+    mov     rdx, r13
+    lea     rcx, [nv_e_oom]
+    mov     r8d, 4
+    call    respond_error
+.out:
+    add     rsp, 8
+    pop     r14
+    pop     r13
+    pop     r12
     pop     rbx
     ret
 

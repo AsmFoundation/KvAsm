@@ -37,6 +37,21 @@ struc Config
 endstruc
 
 ; ---- Worker: one epoll event loop, pinned to nothing, owns its connections ----
+; ---- per-worker allocator (pool.asm) ------------------------------------------
+%define POOL_HDR            16          ; block header; keeps 16-byte alignment
+%define POOL_MIN_SHIFT      6           ; smallest block: 64 bytes (header included)
+%define POOL_CLASSES        7           ; 64, 128, ..., 4096
+%define POOL_MAX_BLOCK      4096
+%define POOL_CHUNK          (256 * 1024)
+%define POOL_LARGE          0xFF        ; header class of a malloc'd block
+
+struc Pool
+    .free:              resq POOL_CLASSES ; LIFO free list per class
+    .bump:              resq 1          ; next unused byte of the current chunk
+    .bump_end:          resq 1
+    .chunks:            resq 1          ; list of chunks (freed by kv_pool_destroy)
+endstruc
+
 struc Worker
     .id:                resq 1          ; also the QSBR reader slot
     .epfd:              resq 1
@@ -59,6 +74,8 @@ struc Worker
     .now:               resq 1          ; monotonic ns, refreshed once per loop pass
     .accept_paused:     resq 1          ; 1 while out of fds (listener unregistered)
     .st_rejected:       resq 1          ; connections refused (limit or fds)
+    .pool:              resb Pool_size  ; this worker's allocator (sessions, streams)
+    .mem:               resq 5          ; nghttp2_mem {user_data, malloc, free, calloc, realloc}
 endstruc
 
 ; ---- Conn: one HTTP/2 connection ------------------------------------------------
@@ -78,6 +95,14 @@ struc Conn
     .last_active:       resq 1          ; monotonic ns of the last received bytes
     .prev:              resq 1
     .next:              resq 1
+    ; Stream cache: nghttp2 callbacks name streams by id, and resolving an id
+    ; is a hash-map lookup; the headers and data of one request arrive
+    ; back to back, so remembering the last stream answers almost every call.
+    .cur_id:            resq 1          ; id of cur_stream
+    .cur_stream:        resq 1          ; Stream* or 0 (cleared when it closes)
+    ; GETs parsed from the current read, answered after it (prefetch batch).
+    .batch_head:        resq 1
+    .batch_tail:        resq 1
 endstruc
 
 ; ---- Stream: one gRPC call --------------------------------------------------------
@@ -89,6 +114,10 @@ endstruc
 ; resp_buf points at static read-only text (never freed), and the response
 ; ends on its last DATA frame: a plain HTTP error (405/415), no gRPC trailers.
 %define ST_STATIC_RESP      32
+; Queued in Conn.batch: answered by kv_grpc_run_batch after the current read.
+%define ST_BATCHED          64
+; The peer reset a batched stream: run_batch frees it instead of answering.
+%define ST_CLOSED           128
 %define M_UNKNOWN           0
 %define M_GET               1
 %define M_PUT               2
@@ -107,6 +136,12 @@ struc Stream
     .resp_buf:          resq 1          ; complete gRPC response message (prefix + protobuf)
     .resp_len:          resq 1
     .resp_off:          resq 1
+    ; A batched GET (ST_BATCHED) keeps what its deferred lookup needs.
+    .key:               resq 1          ; points into req_buf
+    .key_len:           resq 1
+    .h1:                resq 1
+    .h2:                resq 1
+    .batch_next:        resq 1
 endstruc
 
 %endif

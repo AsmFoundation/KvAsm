@@ -50,7 +50,8 @@ INCLUDES  := $(wildcard include/*.inc)
 
 # Modules shared by the server, the tests and the benchmarks.
 CORE_ASM  := src/siphash.asm src/util.asm src/cuckoo.asm src/wlock.asm \
-             src/store.asm src/proto.asm src/log.asm src/snapshot.asm src/abi.asm
+             src/store.asm src/proto.asm src/log.asm src/snapshot.asm src/abi.asm \
+             src/pool.asm
 CORE_OBJ  := $(CORE_ASM:src/%.asm=$(BUILD)/obj/%.o)
 
 # Network server on top of the core (needs nghttp2).
@@ -60,7 +61,7 @@ SERVER_BIN := $(BUILD)/kvnode
 
 # test_abi runs first: every other test trusts the C mirror of the layouts.
 TESTS     := test_abi test_nghttp2_abi test_siphash test_util test_proto \
-             test_store test_store_mt test_snapshot
+             test_store test_store_mt test_snapshot test_pool
 TEST_BINS := $(TESTS:%=$(BUILD)/tests/%)
 
 # Data-structure bake-off (docs/adr/0001): the rival structures only exist

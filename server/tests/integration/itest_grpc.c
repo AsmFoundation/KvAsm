@@ -428,16 +428,13 @@ static int out_append(Client *cl, const uint8_t *data, size_t n) {
 }
 
 /**
- * Moves bytes in both directions once: serializes pending frames, writes
- * what the socket accepts, waits up to timeout_ms, feeds received bytes to
- * nghttp2.
- * @param cl          connection
- * @param timeout_ms  poll timeout
- * @returns 0 on progress or timeout, -1 on a fatal session/socket error
- * @remarks EOF and ECONNRESET are not errors here: they set cl->eof, and the
- *          caller decides whether that was expected.
+ * Serializes pending frames into the output buffer without sending them.
+ * @param cl  connection
+ * @returns 0, or -1 on a session error or out of memory
+ * @remarks Separate from pump() so a test can queue frames from several
+ *          submissions and put them on the wire in a single write.
  */
-static int pump(Client *cl, int timeout_ms) {
+static int collect(Client *cl) {
   /* Bound the copy so a huge pending request cannot balloon memory. */
   while (cl->out_len - cl->out_off < (1u << 20)) {
     const uint8_t *data;
@@ -449,6 +446,21 @@ static int pump(Client *cl, int timeout_ms) {
     if (n == 0) break;
     if (out_append(cl, data, (size_t)n) != 0) return -1;
   }
+  return 0;
+}
+
+/**
+ * Moves bytes in both directions once: serializes pending frames, writes
+ * what the socket accepts, waits up to timeout_ms, feeds received bytes to
+ * nghttp2.
+ * @param cl          connection
+ * @param timeout_ms  poll timeout
+ * @returns 0 on progress or timeout, -1 on a fatal session/socket error
+ * @remarks EOF and ECONNRESET are not errors here: they set cl->eof, and the
+ *          caller decides whether that was expected.
+ */
+static int pump(Client *cl, int timeout_ms) {
+  if (collect(cl) != 0) return -1;
   while (cl->out_off < cl->out_len && !cl->eof) {
     ssize_t w = send(cl->fd, cl->out + cl->out_off, cl->out_len - cl->out_off, MSG_NOSIGNAL);
     if (w < 0) {
@@ -1040,6 +1052,49 @@ static void test_cancel(Client *cl) {
   free(val);
 }
 
+/**
+ * GETs reset by the client in the same write as their requests. The server
+ * queues parsed GETs per read and answers them after the read, so a
+ * RST_STREAM arriving in that same read must free the queued stream instead
+ * of answering it, without disturbing the GETs around it.
+ * @param cl  connection
+ * @remarks All 32 requests are serialized first, then RST_STREAM frames for
+ *          the odd ones are queued behind them, and everything goes out in
+ *          one write (about 1.5 KB — one server read).
+ */
+static void test_reset_in_batch(Client *cl) {
+  enum { M = 32 };
+  static Call calls[M];
+  static Msg msgs[M];
+  char k[64];
+  size_t kl = mkkey(k, sizeof k, "rib", 0);
+  CHECK(op_put(cl, k, kl, "batch-value", 11) == 1);
+  for (int i = 0; i < M; i++) {
+    msgs[i] = msg_kv(k, kl, NULL, 0);
+    calls[i].defer_at = 0;
+    CHECK(call_submit(cl, &calls[i], "POST", PATH_GET, GRPC_CT, NULL, msgs[i].p, msgs[i].len) == 0);
+  }
+  CHECK(collect(cl) == 0); /* HEADERS + DATA(END_STREAM) of all 32, not sent yet */
+  for (int i = 1; i < M; i += 2)
+    CHECK(nghttp2_submit_rst_stream(cl->session, NGHTTP2_FLAG_NONE, calls[i].stream_id,
+                                    NGHTTP2_CANCEL) == 0);
+  CHECK(run_until_idle(cl, CALL_TIMEOUT_MS) == 0); /* the first pump sends it all at once */
+  int answered = 0, cancelled = 0;
+  for (int i = 0; i < M; i++) {
+    Reply r = parse_reply(&calls[i]);
+    if (i % 2 == 0)
+      answered += call_ok("batched GET", &calls[i]) && r.ok && r.flag && r.value_len == 11 &&
+                  memcmp(r.value, "batch-value", 11) == 0;
+    else
+      cancelled += calls[i].closed && calls[i].close_error == NGHTTP2_CANCEL;
+    call_free(&calls[i]);
+    free(msgs[i].p);
+  }
+  CHECK(answered == M / 2);
+  CHECK(cancelled == M / 2);
+  CHECK(op_delete(cl, k, kl) == 1); /* the connection is still healthy */
+}
+
 /** HealthCheckResponse{status: SERVING}, gRPC-framed. */
 static const uint8_t kServing[7] = {0, 0, 0, 0, 2, 0x08, 0x01};
 /** HealthCheckResponse{status: NOT_SERVING}, gRPC-framed. */
@@ -1408,6 +1463,7 @@ int main(int argc, char **argv) {
   test_health(&cl);
   test_pipelined(&cl);
   test_cancel(&cl);
+  test_reset_in_batch(&cl);
   test_concurrency(&cl, 3000);
   CHECK(!cl.goaway && !cl.eof);                            /* never dropped by the server */
   client_close(&cl);

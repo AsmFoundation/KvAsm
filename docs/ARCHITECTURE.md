@@ -40,14 +40,26 @@ flowchart LR
    is buffered per stream within two budgets: the per-request
    `max_request` and the per-connection `KVNODE_CONN_BUFFER_MB`.
 4. **Execute.** At END_STREAM the worker validates the 5-byte gRPC framing,
-   decodes the protobuf (zero-copy, `proto.asm`), checks limits, hashes the
-   key (SipHash-2-4-128, secret key) and runs the store operation. Store
-   operations are sub-microsecond, so the request finishes inside the
-   callback and there is no async state.
+   decodes the protobuf (zero-copy, `proto.asm`), checks limits and hashes
+   the key (SipHash-2-4-128, secret key).
+   - Puts, Deletes and health checks execute right there.
+   - **GETs are deferred:** their two candidate buckets are prefetched
+     immediately, and the stream joins the connection's batch.
+   - When nghttp2 has consumed the whole read, `kv_grpc_run_batch` runs two
+     passes over the batch: prefetch each candidate record, then look up and
+     answer. The cache misses of up to a whole read's GETs thus overlap
+     instead of stalling one after another (ADR 0005: +28% at 4 cores and
+     +35% at 1 core, paired medians).
+   - A GET the peer resets within the same read is freed, not answered.
 5. **Respond.** HEADERS, then DATA (the message, via a data provider that
    honors the peer's flow-control window), then trailer HEADERS
    (`grpc-status: 0`). Errors are a single Trailers-Only HEADERS frame.
    All output produced by one input batch is coalesced into one `sendto`.
+
+Allocation on this path goes through the worker's own pool (`pool.asm`).
+nghttp2 receives it as its `nghttp2_mem` allocator, and Streams and their
+buffers use it too. A session never leaves its worker thread, so the pool
+needs no locks. Freed blocks are reused LIFO while still cached.
 
 ## Store (ADR 0001, ADR 0003)
 
@@ -91,10 +103,11 @@ flowchart LR
 | `server/src/main.asm` | process entry: startup order, signals, shutdown, final stats |
 | `server/src/config.asm` | strict environment-variable settings |
 | `server/src/worker.asm` | epoll event loop, accept, backpressure, idle timeout, drain, port probe |
-| `server/src/grpc.asm` | nghttp2 callbacks, routing, validation, responses, health service |
+| `server/src/grpc.asm` | nghttp2 callbacks, routing, validation, batched GET execution, responses, health service |
+| `server/src/pool.asm` | per-worker size-class allocator (nghttp2_mem-compatible) |
 | `server/src/proto.asm` | protobuf decode (zero-copy, skips unknown fields) and varint encode |
 | `server/src/store.asm` | table lifecycle, Put/Delete, memory accounting, QSBR |
-| `server/src/cuckoo.asm` | lock-free lookup, insert with BFS displacement, remove |
+| `server/src/cuckoo.asm` | lock-free lookup, insert with BFS displacement, remove, prefetch stages |
 | `server/src/siphash.asm`, `util.asm` | SipHash-2-4-128; exact key compare and SWAR tag match |
 | `server/src/wlock.asm` | futex writer mutex |
 | `server/src/snapshot.asm` | snapshot verification and loading |
