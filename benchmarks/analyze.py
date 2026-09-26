@@ -748,10 +748,12 @@ class Report:
                "If kvbench reaches at least the throughput of the standard tool on the same "
                "server and workload, it does not handicap that system.", "",
                "| Server | Tool / keys | Throughput (ops/s) |", "|---|---|---|")
-        by: dict[tuple[str, str], list[float]] = defaultdict(list)
+        # Keyed by block (repetition): every tool of a server ran once per
+        # block, so kvbench ÷ tool is paired like the system comparisons.
+        by: dict[tuple[str, str], dict[int, float]] = defaultdict(dict)
         for r in recs:
             if r["m"].get("ops"):
-                by[(r["system"], r["tool"])].append(r["m"]["ops"])
+                by[(r["system"], r["tool"])][r["rep"]] = r["m"]["ops"]
         for (s, tool) in sorted(by, key=lambda k: (ORDER.index(k[0]), k[1])):
             self.w(f"| {self.title(s)} | {tool} | {cell_text(summary(by[(s, tool)]))} |")
         self.w("")

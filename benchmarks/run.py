@@ -7,11 +7,18 @@ Usage:
 
 Each run: start a fresh server container on vCPUs 0..N-1, run kvbench in the
 server's network namespace (loopback) on vCPUs 16-31, preload every key,
-warm up, measure, remove the server. Runs of one experiment execute in a
-seeded random order so slow drift (thermals, background load) spreads over
-all systems instead of biasing whichever ran last. Results are appended to
-DIR/raw.jsonl one JSON object per run; an interrupted suite resumes where it
-stopped. Requires Python 3.10+ and the docker CLI; nothing else.
+warm up, measure, remove the server. Runs of one experiment execute in
+blocks: repetition r of every cell forms block r, in a seeded random order,
+so slow drift hits every system of a block alike and cancels in paired
+comparisons. Results are appended to DIR/raw.jsonl one JSON object per run;
+an interrupted suite resumes where it stopped.
+
+With psutil on a Docker Desktop host, CPU used by other programs outside the
+container VM is sampled every second and recorded per run (host_load), and a
+busy host is reported at startup: such load competes for the same cores and
+cannot be seen from inside the containers.
+
+Requires Python 3.10+ and the docker CLI; psutil is optional.
 """
 
 from __future__ import annotations
@@ -26,7 +33,9 @@ import re
 import statistics
 import subprocess
 import sys
+import threading
 import time
+from collections import deque
 from dataclasses import asdict, replace
 
 import suite
@@ -136,6 +145,144 @@ def calibrate_cpu_clock(cg: Cgroups) -> dict:
         return {"factor": statistics.median(samples), "samples": samples}
     finally:
         docker("rm", "-f", "kvb-burn", check=False)
+
+
+HOST_VM_PROCESSES = ("vmmemwsl", "vmmem")
+"""Host process names of the VM that runs the containers (Docker Desktop on
+Windows: WSL2 → vmmemWSL, Hyper-V backend → vmmem)."""
+
+HOST_BUSY_WARN = 2.0
+"""Logical CPUs of outside load above which the host counts as busy (a quiet
+desktop idles well below 1). run.py warns at startup; the analysis flags such
+runs and adds a sensitivity check restricted to quiet runs, but does not
+exclude busy runs outright. Decided before the 2026-09-26 monitored run,
+which had to run on a shared machine: a hard cut there would have dropped
+nearly every run."""
+
+
+class HostLoad:
+    """Samples, once per period, how much host CPU is used *outside* the VM
+    that runs the containers.
+
+    Why it exists: cgroups only account for the containers, so on a shared
+    workstation every other program competing for the same physical cores
+    shows up as unexplained noise. On 2026-09-26 this testbed had about 23 of
+    its 32 logical CPUs busy with unrelated work (optimization jobs, a game,
+    an emulator, a runaway process), which produced 3× swings between
+    identical runs. Recording the external load of every run makes such
+    contamination visible, and lets the analysis flag the affected runs.
+
+    It works where psutil is importable and the VM is a host process psutil
+    can read (Docker Desktop on Windows). Elsewhere it is disabled and
+    reports None — it never guesses. Linux hosts running containers
+    natively would need cgroup-aware accounting instead; not implemented.
+
+    Thread-safety: one daemon thread appends samples; readers copy them
+    under the lock, because iterating a deque that is being appended to
+    raises RuntimeError.
+    """
+
+    def __init__(self, period: float = 1.0) -> None:
+        """Finds the VM process; does not start sampling.
+
+        Args:
+            period: seconds between samples.
+        """
+        self.period = period
+        self.samples: deque[tuple[float, float, float]] = deque(maxlen=20_000)
+        self.lock = threading.Lock()
+        self.psutil = None
+        self.vm: list = []
+        try:
+            import psutil  # optional dependency: absent → monitoring disabled
+
+            self.vm = [p for p in psutil.process_iter(["name"])
+                       if (p.info["name"] or "").lower() in HOST_VM_PROCESSES]
+            if self.vm:
+                self.psutil = psutil
+                self.logical_cpus = psutil.cpu_count()
+        except Exception:  # psutil missing or process table unreadable
+            self.psutil = None
+
+    @property
+    def enabled(self) -> bool:
+        """True when samples are being (or can be) taken."""
+        return self.psutil is not None
+
+    def _sample(self) -> tuple[float, float, float] | None:
+        """One cumulative reading.
+
+        Returns:
+            (monotonic seconds, host busy CPU-seconds, VM CPU-seconds), or
+            None if the VM process vanished (Docker Desktop restarted).
+        """
+        try:
+            t = self.psutil.cpu_times()
+            # On Windows psutil's "system" already contains interrupt and DPC
+            # time; adding those fields again would double count them.
+            vm = 0.0
+            for p in self.vm:
+                ct = p.cpu_times()
+                vm += ct.user + ct.system
+            return time.monotonic(), t.user + t.system, vm
+        except Exception:
+            return None
+
+    def _loop(self) -> None:
+        """Sampler thread body: append a reading every period, forever."""
+        while True:
+            s = self._sample()
+            if s is not None:
+                with self.lock:
+                    self.samples.append(s)
+            time.sleep(self.period)
+
+    def start(self) -> None:
+        """Starts the daemon sampler thread (no-op when disabled)."""
+        if self.enabled:
+            threading.Thread(target=self._loop, name="host-load", daemon=True).start()
+
+    def external(self, t0: float, t1: float) -> dict | None:
+        """External CPU load between two monotonic instants.
+
+        Args:
+            t0: window start (time.monotonic()).
+            t1: window end.
+
+        Returns:
+            {"mean": cores, "max": cores, "intervals": n} where one core = one
+            logical CPU fully busy outside the VM; None when disabled or when
+            fewer than two samples fall inside the window.
+        """
+        if not self.enabled:
+            return None
+        with self.lock:
+            pts = [s for s in self.samples if t0 <= s[0] <= t1]
+        loads = [((b[1] - a[1]) - (b[2] - a[2])) / (b[0] - a[0])
+                 for a, b in zip(pts, pts[1:]) if b[0] > a[0]]
+        if not loads:
+            return None
+        span = pts[-1][0] - pts[0][0]
+        mean = ((pts[-1][1] - pts[0][1]) - (pts[-1][2] - pts[0][2])) / span
+        return {"mean": round(mean, 2), "max": round(max(loads), 2), "intervals": len(loads)}
+
+
+HOST: HostLoad | None = None
+"""Process-wide host-load sampler, created and started by main() (not at
+import, so importing this module for its helpers has no side effects)."""
+
+
+def host_load(t0: float, t1: float) -> dict | None:
+    """External host load over a window, if monitoring is active.
+
+    Args:
+        t0: window start (time.monotonic()).
+        t1: window end.
+
+    Returns:
+        HostLoad.external()'s result, or None without a sampler.
+    """
+    return HOST.external(t0, t1) if HOST else None
 
 
 def image_identity(image: str) -> dict:
@@ -299,7 +446,10 @@ def run_kvbench_cell(cell: dict, cg: Cgroups) -> dict:
                                     "--label", cell["run_id"]]
         budget = 120 + cell["warmup"] + cell["duration"] + wl.keys / 20_000
         result = kvbench(system, cid, cg, args, timeout=budget)
-        out = {"kvbench": result}
+        # kvbench's measured window is its last `duration` seconds; docker
+        # adds up to ~1 s of teardown after it, hence the 1.5 s allowance.
+        t_end = time.monotonic()
+        out = {"kvbench": result, "host_load": host_load(t_end - cell["duration"] - 1.5, t_end)}
         if not kvbench_valid(result):
             out["server_log"] = server_log_tail()
         return out
@@ -553,9 +703,27 @@ def main() -> int:
     raw = out / "raw.jsonl"
     cg = Cgroups()
     docker("rm", "-f", SERVER, check=False)
+    global HOST
+    HOST = HostLoad()
+    HOST.start()
+    # Baseline before any load of ours: everything the host does on its own.
+    t_idle = time.monotonic()
+    time.sleep(6 if HOST.enabled else 0)
+    idle = host_load(t_idle, time.monotonic())
+    if idle is None:
+        print("host load: not measurable here (needs psutil and Docker Desktop's VM process)", flush=True)
+    else:
+        print(f"host load outside the container VM: {idle['mean']:.1f} of {HOST.logical_cpus} logical CPUs",
+              flush=True)
+        if idle["mean"] > HOST_BUSY_WARN:
+            print(f"  WARNING: other programs are using {idle['mean']:.1f} logical CPUs; they compete with "
+                  "the servers and the client, and results will carry that noise. Close them for a "
+                  "publishable run.", flush=True)
     if not (out / "environment.json").exists():
         print("recording environment and calibrating the CPU clock ...", flush=True)
         env = environment(args.profile, experiments, cg)
+        env["host_load_idle"] = idle
+        env["host_logical_cpus"] = HOST.logical_cpus if HOST.enabled else None
         (out / "environment.json").write_text(json.dumps(env, indent=2), encoding="utf-8")
         print(f"  cpu clock factor {env['cpu_clock']['factor']:.4f}", flush=True)
 
@@ -575,6 +743,7 @@ def main() -> int:
             t_exp = time.time()
             for i, cell in enumerate(cells, 1):
                 t0 = time.time()
+                t0_mono = time.monotonic()
                 rec = {k: v for k, v in cell.items() if k != "workload_obj"}
                 rec["started"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
                 try:
@@ -589,6 +758,9 @@ def main() -> int:
                     rec["error"] = f"{type(e).__name__}: {e}"
                     docker("rm", "-f", SERVER, check=False)
                 rec["seconds"] = round(time.time() - t0, 1)
+                # Whole run (server start to removal); kvbench cells also carry
+                # "host_load" for just the measured window.
+                rec["host_load_run"] = host_load(t0_mono, time.monotonic())
                 sink.write(json.dumps(rec) + "\n")
                 sink.flush()
                 records.append(rec)
