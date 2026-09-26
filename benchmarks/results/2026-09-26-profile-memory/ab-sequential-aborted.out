@@ -1,0 +1,12 @@
+block 1 blocking:100 A:    1,929,028 ops/s    543 ns/op
+block 1 blocking:100 B:    1,878,993 ops/s    484 ns/op
+block 1 busy:100     A:    3,085,651 ops/s    340 ns/op
+block 1 busy:100     B:    3,050,933 ops/s    298 ns/op
+block 1 blocking:16  A:    1,996,136 ops/s    526 ns/op
+block 1 blocking:16  B:    1,912,774 ops/s    474 ns/op
+block 2 blocking:100 B:    1,872,843 ops/s    560 ns/op
+block 2 blocking:100 A:    1,707,885 ops/s    533 ns/op
+block 2 busy:100     B:    2,835,423 ops/s    369 ns/op
+block 2 busy:100     A:    2,748,772 ops/s    331 ns/op
+block 2 blocking:16  B:    1,689,545 ops/s    621 ns/op
+block 2 blocking:16  A:    1,686,558 ops/s    538 ns/op

@@ -1,6 +1,13 @@
 # ADR 0007: A native HTTP/2 engine in assembly (h2n.asm), nghttp2 kept as the alternative
 
-- **Status:** accepted
+- **Status:** accepted; amended by
+  [ADR 0008](0008-remove-nghttp2-from-the-server.md). nghttp2 is no longer
+  "kept as the alternative": the server links no HTTP/2 library, and
+  `KVNODE_H2_ENGINE` is gone. So is everything below that names the
+  nghttp2 engine as selectable, the engine-neutral `session` parameter, or
+  the n-phases (`make itest` phases 1-7 now all run this engine; the h2spec
+  baseline is `h2spec-known-failures.txt`, empty). The engine itself, its
+  verification and the measurements are unchanged.
 - **Date:** 2026-09-26
 - **Amends:** [ADR 0002](0002-http2-library-nghttp2.md) (nghttp2 becomes one of two engines)
 

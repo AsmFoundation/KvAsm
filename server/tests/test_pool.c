@@ -1,6 +1,8 @@
 /*
  * test_pool.c — the per-worker allocator (pool.asm) must honour malloc's
- * contract, because nghttp2 uses it for every allocation of a session:
+ * contract, because the HTTP/2 engine and the gRPC layer use it for every
+ * per-connection and per-stream allocation (streams, request bodies, stream
+ * maps, HPACK rings):
  *   - every pointer is 16-byte aligned;
  *   - blocks never overlap: a randomized model check fills every live block
  *     with its own pattern through thousands of malloc/calloc/realloc/free

@@ -1,6 +1,9 @@
 # ADR 0003: Thread-per-core workers over one shared lock-free-read store
 
-- **Status:** accepted
+- **Status:** accepted. The "nghttp2 session" below became the native
+  engine's per-connection state (`h2n.asm`, embedded in `Conn`; ADR 0007,
+  ADR 0008). It has the same single-thread ownership, so nothing else
+  changes.
 - **Date:** 2026-09-26
 
 ## Context

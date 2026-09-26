@@ -1,7 +1,8 @@
 # KvNode
 
 A gRPC key-value server written in **x86-64 assembly**, shipped as a
-**1.7 MB `FROM scratch` container**.
+**1.6 MB `FROM scratch` container** (one 1.1 MB static binary; glibc is the
+only library linked in).
 
 - **O(1) everything.** A bucketized cuckoo hash: a lookup touches at most
   two cache lines. Chaining and a branchless binary trie were measured
@@ -15,10 +16,11 @@ A gRPC key-value server written in **x86-64 assembly**, shipped as a
   client-side ([ADR 0004](docs/adr/0004-exact-keys-and-client-compaction.md)).
 - **Its own HTTP/2, in assembly.** A server-side HTTP/2 engine with an HPACK
   decoder, differential-tested against nghttp2 and fuzzed. It passes h2spec
-  **146/146** and doubles the requests a core can serve
-  ([ADR 0007](docs/adr/0007-native-http2-engine.md)). nghttp2 1.70
-  (h2spec 138/146, [ADR 0002](docs/adr/0002-http2-library-nghttp2.md))
-  stays selectable with `KVNODE_H2_ENGINE=nghttp2`.
+  **146/146** and doubled the requests a core can serve
+  ([ADR 0007](docs/adr/0007-native-http2-engine.md)). nghttp2, which it
+  replaced, is out of the server
+  ([ADR 0008](docs/adr/0008-remove-nghttp2-from-the-server.md)); it
+  survives only as the independent client the tests and benchmarks use.
 - **Two data sources:** clients write via gRPC, and a verified snapshot
   file loads at startup.
 - **Production behavior:** standard gRPC health service, graceful drain on
@@ -66,11 +68,28 @@ agreeing):
 | KvNode ÷ X | — | **1.19×** | **1.22×** |
 | server CPU per GET | **665 ns** | 788 ns | 813 ns |
 
-The same image on nghttp2 does 744k: the native engine is 2.03× faster on
-1 core and 2–3× at 2 and 4 cores
+The same image on nghttp2 (selectable then, removed since) did 744k: the
+native engine is 2.03× faster on 1 core and 2–3× at 2 and 4 cores
 ([results](benchmarks/results/2026-09-26-native-final/README.md)). That
 session ran on a busier host than the table below, which is why Redis's
 absolute numbers differ between the two.
+
+**Where one core's time goes** (kernel-inclusive profile,
+[results](benchmarks/results/2026-09-26-profile-memory/README.md)):
+
+- **Most of it is the kernel.** Over loopback, about half of a loaded core
+  is the server's `sendto` waking the co-located client, a cross-vCPU IPI
+  under WSL2.
+- **With a busy-polling client** that cost disappears, and one core served
+  **2.62M GET/s** (382 ns per GET): 177 ns kernel, 205 ns KvNode. The store
+  lookup is the biggest part of that, mostly memory stalls.
+- **SIMD** is already where the data is parallel: SSE2 tag matching,
+  vector copies and 16-byte header stores. What remains is memory latency
+  and the kernel.
+
+**Memory:** 16 MiB table at the default capacity, 162 bytes per key with
+100-byte values (178 with the table, Redis 174), about 9 KiB per idle
+connection ([details](docs/OPERATIONS.md#memory)).
 
 **Standard session** (all six servers; KvNode was still on nghttp2, before
 the native engine):
@@ -104,7 +123,7 @@ Store alone, single thread, 4M keys: 279 ns per dependent lookup, p99.9
 | [`client/dotnet/`](client/dotnet) | .NET 8/10 client and snapshot writer, with unit and container tests |
 | [`benchmarks/`](benchmarks/README.md) | comparison with other key-value stores: the kvbench client, the suite, methodology, committed results |
 | [`docs/`](docs) | [architecture](docs/ARCHITECTURE.md), [protocol and client contract](docs/PROTOCOL.md), [operations](docs/OPERATIONS.md), [decision records](docs/adr) |
-| [`Dockerfile`](Dockerfile) | toolchain (pinned and verified nghttp2 + h2spec) → build + all tests → scratch runtime |
+| [`Dockerfile`](Dockerfile) | toolchain (pinned and verified nghttp2 for the test clients, and h2spec) → build + all tests → scratch runtime |
 
 ## Development
 

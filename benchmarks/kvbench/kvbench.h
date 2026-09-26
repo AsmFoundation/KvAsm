@@ -138,6 +138,18 @@ typedef struct {
   const char *label;
   double wait_ready;
   double interval;   /**< timeline sampling period in seconds */
+  /**
+   * 1 = client threads never sleep: epoll_pwait2 with a zero timeout, so a
+   * server's send finds no sleeping waiter and pays no cross-CPU wakeup.
+   * Diagnostic only (it burns every client CPU): on one machine over
+   * loopback the server's sendto runs the client's TCP receive and wakes the
+   * client thread from the server's own CPU — measured at about half of a
+   * KvNode core under WSL2, where that wakeup is a VM-exiting IPI. A remote
+   * client is woken by its own NIC instead, so busy-polling approximates the
+   * server's cost in production. Never mix busy-poll and blocking runs in
+   * one comparison.
+   */
+  int busy_poll;
 } Options;
 
 extern Options g_opt;

@@ -316,7 +316,12 @@ static void *worker_main(void *arg) {
     if (w->preload && !active) break;
 
     struct timespec timeout = {.tv_sec = 0, .tv_nsec = 100 * 1000000};
-    if (open_loop) {
+    if (g_opt.busy_poll) {
+      /* Never sleep (see Options.busy_poll): a zero timeout returns at once,
+       * so this thread is never on the socket's wait queue when the server
+       * sends, and the server's softirq finds nobody to wake. */
+      timeout.tv_nsec = 0;
+    } else if (open_loop) {
       uint64_t t = now_ns();
       uint64_t wait = next_due > t ? next_due - t : 0;
       if (wait < 100000000ull) timeout.tv_nsec = (long)wait;

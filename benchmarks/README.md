@@ -5,12 +5,44 @@ Valkey, Dragonfly, Garnet and Memcached), using one client, one placement
 and one statistical method for all of them. The rules, and the reasons
 behind each, are in [METHODOLOGY.md](METHODOLOGY.md).
 
+## One core, profiled: where the time and the memory go (2026-09-26)
+
+Since [ADR 0008](../docs/adr/0008-remove-nghttp2-from-the-server.md)
+KvNode's own HTTP/2 engine is its only one: nghttp2 is out of the server,
+and remains only as kvbench's gRPC client. A kernel-inclusive `perf`
+profile of one worker under E1's load (a privileged helper container, so
+kernel symbols resolve), the memory model, and the A/B of the one change
+the profile led to:
+[README](results/2026-09-26-profile-memory/README.md).
+
+- **Half of a loaded core is the client's wakeup, not KvNode.** Over
+  loopback, the server's `sendto` runs the client's TCP receive in softirq
+  on the server's CPU and wakes the client thread sleeping in
+  `epoll_wait`. Under WSL2 that wakeup is a cross-vCPU IPI: 48% of the
+  core (`__wake_up_common_lock`, call chain verified), ~280 of 582 ns per
+  GET.
+- **The server's own cost.** With a busy-polling client (`kvbench
+  --busy-poll`: nothing sleeps, so there is nothing to wake), one core
+  served 2.62M GET/s, 382 ns per GET: 46% kernel (TCP/IP 86 ns) and 205 ns
+  of user time. Of that, store 93 ns (mostly TLB/DRAM stalls in the two
+  prefetch stages; SipHash 19 ns), HTTP/2 56, gRPC and protobuf 21, glibc
+  copies 20, the event loop 10, the pool 8.
+- **The fix it found:** a 100-byte value makes a 140-byte record, which
+  always spans three cache lines, and the batch prefetched two. The value
+  copy then waited on DRAM (`memmove` 4.2% of the core); prefetching the
+  third line brought it to 1.05%.
+- **Memory:** 0.7 MiB baseline, table 16 MiB at the default capacity
+  (resident from startup), 162 bytes per 100-byte-value key, ~9 KiB per
+  idle connection ([OPERATIONS.md](../docs/OPERATIONS.md#memory)).
+
 ## Native HTTP/2 engine: 1 core now beats Redis and Valkey (2026-09-26)
 
 KvNode's own HTTP/2 engine (`server/src/h2n.asm`,
 [ADR 0007](../docs/adr/0007-native-http2-engine.md)) replaced nghttp2 as
-the default. N1–N3 compare it with nghttp2 in the same image, and with Redis
-and Valkey, with the same method as below. Final session:
+the default. N1–N3 compared it with nghttp2 in the same image, and with
+Redis and Valkey, with the same method as below (ADR 0008 later removed
+nghttp2 from the server; N1 and N3 now compare KvNode with Redis and
+Valkey only). Final session:
 [REPORT.md](results/2026-09-26-native-final/REPORT.md)
 ([README](results/2026-09-26-native-final/README.md)); the two earlier
 sessions record the engine's first version and the header-block cache.
@@ -222,7 +254,15 @@ kvbench also works on its own, against any server:
 kvbench --protocol resp|memcache|grpc --port P [--threads 16] [--connections 64]
         [--depth 16] [--keys 1000000] [--value-size 100] [--read-ratio 1.0]
         [--zipf 0.99] [--rate OPS] [--load] [--warmup 5] [--duration 10]
+        [--busy-poll]
 ```
+
+`--busy-poll` is a diagnostic. Client threads never sleep, so a server's
+send finds no one to wake. On one machine that removes the cost the server
+otherwise pays for the client's wakeup (about half a core under WSL2), and
+the server's own cost per request shows. It burns every client CPU, and
+its JSON says `"busy_poll":true`. Never mix busy-poll and blocking runs in
+one comparison; the standard profile never uses it.
 
 It prints one JSON document and exits with 0 when every response was
 correct, 1 when any was wrong, missing or an error, and 2 on usage errors.
@@ -240,9 +280,12 @@ correct, 1 when any was wrong, missing or an error, and 2 on usage errors.
 | E6 | Value size: 1 KiB and 16 KiB values, about 1 GiB of data, 4 cores | 6 × 2 × 3 |
 | E7 | Concurrency sweep: 1, 16, 64, 256 and 1,024 requests in flight, 4 cores | 6 × 5 × 3 |
 | E8 | Is kvbench as good a client as redis-benchmark, memtier_benchmark and h2load? | 7 tool configurations × 3 |
-| N1 | KvNode's native HTTP/2 engine vs nghttp2, Redis and Valkey on 1 core (E1's workload) | 4 × 1 × 6 |
-| N2 | The two KvNode engines at 2 and 4 cores | 2 × 2 × 6 |
-| N3 | Per-request floor on 1 core: native vs nghttp2 health check, Redis/Valkey `PING` | 4 × 1 × 6 |
+| N1 | One core: KvNode vs Redis and Valkey (E1's workload), the headline re-checked on its own | 3 × 1 × 6 |
+| N3 | Per-request floor on 1 core: gRPC health check vs Redis/Valkey `PING` | 3 × 1 × 6 |
+
+(Until ADR 0008, N1 and N3 also ran KvNode's nghttp2 engine, and N2
+compared the two engines at 2 and 4 cores. Those sessions stay in
+`results/2026-09-26-native*`, and `analyze.py` still renders them.)
 | S1 | Stability: E1's 4-core cell ten more times, at the end of the session | 6 × 1 × 10 |
 
 Default workload: 100% GET, 1,000,000 keys (all preloaded), 100-byte

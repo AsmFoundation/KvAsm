@@ -1,6 +1,10 @@
 # ADR 0005: Batched GETs with two-stage prefetch, and a per-worker allocator
 
-- **Status:** accepted
+- **Status:** accepted; amended twice (see [Amendments](#amendments)):
+  - pass 1 now prefetches three record lines;
+  - the stream-lookup cache (§3) left with nghttp2 (ADR 0008).
+  
+  The nghttp2 context below is history.
 - **Date:** 2026-09-26
 
 ## Context
@@ -162,3 +166,37 @@ Medians of 8 runs. "Paired" is the median over repetitions of each build
 - All existing layers still pass: unit, bake-off, end to end including
   pipelining, cancellation, torn-value detection and h2spec at its
   baseline. The Docker build runs all of them.
+
+## Amendments
+
+### Three record lines in pass 1 (2026-09-26)
+
+A kernel-inclusive profile of one worker explained why glibc `memmove` still
+took 4.2% of the core with a busy-polling client
+(`benchmarks/results/2026-09-26-profile-memory`).
+
+- **The cause:** a record is a 24-byte header, the key padded to 8, then
+  the value, and it starts on any 16-byte boundary. With a 16-byte key and
+  the benchmark's 100-byte value it is 140 bytes, so it always spans three
+  cache lines. Pass 1 prefetched two, and the value copy then waited on
+  DRAM for the third.
+- **The change:** `kv_cuckoo_prefetch_records` now prefetches
+  `[rec + 128]` as well. That covers a whole record of up to 144 bytes at
+  every alignment. Result: `memmove` fell to 1.05% of the core.
+- **Throughput, measured concurrently:** A and B at the same time on two
+  pinned vCPUs, swapped every block, 6 blocks. A sequential design showed a
+  position effect larger than the effect itself; `ab-sequential-aborted.out`
+  records it. Results, B/A:
+  - blocking client, 100-byte values: 1.001× [0.992–1.010];
+  - busy-polling client: 1.025× [0.958–1.071], 4 of 6 blocks;
+  - 16-byte values, where the third line is outside the record: 0.993×
+    [0.968–1.015].
+- **Verdict:** within noise everywhere. It is kept for the stall it
+  removes (🧪 in the cookbook), not for a proven gain.
+
+### The stream-lookup cache is gone (ADR 0008)
+
+§3's one-entry cache served nghttp2's id-based callbacks. It was
+measured neutral, and it left the server with nghttp2. The native engine
+resolves ids through its own stream map, in one load for consecutive
+client ids.

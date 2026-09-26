@@ -1,38 +1,37 @@
 ; =============================================================================
-; grpc.asm — gRPC (HTTP/2) request handling on top of nghttp2 callbacks.
+; grpc.asm — gRPC request handling: validation, routing, store operations and
+; the prefetched GET batch, on top of KvNode's HTTP/2 engine (h2n.asm).
 ;
-; nghttp2 does all HTTP/2 framing, HPACK, flow control and protocol hardening;
-; this module turns its callbacks into KvNode calls:
-;   on_begin_headers   allocate a Stream for a request
-;   on_header          route (:path), check :method / content-type / encoding
-;   on_data_chunk_recv buffer the request body within per-stream and
-;                      per-connection budgets
-;   on_frame_recv      END_STREAM => validate framing, decode protobuf, run
-;                      the store operation, submit the response
-;   on_stream_close    free the Stream
+; h2n.asm does all HTTP/2 framing, HPACK, flow control and protocol
+; hardening, and resolves the request header fields into Stream state while
+; it decodes them (hpack.asm "meanings"): the route from :path, ST_POST from
+; :method, ST_CT_OK from content-type, ST_ENCODED from grpc-encoding. This
+; module does the rest:
+;   kv_grpc_stream_append   buffer a request body within per-stream and
+;                           per-connection budgets
+;   kv_grpc_dispatch        END_STREAM => validate framing, decode protobuf,
+;                           run the store operation and answer it (a GET is
+;                           queued in the connection's batch instead)
+;   kv_grpc_run_batch       answer the GETs one read queued, as one
+;                           software-pipelined batch
+;   kv_grpc_stream_release  unlink and free one Stream
+;   kv_grpc_free_streams    free every Stream of a connection (teardown)
 ;
 ; Routes: /kvnode.v1.KvNode/{Get,Put,Delete} (proto/kvnode/v1/kvnode.proto)
 ; and /grpc.health.v1.Health/Check (the standard gRPC health protocol:
 ; SERVING, NOT_SERVING while draining). Anything else is UNIMPLEMENTED.
 ;
 ; Responses: success = HEADERS(:status 200, content-type) + DATA(message) +
-; trailer HEADERS(grpc-status 0); gRPC errors = one "Trailers-Only" HEADERS
-; frame with grpc-status/grpc-message (END_STREAM); non-gRPC requests get a
-; plain HTTP 405/415 with a short text body. Every request runs to
-; completion inside the callback (store operations are sub-microsecond), so
-; there is no asynchronous state to manage.
+; trailer HEADERS(grpc-status 0), framed by h2n from precomputed header
+; blocks; gRPC errors = one "Trailers-Only" HEADERS frame with
+; grpc-status/grpc-message (END_STREAM); non-gRPC requests get a plain HTTP
+; 405/415 with a short text body. Every request runs to completion inside
+; dispatch or the batch (store operations are sub-microsecond), so there is
+; no asynchronous state to manage.
 ;
-; Threading: all functions run on the worker thread that owns the connection
-; (user_data = Conn*). The worker is QSBR-online while nghttp2 callbacks run,
-; so records returned by kv_store_get stay valid while their value is copied.
-;
-; Engine neutrality (ADR 0007): the request logic — body buffering and
-; budgets, validation, routing, store operations, the GET batch — also
-; serves the native HTTP/2 engine (h2n.asm). It calls kv_grpc_dispatch,
-; kv_grpc_stream_append and kv_grpc_stream_release; dispatch and the batch
-; see session = 0 for such connections and answer through h2n's reply
-; functions instead of nghttp2_submit_*. One implementation of the gRPC
-; rules, two transports.
+; Threading: all functions run on the worker thread that owns the
+; connection. The worker is QSBR-online meanwhile, so records returned by
+; kv_store_get stay valid while their value is copied.
 ; =============================================================================
 
 default rel
@@ -40,7 +39,6 @@ bits 64
 
 %include "kvnode.inc"
 %include "server.inc"
-%include "nghttp2.inc"
 
 %define GRPC_OK                 0
 %define GRPC_INVALID_ARGUMENT   3
@@ -53,7 +51,6 @@ bits 64
 
 extern kv_pool_malloc
 extern kv_pool_free
-extern kv_pool_calloc
 extern kv_pool_realloc
 extern memcpy
 extern kv_keyeq
@@ -65,19 +62,7 @@ extern kv_store_prefetch
 extern kv_store_prefetch_records
 extern kv_hcache_get
 extern kv_pb_decode_kv
-extern kv_pb_varint_len
 extern kv_pb_write_varint
-extern nghttp2_session_callbacks_new
-extern nghttp2_session_callbacks_set_on_begin_headers_callback
-extern nghttp2_session_callbacks_set_on_header_callback
-extern nghttp2_session_callbacks_set_on_data_chunk_recv_callback
-extern nghttp2_session_callbacks_set_on_frame_recv_callback
-extern nghttp2_session_callbacks_set_on_stream_close_callback
-extern nghttp2_session_get_stream_user_data
-extern nghttp2_session_set_stream_user_data
-extern nghttp2_submit_response2
-extern nghttp2_submit_trailer
-extern nghttp2_submit_rst_stream
 extern kv_h2n_reply_parts
 extern kv_h2n_reply_buf
 extern kv_h2n_reply_static
@@ -99,12 +84,16 @@ endstruc
 %{1}_len equ $ - %1
 %endmacro
 
-; One nghttp2_nv (40 bytes) referring to two CSTR labels; NO_COPY because the
-; strings live in .rodata for the whole process.
+; One HdrField (server.inc) referring to two CSTR labels. The strings live in
+; .rodata for the whole process, so h2n encodes straight from them. Built
+; with istruc so a layout change in server.inc cannot desynchronize it.
 %macro NV 2
-    dq %1, %2, %{1}_len, %{2}_len
-    db NGHTTP2_NV_FLAG_NO_COPY_NAME | NGHTTP2_NV_FLAG_NO_COPY_VALUE
-    times 7 db 0
+    istruc HdrField
+        at HdrField.name,     dq %1
+        at HdrField.value,    dq %2
+        at HdrField.namelen,  dq %{1}_len
+        at HdrField.valuelen, dq %{2}_len
+    iend
 %endmacro
 
 section .rodata
@@ -124,7 +113,6 @@ CSTR b_405,         "405 method not allowed: KvNode speaks gRPC, send POST", 10
 CSTR b_415,         "415 unsupported media type: send content-type application/grpc", 10
 CSTR s_gstatus,     "grpc-status"
 CSTR s_gmessage,    "grpc-message"
-CSTR s_c0,          "0"
 CSTR s_c3,          "3"
 CSTR s_c5,          "5"
 CSTR s_c8,          "8"
@@ -144,28 +132,16 @@ CSTR s_m_memory,    "store memory limit reached"
 CSTR s_m_oom,       "server out of memory"
 CSTR s_m_noservice, "unknown service"
 
-CSTR h_method,      ":method"
-CSTR h_path,        ":path"
-CSTR h_encoding,    "grpc-encoding"
 CSTR v_post,        "POST"
 CSTR v_identity,    "identity"
-CSTR v_prefix,      "/kvnode.v1.KvNode/"
-CSTR v_get,         "Get"
-CSTR v_put,         "Put"
-CSTR v_delete,      "Delete"
-; Standard gRPC health checking protocol (grpc/health/v1/health.proto), as
-; called by Kubernetes gRPC probes and gRPC-aware load balancers.
-CSTR v_health,      "/grpc.health.v1.Health/Check"
+; The one service name the health check reports on besides "" (whole server).
 CSTR v_service,     "kvnode.v1.KvNode"
 
-; nghttp2_nv arrays carry absolute string pointers: PIE-legal only through
+; HdrField arrays carry absolute string pointers: PIE-legal only through
 ; load-time relocations, hence .data.rel.ro (relocated, then read-only via
 ; RELRO) rather than .rodata (would need a text relocation; -z text rejects
 ; it) or .data (would stay writable for the process lifetime).
 section .data.rel.ro progbits alloc noexec write align=8
-nv_ok:              NV s_status, s_200
-                    NV s_ctype, s_ctype_grpc
-nv_trailer_ok:      NV s_gstatus, s_c0
 ; RFC 9110 §15.5.6: a 405 MUST carry Allow. §15.5.16: a 415 can name the
 ; accepted media type in Accept. Both carry a text body (static, ST_STATIC_RESP).
 nv_405:             NV s_status, s_405
@@ -201,7 +177,6 @@ TRAILERS_ONLY nv_e_noservice, s_c5,  s_m_noservice
 
 section .text
 
-global kv_grpc_callbacks_new
 global kv_grpc_free_streams
 global kv_grpc_run_batch
 global kv_grpc_dispatch
@@ -209,50 +184,16 @@ global kv_grpc_stream_append
 global kv_grpc_stream_release
 
 ; =============================================================================
-; kv_grpc_callbacks_new — the callback table shared by every session.
-; @returns rax = nghttp2_session_callbacks*, or 0 on allocation failure.
-; @remarks Built once by main before workers start; nghttp2 copies it into
-;          each session, so sharing it read-only across threads is safe.
-; =============================================================================
-kv_grpc_callbacks_new:
-    push    rbx
-    sub     rsp, 16
-    lea     rdi, [rsp]
-    call    nghttp2_session_callbacks_new wrt ..plt
-    test    eax, eax
-    jnz     .fail
-    mov     rbx, [rsp]
-    mov     rdi, rbx
-    lea     rsi, [on_begin_headers]
-    call    nghttp2_session_callbacks_set_on_begin_headers_callback wrt ..plt
-    mov     rdi, rbx
-    lea     rsi, [on_header]
-    call    nghttp2_session_callbacks_set_on_header_callback wrt ..plt
-    mov     rdi, rbx
-    lea     rsi, [on_data_chunk_recv]
-    call    nghttp2_session_callbacks_set_on_data_chunk_recv_callback wrt ..plt
-    mov     rdi, rbx
-    lea     rsi, [on_frame_recv]
-    call    nghttp2_session_callbacks_set_on_frame_recv_callback wrt ..plt
-    mov     rdi, rbx
-    lea     rsi, [on_stream_close]
-    call    nghttp2_session_callbacks_set_on_stream_close_callback wrt ..plt
-    mov     rax, rbx
-    jmp     .out
-.fail:
-    xor     eax, eax
-.out:
-    add     rsp, 16
-    pop     rbx
-    ret
-
-; =============================================================================
 ; kv_grpc_free_streams — free every Stream still attached to a connection.
 ; @param  rdi  Conn*
 ; @returns nothing.
-; @remarks Call after nghttp2_session_del: nghttp2 frees its own stream
-;          objects without invoking on_stream_close, so streams alive at that
-;          moment would otherwise leak.
+; @remarks Called at connection teardown (linger and destroy), after
+;          kv_h2n_close: the engine releases its own state (stream map, pend
+;          list, HPACK ring) but never the Streams, which live on
+;          Conn.streams and would otherwise leak. Idempotent: the list, the
+;          buffered count and the GET batch are cleared, so a lingering
+;          connection that comes through conn_destroy later frees nothing
+;          twice.
 ; =============================================================================
 kv_grpc_free_streams:
     push    rbx
@@ -271,44 +212,10 @@ kv_grpc_free_streams:
     xor     eax, eax
     mov     [r12 + Conn.streams], rax
     mov     [r12 + Conn.buffered], rax
-    mov     [r12 + Conn.cur_stream], rax  ; the cache must never outlive its stream
-    mov     [r12 + Conn.batch_head], rax  ; nor may a batch of freed streams
+    mov     [r12 + Conn.batch_head], rax  ; a batch of freed streams must not survive
     mov     [r12 + Conn.batch_tail], rax
     add     rsp, 8
     pop     r12
-    pop     rbx
-    ret
-
-; =============================================================================
-; stream_lookup — Stream* of a stream id, answered from the connection's
-; one-entry cache when possible. Internal.
-; @param  rdi  session   @param esi  stream id   @param rdx  Conn*
-; @returns rax = Stream*, or 0 when nghttp2 knows no user data for the id.
-;          Clobbers caller-saved registers.
-; @remarks Why: every header, DATA chunk and frame callback names its stream
-;          by id, and nghttp2 resolves ids through a hash map. A request's
-;          callbacks arrive back to back, so the last stream answers almost
-;          all of them. Safe because stream ids are never reused within a
-;          connection and the entry is cleared whenever its Stream is freed.
-; =============================================================================
-stream_lookup:
-    movsxd  rax, esi                    ; ids are stored sign-extended (all positive)
-    cmp     rax, [rdx + Conn.cur_id]
-    jne     .miss
-    mov     rax, [rdx + Conn.cur_stream]
-    test    rax, rax
-    jz      .miss
-    ret
-.miss:
-    push    rbx                         ; 1 push: rsp 16-aligned for the call
-    mov     rbx, rdx
-    call    nghttp2_session_get_stream_user_data wrt ..plt  ; rdi/esi still as passed
-    test    rax, rax
-    jz      .out
-    mov     [rbx + Conn.cur_stream], rax
-    mov     rcx, [rax + Stream.id]
-    mov     [rbx + Conn.cur_id], rcx
-.out:
     pop     rbx
     ret
 
@@ -317,7 +224,7 @@ stream_lookup:
 ; @param  rdi  Stream* (its conn and conn's worker must still be alive)
 ; @returns nothing.
 ; @remarks Buffers the Stream does not own are left alone: a borrowed request
-;          body (ST_BORROWED, native engine zero-copy) and a static response
+;          body (ST_BORROWED, h2n's zero-copy path) and a static response
 ;          body (ST_STATIC_RESP, .rodata).
 ; =============================================================================
 stream_free:
@@ -349,246 +256,6 @@ stream_free:
     ret
 
 ; =============================================================================
-; on_begin_headers — nghttp2_on_begin_headers_callback.
-; @param  rdi  session  @param rsi  const nghttp2_frame*  @param rdx  Conn*
-; @returns eax = 0, or NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE when out of
-;          memory (resets only this stream, the connection survives).
-; @remarks Only request HEADERS start a stream; trailers are ignored.
-; =============================================================================
-on_begin_headers:
-    cmp     byte [rsi + FRAME_HD_TYPE], NGHTTP2_HEADERS
-    jne     .ignore
-    cmp     dword [rsi + FRAME_HEADERS_CAT], NGHTTP2_HCAT_REQUEST
-    jne     .ignore
-    push    rbx
-    push    r12
-    push    r13
-    mov     rbx, rdi
-    mov     r12, rdx
-    movsxd  r13, dword [rsi + FRAME_HD_STREAM_ID]
-    mov     edi, 1
-    mov     esi, Stream_size
-    mov     rax, [r12 + Conn.worker]
-    lea     rdx, [rax + Worker.pool]
-    call    kv_pool_calloc
-    test    rax, rax
-    jz      .nomem
-    mov     [rax + Stream.conn], r12
-    mov     [rax + Stream.id], r13
-    mov     rcx, [r12 + Conn.streams]   ; push front of the connection's list
-    mov     [rax + Stream.next], rcx
-    test    rcx, rcx
-    jz      .linked
-    mov     [rcx + Stream.prev], rax
-.linked:
-    mov     [r12 + Conn.streams], rax
-    mov     [r12 + Conn.cur_stream], rax  ; its headers follow immediately
-    mov     [r12 + Conn.cur_id], r13
-    mov     rdi, rbx
-    mov     esi, r13d
-    mov     rdx, rax
-    call    nghttp2_session_set_stream_user_data wrt ..plt
-    xor     eax, eax
-    jmp     .out
-.nomem:
-    mov     eax, NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE
-.out:
-    pop     r13
-    pop     r12
-    pop     rbx
-    ret
-.ignore:
-    xor     eax, eax
-    ret
-
-; -----------------------------------------------------------------------------
-; MATCH label — ZF=1 iff (rdi=value/name, rsi=len) equals the CSTR `label`.
-; Uses kv_keyeq (clobbers rax, rcx, r8). Expects: r14 = ptr, r15 = len.
-; -----------------------------------------------------------------------------
-%macro MATCH 1
-    cmp     r15, %1_len
-    jne     %%no
-    mov     rdi, r14
-    lea     rsi, [%1]
-    mov     edx, %1_len
-    call    kv_keyeq wrt ..plt
-    test    eax, eax
-    jz      %%no
-    cmp     eax, eax                    ; ZF=1: equal
-    jmp     %%done
-%%no:
-    or      eax, 1                      ; ZF=0
-%%done:
-%endmacro
-
-; =============================================================================
-; on_header — nghttp2_on_header_callback: route and validate one header.
-; @param  rdi  session  @param rsi  frame  @param rdx  name  @param rcx  namelen
-; @param  r8   value    @param r9   valuelen  [rsp+8] flags  [rsp+16] Conn*
-; @returns eax = 0 always (problems are answered at END_STREAM, not by
-;          resetting the stream, so the client gets a proper gRPC status).
-; @remarks nghttp2 has already validated header syntax (lowercase names,
-;          pseudo-header rules, no connection-specific headers, te: trailers).
-; =============================================================================
-on_header:
-    cmp     byte [rsi + FRAME_HD_TYPE], NGHTTP2_HEADERS
-    jne     .ret0
-    cmp     dword [rsi + FRAME_HEADERS_CAT], NGHTTP2_HCAT_REQUEST
-    jne     .ret0
-    push    rbx
-    push    r12
-    push    r13
-    push    r14
-    push    r15
-    mov     r12, rdx                    ; name
-    mov     r13, rcx                    ; namelen
-    mov     r14, r8                     ; value
-    mov     r15, r9                     ; valuelen
-    mov     esi, [rsi + FRAME_HD_STREAM_ID]
-    mov     rdx, [rsp + 56]             ; Conn*: 8th argument, above 5 pushes + return
-    call    stream_lookup
-    test    rax, rax
-    jz      .out
-    mov     rbx, rax                    ; Stream*
-
-    ; Dispatch on the header name (swap in name/len for MATCH).
-    xchg    r12, r14
-    xchg    r13, r15                    ; r14/r15 = name, r12/r13 = value
-    MATCH   h_path
-    je      .path
-    MATCH   h_method
-    je      .method
-    MATCH   s_ctype
-    je      .ctype
-    MATCH   h_encoding
-    je      .encoding
-    jmp     .out
-
-.path:
-    mov     r14, r12                    ; value
-    mov     r15, r13
-    MATCH   v_health                    ; exact path, checked before the KvNode prefix
-    jne     .kv_path
-    mov     qword [rbx + Stream.method], M_HEALTH
-    jmp     .out
-.kv_path:
-    cmp     r15, v_prefix_len
-    jbe     .out
-    mov     rdi, r14
-    lea     rsi, [v_prefix]
-    mov     edx, v_prefix_len
-    call    kv_keyeq wrt ..plt
-    test    eax, eax
-    jz      .out
-    add     r14, v_prefix_len           ; method name after the service prefix
-    sub     r15, v_prefix_len
-    MATCH   v_get
-    jne     .try_put
-    mov     qword [rbx + Stream.method], M_GET
-    jmp     .out
-.try_put:
-    MATCH   v_put
-    jne     .try_delete
-    mov     qword [rbx + Stream.method], M_PUT
-    jmp     .out
-.try_delete:
-    MATCH   v_delete
-    jne     .out
-    mov     qword [rbx + Stream.method], M_DELETE
-    jmp     .out
-
-.method:
-    mov     r14, r12
-    mov     r15, r13
-    MATCH   v_post
-    jne     .out
-    or      qword [rbx + Stream.flags], ST_POST
-    jmp     .out
-
-.ctype:
-    ; "application/grpc" exactly, or followed by '+' (subtype) or ';' (params)
-    cmp     r13, s_ctype_grpc_len
-    jb      .out
-    mov     rdi, r12
-    lea     rsi, [s_ctype_grpc]
-    mov     edx, s_ctype_grpc_len
-    call    kv_keyeq wrt ..plt
-    test    eax, eax
-    jz      .out
-    cmp     r13, s_ctype_grpc_len
-    je      .ctype_ok
-    mov     al, [r12 + s_ctype_grpc_len]
-    cmp     al, '+'
-    je      .ctype_ok
-    cmp     al, ';'
-    jne     .out
-.ctype_ok:
-    or      qword [rbx + Stream.flags], ST_CT_OK
-    jmp     .out
-
-.encoding:
-    mov     r14, r12
-    mov     r15, r13
-    MATCH   v_identity
-    je      .out
-    or      qword [rbx + Stream.flags], ST_ENCODED
-.out:
-    pop     r15
-    pop     r14
-    pop     r13
-    pop     r12
-    pop     rbx
-.ret0:
-    xor     eax, eax
-    ret
-
-; =============================================================================
-; on_data_chunk_recv — nghttp2_on_data_chunk_recv_callback: buffer the body.
-; @param  rdi  session  @param sil  flags  @param edx  stream id
-; @param  rcx  data     @param r8   len    @param r9   Conn*
-; @returns eax = 0 (always: returning an error would kill the connection).
-; @remarks The buffering and its budgets are kv_grpc_stream_append's (shared
-;          with the native engine); a stream over the connection budget is
-;          reset here with ENHANCE_YOUR_CALM.
-; =============================================================================
-on_data_chunk_recv:
-    push    rbx
-    push    r12
-    push    r13
-    push    r14
-    push    r15                         ; 5 pushes: rsp 16-aligned for calls
-    mov     rbx, rdi                    ; session
-    mov     r12, rcx                    ; data
-    mov     r13, r8                     ; len
-    mov     r14, r9                     ; Conn*
-    mov     r15d, edx                   ; stream id
-    mov     esi, edx
-    mov     rdx, r14
-    call    stream_lookup
-    test    rax, rax
-    jz      .out
-    mov     rdi, r14
-    mov     rsi, rax
-    mov     rdx, r12
-    mov     rcx, r13
-    call    kv_grpc_stream_append
-    test    eax, eax
-    jz      .out
-    mov     rdi, rbx
-    mov     esi, NGHTTP2_FLAG_NONE
-    mov     edx, r15d
-    mov     ecx, NGHTTP2_ENHANCE_YOUR_CALM
-    call    nghttp2_submit_rst_stream wrt ..plt
-.out:
-    xor     eax, eax
-    pop     r15
-    pop     r14
-    pop     r13
-    pop     r12
-    pop     rbx
-    ret
-
-; =============================================================================
 ; kv_grpc_stream_append — buffer request body bytes of a stream.
 ;
 ; @param  rdi  Conn*   @param rsi  Stream*   @param rdx  data   @param rcx  len
@@ -601,7 +268,8 @@ on_data_chunk_recv:
 ;          bytes dropped); a connection whose buffered bytes would exceed
 ;          conn_budget gets that stream reset. Buffers grow geometrically,
 ;          capped at max_request; out of memory is treated as oversize.
-;          Shared by both HTTP/2 engines (on_data_chunk_recv, h2n.asm).
+;          h2n.asm calls this for every DATA payload it does not borrow
+;          (a body that arrives whole in one frame is dispatched in place).
 ; =============================================================================
 kv_grpc_stream_append:
     push    rbx
@@ -692,52 +360,14 @@ kv_grpc_stream_append:
     ret
 
 ; =============================================================================
-; on_stream_close — nghttp2_on_stream_close_callback.
-; @param  rdi  session  @param esi  stream id  @param edx  error code
-; @param  rcx  Conn*
-; @returns eax = 0.
-; =============================================================================
-on_stream_close:
-    push    rbx
-    push    r12
-    sub     rsp, 8
-    mov     r12, rcx
-    mov     rdx, rcx
-    call    stream_lookup
-    test    rax, rax
-    jz      .out
-    mov     rbx, rax
-    cmp     [r12 + Conn.cur_stream], rbx
-    jne     .uncached
-    mov     qword [r12 + Conn.cur_stream], 0  ; about to be freed: drop from the cache
-.uncached:
-    ; A GET queued in this read's batch was reset by the peer: it is still
-    ; referenced by Conn.batch, so only mark it; kv_grpc_run_batch frees it
-    ; instead of answering (answering a closed stream would be a bug).
-    test    qword [rbx + Stream.flags], ST_BATCHED
-    jz      .free_now
-    or      qword [rbx + Stream.flags], ST_CLOSED
-    jmp     .out
-.free_now:
-    mov     rdi, r12
-    mov     rsi, rbx
-    call    stream_unlink_free
-.out:
-    xor     eax, eax
-    add     rsp, 8
-    pop     r12
-    pop     rbx
-    ret
-
-; =============================================================================
 ; stream_unlink_free (exported as kv_grpc_stream_release) — remove a Stream
 ; from its connection and free it.
 ; @param  rdi  Conn*   @param rsi  Stream*
 ; @returns nothing.
 ; @remarks Also returns the stream's buffered request bytes to the
-;          connection's budget. The native engine (h2n.asm) releases its
-;          streams through the same function, so both engines keep
-;          Conn.streams and Conn.buffered exact.
+;          connection's budget. h2n.asm releases every stream it closes
+;          through this function, which keeps Conn.streams and
+;          Conn.buffered exact.
 ; =============================================================================
 kv_grpc_stream_release:
 stream_unlink_free:
@@ -760,55 +390,17 @@ stream_unlink_free:
     jmp     stream_free                 ; tail call (keeps the caller's alignment)
 
 ; =============================================================================
-; on_frame_recv — nghttp2_on_frame_recv_callback: dispatch complete requests.
-; @param  rdi  session  @param rsi  frame  @param rdx  Conn*
-; @returns eax = 0, or NGHTTP2_ERR_CALLBACK_FAILURE if a response could not
-;          be submitted (allocation failure inside nghttp2).
-; =============================================================================
-on_frame_recv:
-    movzx   eax, byte [rsi + FRAME_HD_TYPE]
-    cmp     eax, NGHTTP2_DATA
-    je      .check
-    cmp     eax, NGHTTP2_HEADERS
-    jne     .ret0
-.check:
-    test    byte [rsi + FRAME_HD_FLAGS], NGHTTP2_FLAG_END_STREAM
-    jz      .ret0
-    push    rbx
-    push    r12
-    push    r13
-    mov     rbx, rdi
-    mov     r12, rdx
-    mov     r13d, [rsi + FRAME_HD_STREAM_ID]
-    mov     esi, r13d
-    mov     rdx, r12
-    call    stream_lookup
-    test    rax, rax
-    jz      .done
-    test    qword [rax + Stream.flags], ST_RESPONDED
-    jnz     .done
-    mov     rdi, rbx
-    mov     rsi, r12
-    mov     rdx, rax
-    call    dispatch
-    jmp     .out
-.done:
-    xor     eax, eax
-.out:
-    pop     r13
-    pop     r12
-    pop     rbx
-    ret
-.ret0:
-    xor     eax, eax
-    ret
-
-; =============================================================================
-; dispatch — validate a complete request, run it, submit the response.
-; Internal.
-; @param  rdi  session  @param rsi  Conn*  @param rdx  Stream*
-; @returns eax = 0, or NGHTTP2_ERR_CALLBACK_FAILURE on submission failure.
-; @remarks Validation order follows the gRPC HTTP/2 spec: method/content-type
+; kv_grpc_dispatch — validate a complete request, run it, answer it.
+;
+; @param  rdi  Conn*   @param rsi  Stream* (END_STREAM received; its header
+;              fields were resolved into Stream.method/flags by h2n.asm)
+; @returns eax = 0, or -1 when the answer could not be queued (out of
+;          memory in h2n's output buffer: the engine ends the connection).
+; @remarks The Stream may be answered and freed before this returns (h2n
+;          closes a stream whose response is complete), so the caller must
+;          not touch it afterwards; a GET instead joins the connection's
+;          batch and is answered by kv_grpc_run_batch after the read.
+;          Validation order follows the gRPC HTTP/2 spec: method/content-type
 ;          are HTTP-level (405/415), then routing (UNIMPLEMENTED), then the
 ;          5-byte message framing, then the protobuf payload and field limits.
 ;          Compressed-flag handling matches grpc-go/grpc-core: flag 1 with a
@@ -817,18 +409,17 @@ on_frame_recv:
 ;          INTERNAL (the sender contradicts itself); flag 0 is accepted
 ;          whatever grpc-encoding says, because it means "not compressed".
 ; =============================================================================
-dispatch:
+kv_grpc_dispatch:
     push    rbx
     push    rbp
     push    r12
     push    r13
     push    r14
     push    r15
-    sub     rsp, 88                     ; [0..40) PbKv, [40] h1, [48] h2, [56] session,
-                                        ; [64..80) nghttp2_data_provider2, [80] pad
-    mov     [rsp + 56], rdi
-    mov     r12, rsi                    ; Conn*
-    mov     rbx, rdx                    ; Stream*
+    sub     rsp, 56                     ; [0..40) PbKv, [40] h1, [48] h2;
+                                        ; 6 pushes + 56: rsp 16-aligned for calls
+    mov     r12, rdi                    ; Conn*
+    mov     rbx, rsi                    ; Stream*
     mov     rax, [r12 + Conn.worker]
     mov     r13, [rax + Worker.cfg]
     mov     r14, [rax + Worker.table]
@@ -929,8 +520,10 @@ dispatch:
     ; ---- Get: deferred into the connection's batch ----
     ; The lookup itself runs in kv_grpc_run_batch once the whole read is
     ; parsed. Here: remember the key (it points into req_buf, which lives as
-    ; long as the Stream) and its hashes, and start loading both candidate
-    ; buckets now, so the cache misses of every GET in this read overlap.
+    ; long as the Stream, or into the read buffer for a borrowed body, which
+    ; lives until the batch has run) and its hashes, and start loading both
+    ; candidate buckets now, so the cache misses of every GET in this read
+    ; overlap.
 .get:
     mov     rax, [rsp + PbKv.key]
     mov     [rbx + Stream.key], rax
@@ -1004,21 +597,12 @@ dispatch:
     mov     rdi, rax
     call    write_prefix
 
-.submit_ok:
-    cmp     qword [rsp + 56], 0
-    je      .native_ok                  ; session 0: the native engine's connection
-    ; nghttp2 copies the provider struct, so a stack-resident one is fine;
-    ; the Stream it points to lives until on_stream_close.
-    mov     qword [rbx + Stream.resp_off], 0
-    mov     [rsp + 64], rbx             ; provider.source.ptr = Stream*
-    lea     rax, [resp_read]
-    mov     [rsp + 72], rax             ; provider.read_callback
-    mov     rdi, [rsp + 56]
-    mov     esi, [rbx + Stream.id]
-    lea     rdx, [nv_ok]
-    mov     ecx, 2
-    lea     r8, [rsp + 64]
-    call    nghttp2_submit_response2 wrt ..plt
+    ; resp_buf / resp_len hold the message: h2n frames HEADERS + DATA +
+    ; trailers (all at once when the windows allow, else from its pend list)
+    ; and frees the buffer with the stream.
+    mov     rdi, r12
+    mov     rsi, rbx
+    call    kv_h2n_reply_buf wrt ..plt
     jmp     .submitted
 
 .http_405:
@@ -1031,29 +615,23 @@ dispatch:
     mov     ecx, b_415_len
     lea     rdx, [nv_415]
 .http_error:
-    ; Plain HTTP error: 3 headers + a static text body. resp_read ends the
-    ; stream on the last DATA frame (no gRPC trailers) for ST_STATIC_RESP, and
+    ; Plain HTTP error: 3 headers + a static text body. h2n ends the stream on
+    ; the last DATA frame (no gRPC trailers) for ST_STATIC_RESP, and
     ; stream_free leaves the .rodata buffer alone.
     or      qword [rbx + Stream.flags], ST_STATIC_RESP
     mov     [rbx + Stream.resp_buf], rax
     mov     [rbx + Stream.resp_len], rcx
     mov     qword [rbx + Stream.resp_off], 0
-    cmp     qword [rsp + 56], 0
-    je      .native_static              ; rdx = nva still
-    mov     [rsp + 64], rbx             ; provider.source.ptr = Stream*
-    lea     rax, [resp_read]
-    mov     [rsp + 72], rax             ; provider.read_callback
-    mov     rdi, [rsp + 56]
-    mov     esi, [rbx + Stream.id]
-    mov     ecx, 3                      ; rdx = nva (set above)
-    lea     r8, [rsp + 64]
-    call    nghttp2_submit_response2 wrt ..plt
+    mov     rdi, r12
+    mov     rsi, rbx
+    mov     ecx, 3                      ; rdx = the 405 or 415 fields (set above)
+    call    kv_h2n_reply_static wrt ..plt
     jmp     .submitted
 .e_method:
     lea     rdx, [nv_e_method]
     jmp     .trailers_only
 .compressed:
-    ; ST_ENCODED was set by on_header for a grpc-encoding other than identity.
+    ; ST_ENCODED was set by h2n for a grpc-encoding other than identity.
     test    qword [rbx + Stream.flags], ST_ENCODED
     jz      .e_badflag
     lea     rdx, [nv_e_compress]
@@ -1093,43 +671,19 @@ dispatch:
 .trailers_n:
     mov     rax, [r12 + Conn.worker]
     inc     qword [rax + Worker.st_errors]
-.headers_only:
-    cmp     qword [rsp + 56], 0
-    je      .native_headers             ; rdx = nva, ecx = count still
-    ; No data provider => nghttp2 ends the stream on this HEADERS frame.
-    mov     rdi, [rsp + 56]
-    mov     esi, [rbx + Stream.id]
-    xor     r8d, r8d
-    call    nghttp2_submit_response2 wrt ..plt
-    jmp     .submitted
-
-    ; ---- native engine (h2n.asm): same responses, framed by h2n ----
-    ; Its reply functions return 0 or -1 (out of memory), which .submitted
-    ; turns into the failure code the native caller treats as fatal.
-.native_ok:
-    mov     rdi, r12
-    mov     rsi, rbx                    ; resp_buf / resp_len hold the message
-    call    kv_h2n_reply_buf wrt ..plt
-    jmp     .submitted
-.native_static:
-    mov     rdi, r12
-    mov     rsi, rbx
-    mov     ecx, 3                      ; rdx = nva (405 or 415)
-    call    kv_h2n_reply_static wrt ..plt
-    jmp     .submitted
-.native_headers:
+    ; Trailers-Only: one HEADERS frame with END_STREAM (rdx = fields, ecx =
+    ; count still as set above).
     mov     rdi, r12
     mov     rsi, rbx
     call    kv_h2n_reply_headers wrt ..plt
 .submitted:
+    ; h2n's reply functions return 0 or -1 (out of memory); normalize so the
+    ; contract above holds whatever negative value they pick.
     test    eax, eax
-    jz      .ok
-    mov     eax, NGHTTP2_ERR_CALLBACK_FAILURE
-    jmp     .out
-.ok:
-    xor     eax, eax
+    jz      .out
+    mov     eax, -1
 .out:
-    add     rsp, 88
+    add     rsp, 56
     pop     r15
     pop     r14
     pop     r13
@@ -1139,36 +693,19 @@ dispatch:
     ret
 
 ; =============================================================================
-; kv_grpc_dispatch — validate, run and answer a complete request that the
-; native HTTP/2 engine received.
-;
-; @param  rdi  Conn*   @param rsi  Stream* (END_STREAM received)
-; @returns eax = 0, or non-zero (negative) when the answer could not be
-;          queued (out of memory: the engine ends the connection).
-; @remarks dispatch with session 0: identical validation, routing and store
-;          work as for nghttp2; GETs join the connection's batch. The Stream
-;          may be answered and freed before this returns.
-; =============================================================================
-kv_grpc_dispatch:
-    mov     rdx, rsi
-    mov     rsi, rdi
-    xor     edi, edi                    ; session 0 = native engine
-    jmp     dispatch                    ; tail call
-
-; =============================================================================
 ; kv_grpc_run_batch — answer every GET queued while parsing the last read.
 ;
 ; @param  rdi  Conn*
-; @returns eax = 0, or -1 if nghttp2 could not accept a response (out of
-;          memory inside the session: the caller destroys the connection).
-; @remarks Called by the worker right after nghttp2_session_mem_recv2, on the
-;          connection's thread, while the worker is QSBR-online (records stay
-;          valid while their values are copied).
+; @returns eax = 0, or -1 if a response could not be queued (out of memory
+;          in h2n's output buffer: the caller destroys the connection).
+; @remarks Called by kv_h2n_read right after the read's frames were parsed,
+;          on the connection's thread, while the worker is QSBR-online
+;          (records stay valid while their values are copied).
 ;          Two passes, a software pipeline across requests:
 ;            1. prefetch the candidate records (the buckets were prefetched at
 ;               parse time and have arrived by now);
 ;            2. run each lookup — bucket and record lines are warm — and
-;               submit its response.
+;               frame its response.
 ;          Streams the peer reset meanwhile (ST_CLOSED) are freed, not
 ;          answered. The batch is detached before pass 2, so nothing can
 ;          observe a half-processed list.
@@ -1203,9 +740,8 @@ kv_grpc_run_batch:
     and     qword [rbx + Stream.flags], ~ST_BATCHED
     test    qword [rbx + Stream.flags], ST_CLOSED
     jnz     .closed
-    mov     rdi, [r12 + Conn.session]
-    mov     rsi, r12
-    mov     rdx, rbx
+    mov     rdi, r12
+    mov     rsi, rbx
     call    get_execute
     test    eax, eax
     jz      .next
@@ -1229,25 +765,28 @@ kv_grpc_run_batch:
     ret
 
 ; =============================================================================
-; get_execute — look up a batched GET and submit its response. Internal.
-; @param  rdi  session   @param rsi  Conn*   @param rdx  Stream* (key, h1, h2 set)
-; @returns eax = 0, or nghttp2's error code if the response was not accepted.
-; @remarks Response: GetResponse{found = true, value} as 08 01 12 <len> <value>
-;          (the value field is omitted for an empty value); a miss is the
-;          empty message (found = false); out of memory is Trailers-Only
-;          INTERNAL.
+; get_execute — look up a batched GET and frame its response. Internal.
+; @param  rdi  Conn*   @param rsi  Stream* (key, h1, h2 set)
+; @returns eax = 0, or -1 if the response could not be queued (out of
+;          memory in h2n's output buffer).
+; @remarks Response: GetResponse{found = true, value} as 08 01 12 <len>
+;          <value> (the value field is omitted for an empty value); a miss is
+;          the empty message (found = false). The message is head || value:
+;          the head (gRPC prefix + 08 01 [12 <varint len>], at most 13 bytes)
+;          is built on the stack, the value stays in the store record and is
+;          copied once by h2n — straight into the output buffer's DATA frame
+;          when the windows allow — so a GET allocates nothing. The Stream
+;          may be closed and freed before this returns.
 ; =============================================================================
 get_execute:
     push    rbx
     push    rbp
     push    r12
     push    r13
-    push    r14
     push    r15
-    sub     rsp, 8                      ; 6 pushes + 8: rsp 16-aligned for calls
-    mov     r14, rdi                    ; session
-    mov     r12, rsi                    ; Conn*
-    mov     rbx, rdx                    ; Stream*
+    sub     rsp, 32                     ; [0..32) message head; 5 pushes + 32: aligned
+    mov     r12, rdi                    ; Conn*
+    mov     rbx, rsi                    ; Stream*
     mov     rax, [r12 + Conn.worker]
     mov     rsi, [rbx + Stream.key]
     mov     rdx, [rbx + Stream.key_len]
@@ -1264,90 +803,20 @@ get_execute:
     mov     rdi, [rax + Worker.table]
     call    kv_store_get wrt ..plt
 .looked_up:
-    test    r14, r14
-    jz      .native                     ; session 0: the native engine's connection
     test    rax, rax
     jz      .missing
-    mov     r15, rax                    ; Rec* (valid while this worker is online)
-    mov     ebp, [r15 + Rec.val_len]
-    mov     r13d, 2                     ; 08 01
-    test    rbp, rbp
-    jz      .alloc
-    mov     rdi, rbp
-    call    kv_pb_varint_len wrt ..plt
-    lea     r13, [r13 + rax + 1]        ; + 12 <varint len>
-    add     r13, rbp                    ; + value
-.alloc:
-    lea     rdi, [r13 + GRPC_PREFIX]
-    mov     rax, [r12 + Conn.worker]
-    lea     rsi, [rax + Worker.pool]
-    call    kv_pool_malloc
-    test    rax, rax
-    jz      .oom
-    mov     [rbx + Stream.resp_buf], rax
-    lea     rcx, [r13 + GRPC_PREFIX]
-    mov     [rbx + Stream.resp_len], rcx
-    mov     rdi, rax
-    mov     rsi, r13
-    call    write_prefix
-    mov     rdi, [rbx + Stream.resp_buf]
-    mov     word [rdi + GRPC_PREFIX], 0x0108   ; field 1 (found) = true
-    test    rbp, rbp
-    jz      .submit
-    mov     byte [rdi + GRPC_PREFIX + 2], 0x12 ; field 2 (value), length-delimited
-    lea     rdi, [rdi + GRPC_PREFIX + 3]
-    mov     rsi, rbp
-    call    kv_pb_write_varint wrt ..plt
-    mov     rdi, [rbx + Stream.resp_buf]
-    lea     rdi, [rdi + GRPC_PREFIX + 3 + rax]
-    mov     ecx, [r15 + Rec.key_len]
-    add     rcx, 7
-    and     rcx, -8
-    lea     rsi, [r15 + Rec.data + rcx]  ; value follows the padded key
-    mov     rdx, rbp
-    call    memcpy wrt ..plt
-.submit:
-    mov     rdi, r14
-    mov     rsi, rbx
-    call    respond_message
-    jmp     .out
-.missing:
-    mov     rdi, r14
-    mov     rsi, r12
-    mov     rdx, rbx
-    xor     ecx, ecx                    ; GetResponse{} (found = false)
-    call    respond_varint
-    jmp     .out
-.oom:
-    mov     rdi, r14
-    mov     rsi, r12
-    mov     rdx, rbx
-    lea     rcx, [nv_e_oom]
-    mov     r8d, 4
-    call    respond_error
-    jmp     .out
-
-    ; ---- native engine: the value goes from the record into the DATA frame ----
-    ; The message is head || value: head = gRPC prefix + 08 01 [12 <varint
-    ; len>] built on the stack, value = the record's bytes, copied once by
-    ; h2n (straight into the output buffer when the windows allow). A miss
-    ; is the empty message (found = false).
-.native:
-    sub     rsp, 32                     ; head scratch; keeps the 16-byte alignment
-    test    rax, rax
-    jz      .native_missing
     mov     r15, rax                    ; Rec* (valid while this worker is online)
     mov     ebp, [r15 + Rec.val_len]
     mov     word [rsp + GRPC_PREFIX], 0x0108   ; field 1 (found) = true
     mov     r13d, 2
     test    rbp, rbp
-    jz      .native_head                ; empty value: the field is omitted
+    jz      .head                       ; empty value: the field is omitted
     mov     byte [rsp + GRPC_PREFIX + 2], 0x12 ; field 2 (value), length-delimited
     lea     rdi, [rsp + GRPC_PREFIX + 3]
     mov     rsi, rbp
     call    kv_pb_write_varint wrt ..plt
     lea     r13, [rax + 3]              ; 08 01 12 <varint>
-.native_head:
+.head:
     mov     rdi, rsp
     lea     rsi, [r13 + rbp]            ; protobuf payload length
     call    write_prefix
@@ -1361,9 +830,8 @@ get_execute:
     lea     r8, [r15 + Rec.data + rax]  ; value follows the padded key
     mov     r9, rbp
     call    kv_h2n_reply_parts wrt ..plt
-    add     rsp, 32
     jmp     .out
-.native_missing:
+.missing:
     mov     rdi, rsp
     xor     esi, esi
     call    write_prefix                ; 00 00 00 00 00: GetResponse{}
@@ -1374,11 +842,9 @@ get_execute:
     xor     r8d, r8d
     xor     r9d, r9d
     call    kv_h2n_reply_parts wrt ..plt
-    add     rsp, 32
 .out:
-    add     rsp, 8
+    add     rsp, 32
     pop     r15
-    pop     r14
     pop     r13
     pop     r12
     pop     rbp
@@ -1386,167 +852,16 @@ get_execute:
     ret
 
 ; =============================================================================
-; respond_message — submit HEADERS + the stream's resp_buf as DATA + trailers.
-; Internal.
-; @param  rdi  session   @param rsi  Stream* (resp_buf/resp_len set)
-; @returns eax = nghttp2_submit_response2's result (0 on success).
-; @remarks nghttp2 copies the data-provider struct, so a stack-resident one
-;          is fine; resp_read streams resp_buf and adds the grpc-status
-;          trailers on the last chunk.
-; =============================================================================
-respond_message:
-    sub     rsp, 24                     ; [0..16) nghttp2_data_provider2; rsp aligned
-    mov     qword [rsi + Stream.resp_off], 0
-    mov     [rsp], rsi                  ; provider.source.ptr = Stream*
-    lea     rax, [resp_read]
-    mov     [rsp + 8], rax              ; provider.read_callback
-    mov     esi, [rsi + Stream.id]      ; (the id is read before rsi is replaced)
-    lea     rdx, [nv_ok]
-    mov     ecx, 2
-    lea     r8, [rsp]
-    call    nghttp2_submit_response2 wrt ..plt
-    add     rsp, 24
-    ret
-
-; =============================================================================
-; respond_error — Trailers-Only gRPC error (single HEADERS frame). Internal.
-; @param  rdi  session   @param rsi  Conn*   @param rdx  Stream*
-; @param  rcx  nghttp2_nv array   @param r8  entry count
-; @returns eax = nghttp2_submit_response2's result.
-; =============================================================================
-respond_error:
-    mov     rax, [rsi + Conn.worker]
-    inc     qword [rax + Worker.st_errors]
-    mov     esi, [rdx + Stream.id]
-    mov     rdx, rcx
-    mov     rcx, r8
-    xor     r8d, r8d                    ; no data provider: END_STREAM on HEADERS
-    jmp     nghttp2_submit_response2 wrt ..plt  ; tail call
-
-; =============================================================================
-; respond_varint — reply with a message whose only field is 1 = value.
-; Internal.
-; @param  rdi  session   @param rsi  Conn*   @param rdx  Stream*
-; @param  rcx  value (0..127); 0 sends the empty message (proto3 default)
-; @returns eax = nghttp2's result (0 on success).
-; =============================================================================
-respond_varint:
-    push    rbx
-    push    r12
-    push    r13
-    push    r14
-    sub     rsp, 8                      ; 4 pushes + 8: rsp 16-aligned for calls
-    mov     rbx, rdi
-    mov     r12, rsi
-    mov     r13, rdx
-    mov     r14, rcx
-    mov     edi, GRPC_PREFIX + 2
-    mov     rax, [r12 + Conn.worker]
-    lea     rsi, [rax + Worker.pool]
-    call    kv_pool_malloc
-    test    rax, rax
-    jz      .oom
-    mov     [r13 + Stream.resp_buf], rax
-    xor     esi, esi
-    test    r14, r14
-    jz      .len
-    mov     esi, 2
-    mov     byte [rax + GRPC_PREFIX], 0x08     ; field 1, wire type varint
-    mov     [rax + GRPC_PREFIX + 1], r14b      ; < 128: a single varint byte
-.len:
-    lea     rcx, [rsi + GRPC_PREFIX]
-    mov     [r13 + Stream.resp_len], rcx
-    mov     rdi, rax
-    call    write_prefix
-    mov     rdi, rbx
-    mov     rsi, r13
-    call    respond_message
-    jmp     .out
-.oom:
-    mov     rdi, rbx
-    mov     rsi, r12
-    mov     rdx, r13
-    lea     rcx, [nv_e_oom]
-    mov     r8d, 4
-    call    respond_error
-.out:
-    add     rsp, 8
-    pop     r14
-    pop     r13
-    pop     r12
-    pop     rbx
-    ret
-
-; =============================================================================
 ; write_prefix — gRPC message prefix: flag 0 + big-endian 32-bit length.
-; Internal.  @param rdi  buffer  @param rsi  payload length
+; Internal, leaf.
+; @param  rdi  buffer (5 bytes writable)   @param rsi  payload length (< 2^32)
+; @returns nothing. Clobbers eax.
 ; =============================================================================
 write_prefix:
     mov     byte [rdi], 0
     mov     eax, esi
     bswap   eax
     mov     [rdi + 1], eax
-    ret
-
-; =============================================================================
-; resp_read — nghttp2_data_source_read_callback2 for response messages.
-; @param  rdi  session  @param esi  stream id  @param rdx  buf  @param rcx  len
-; @param  r8   uint32_t *data_flags  @param r9  nghttp2_data_source* (Stream*)
-; @returns rax = bytes copied, or NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE if the
-;          trailers cannot be queued (resets only this stream).
-; @remarks On the last chunk of a gRPC response sets EOF | NO_END_STREAM and
-;          submits the grpc-status trailers: gRPC requires the stream to end
-;          on trailing HEADERS, never on the last DATA frame. A plain HTTP
-;          error body (ST_STATIC_RESP) instead ends the stream on its last
-;          DATA frame (EOF alone) — trailers there would be meaningless.
-;          nghttp2 may call this repeatedly with small `len` (flow-control
-;          window, frame size), hence the resp_off cursor.
-; =============================================================================
-resp_read:
-    push    rbx
-    push    r12
-    push    r13
-    push    r14
-    push    r15
-    mov     rbx, [r9]                   ; Stream*
-    mov     r12, rdi
-    mov     r13d, esi
-    mov     r14, r8
-    mov     rax, [rbx + Stream.resp_len]
-    sub     rax, [rbx + Stream.resp_off]
-    cmp     rax, rcx
-    cmova   rax, rcx
-    mov     r15, rax                    ; n
-    mov     rdi, rdx
-    mov     rsi, [rbx + Stream.resp_buf]
-    add     rsi, [rbx + Stream.resp_off]
-    mov     rdx, r15
-    call    memcpy wrt ..plt
-    add     [rbx + Stream.resp_off], r15
-    mov     rax, [rbx + Stream.resp_off]
-    cmp     rax, [rbx + Stream.resp_len]
-    jne     .ret_n
-    test    qword [rbx + Stream.flags], ST_STATIC_RESP
-    jz      .grpc_eof
-    or      dword [r14], NGHTTP2_DATA_FLAG_EOF          ; END_STREAM on this DATA
-    jmp     .ret_n
-.grpc_eof:
-    or      dword [r14], NGHTTP2_DATA_FLAG_EOF | NGHTTP2_DATA_FLAG_NO_END_STREAM
-    mov     rdi, r12
-    mov     esi, r13d
-    lea     rdx, [nv_trailer_ok]
-    mov     ecx, 1
-    call    nghttp2_submit_trailer wrt ..plt
-    test    eax, eax
-    jz      .ret_n
-    mov     r15, NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE
-.ret_n:
-    mov     rax, r15
-    pop     r15
-    pop     r14
-    pop     r13
-    pop     r12
-    pop     rbx
     ret
 
 section .note.GNU-stack noalloc noexec nowrite progbits

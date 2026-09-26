@@ -67,6 +67,22 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     latency, already overlapped), SipHash ~6%, HTTP/2 ~11%.
   - Next levers: fewer bytes per response, a huge-page record slab (§1),
     io_uring where seccomp allows it (§6).
+- **Kernel-inclusive profile, nghttp2 gone** (2026-09-26, one worker on a
+  pinned vCPU; `benchmarks/results/2026-09-26-profile-memory`):
+  - *Blocking client* (the standard benchmark): 1.72M GET/s, 582 ns per
+    GET, 75% kernel. **48% of the core is the co-located client's wakeup**
+    (the server's `sendto` → loopback softirq → `sock_def_readable` →
+    `__wake_up_common_lock`: a cross-vCPU IPI under WSL2), and 15% is
+    TCP/IP.
+  - *Busy-polling client* (the server's own cost, closer to remote
+    clients): 2.62M GET/s, 382 ns per GET.
+    - Kernel 177 ns: TCP/IP 86, syscall/VFS 16, copies 15, slab 11.
+    - User 205 ns: store 93 (prefetch stages ~56 of it, stalls; SipHash
+      19), HTTP/2 56, gRPC and protobuf 21, glibc copies 20, event loop
+      10, pool 8.
+  - Next levers: the co-located wakeup (a topology artifact; for same-host
+    deployments see §6 busy polling), store address translation (a
+    huge-page record slab, §1), SipHash (§8, §4).
 
 ## 1. Memory: hide latency, fit the hierarchy
 
@@ -142,6 +158,23 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *KvNode:* ✗ as a default. `hcache.asm`, generation-validated, measured
     7–46% slower from the L2 working set up (`bench_store`, ADR 0006). It
     stays available and off.
+- **Prefetch every line the consumer touches**
+  - *What:* a record that starts on any 16-byte boundary and is S bytes
+    long spans up to ⌈(S + 48) / 64⌉ lines. Prefetch them all, or the first
+    real use of the tail line pays the full DRAM latency.
+  - *Evidence:* a 16-byte key plus a 100-byte value makes a 140-byte
+    record, which always spans 3 lines, and pass 1 prefetched 2. The value
+    copy (glibc `memmove`) was then 4.2% of a busy-polled core; it is 1.05%
+    with `[rec + 128]` also prefetched.
+  - *Catch:* the size is unknown at prefetch time (the header is in the
+    line being fetched), so a small record wastes the third prefetch, and
+    each prefetch holds a fill buffer. The prefetch stage's own share rose
+    from 8.2% to 9.5%.
+  - *KvNode:* 🧪 three lines (ADR 0005 amendment). Paired concurrent A/B,
+    6 blocks: 1.001× with a blocking client, 1.025× busy-polling (4/6
+    blocks), 0.993× with 16-byte values. Within noise; kept for the stall
+    it removes. 🔜 exact coverage: carry a size class in the slot's unused
+    pointer bits, so pass 1 prefetches exactly the record's lines.
 - **Batch depth:** beyond about 16 independent misses, deeper batches buy
   nothing. The fill buffers are already busy.
   - *KvNode:* ✗ measured: b64 ≈ b16 at every working set (ADR 0006).
@@ -160,8 +193,9 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *KvNode:* ✅ `kv_store_get` → `kv_cuckoo_get`, `stream_unlink_free`.
 - **Direct calls**
   - *What:* static linking removes PLT indirection.
-  - *KvNode:* ✅ static-PIE. Function-pointer callbacks (nghttp2) remain
-    inherent.
+  - *KvNode:* ✅ static-PIE. No function-pointer callbacks left in the
+    request path since nghttp2 left the server (ADR 0008); hpack.asm's
+    per-field handler is a direct call.
 - **Macro-fusion**
   - *What:* keep `cmp`/`test` directly before `jcc`, so the pair decodes as
     one uop.
@@ -208,20 +242,59 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - Measure the pattern that matters: the winner flips between batched and
     lone lookups.
 - **AVX2/AVX-512** only behind CPUID dispatch (a function pointer set at
-  startup), with `vzeroupper` before calling non-AVX code.
+  startup), with `vzeroupper` before calling non-AVX code. The dev host
+  (i9-13900K) has AVX2, BMI2, GFNI, VAES and SHA-NI, but no AVX-512: a
+  hybrid CPU's E-cores lack it, so it is fused off.
 - **Copies:** `rep movsb` is fast with ERMS/FSRM for medium copies; small
   fixed sizes are best as plain moves.
+  - *KvNode:* ✅ glibc's IFUNC picks `__memmove_avx_unaligned_erms` and
+    `__memset_avx2_unaligned_erms` here; the response head (5-13 bytes)
+    and the precomputed header blocks are inline overlapping moves.
+- **First find out whether the time is SIMD-shaped at all** (measured
+  2026-09-26, one core, busy-polling client so only server work shows,
+  382 ns per GET):
+  - kernel (TCP/IP, syscalls, copies to and from user, slab): 46%. No
+    SIMD lever;
+  - the store: 24% (93 ns). Most of it is the two prefetch stages
+    stalling on address translation and DRAM: under WSL2 every walk is
+    nested, and guest huge pages need not be host huge pages. Latency,
+    not arithmetic;
+  - SipHash-128: 4.9%, the only arithmetic hot spot;
+  - glibc `memmove`/`memset`: 5.1%, already AVX2, and mostly a DRAM miss
+    rather than copy work (see §1, "Prefetch every line the consumer
+    touches");
+  - HTTP/2 (14.7%) and gRPC (5.6%): spread over dozens of small
+    functions; the Huffman work that was SIMD-shaped is skipped by the
+    header-block cache.
+  - **Ceiling:** SIMD can only shrink the ~10% that is arithmetic or
+    copying, and most of that already is SIMD.
+- **Candidates, ranked by measured ceiling:**
+  - 🔜 AVX2 4-lane SipHash across a read's GET batch: ceiling 4.9%;
+    estimate −10 ns per GET (~3%). *Catch:* hashing then moves from parse
+    time into the batch, which shortens the bucket prefetch's lead time;
+    interleave (hash 4 → prefetch 4) and measure. Behind CPUID, with the
+    scalar path kept and cross-checked in `test_siphash`.
+  - 🔜 inline SSE2 copy for values up to 128 bytes in `reply_fast`
+    (overlapping 16-byte moves instead of a `memcpy` call): what is left
+    of `memmove` after the three-line prefetch is ~1% of the core. Expect
+    <1%.
+  - 🔜 SSE2 `blocks_equal` (the header-block cache compare, ≤128 bytes):
+    <0.5%.
+  - ✗ wider tag scans: one SSE2 compare already covers both buckets'
+    12 slots; AVX2 has nothing more to compare.
 
 ## 5. Allocation
 
 - **Per-thread size-class pools**
   - *What:* LIFO free lists (a freed block is reused while still cached),
     bump-carved chunks, no locks (single owner).
-  - *KvNode:* ✅ `pool.asm` behind nghttp2's `nghttp2_mem` hook and for
-    Streams. Rotated ablation: paired median +16% at 1 core and +10% at 4
+  - *KvNode:* ✅ `pool.asm`: Streams, request buffers, stream maps, HPACK
+    rings and entries (it first served nghttp2 through its `nghttp2_mem`
+    hook). Rotated ablation: paired median +16% at 1 core and +10% at 4
     cores, faster in 6 of 8 repetitions at both. Probably positive, not
     conclusive on a noisy host; kept because it is small, tested, and gives
-    each worker full control of allocation locality.
+    each worker full control of allocation locality. Profiled 2026-09-26:
+    ~2% of a core (8 ns per GET).
 - **Slabs for fixed-size records:** lower overhead, no fragmentation, can
   sit on huge pages. *KvNode:* 🔜 records (see §1: glibc arenas never got
   a huge page here).
@@ -246,7 +319,9 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Gather instead of copy**
   - *What:* `writev`/`sendmsg` over the library's frame buffers instead of
     `memcpy` into one buffer.
-  - *KvNode:* 🔜 `conn_flush` copies each `mem_send2` chunk.
+  - *KvNode:* ✅ moot: h2n.asm frames responses straight into the output
+    buffer (a GET's value is the one copy, record → DATA frame), so the
+    nghttp2-era `mem_send2` copy loop is gone.
 - **Accept and steering**
   - *What:* `SO_REUSEPORT` listeners per worker.
   - *KvNode:* ✅, plus 🔜 BPF steering (`SO_ATTACH_REUSEPORT_CBPF`) to
@@ -256,6 +331,16 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *KvNode:* ✗ as the default (portability); 🔜 as an opt-in backend.
 - **Busy polling** (`SO_BUSY_POLL`, epoll busy-poll): lower latency, higher
   CPU. Useful for latency-SLO deployments.
+  - *Measured (2026-09-26), the mirror image:* over loopback, whoever
+    sends wakes the peer. KvNode's `sendto` ran the client's TCP receive in
+    softirq and woke the kvbench thread asleep in `epoll_wait`, via a
+    cross-vCPU IPI under WSL2. That was **48% of the server's core**
+    (`__wake_up_common_lock` ← `sock_def_readable`, call graph verified),
+    ~280 of 582 ns per GET. A busy-polling client (`kvbench --busy-poll`)
+    removes it: 1.72M → **2.62M GET/s on one core**.
+  - *KvNode:* 🔜 server-side busy-poll as an opt-in for latency SLOs. It
+    would remove the server's own wakeups, which the clients pay on their
+    CPUs here.
 - **Timekeeping and CPU id:** vDSO `clock_gettime`, coarse clocks, `rdpid`
   for the CPU id. Never a syscall per request. *KvNode:* ✅ once per loop
   pass.
@@ -291,7 +376,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Share nothing where possible:** per-worker sessions, pools and loops.
   *KvNode:* ✅.
 
-## 8. Protocol and parsing (was KvNode's largest lever; now owned by h2n.asm)
+## 8. Protocol and parsing (was KvNode's largest lever; now owned by h2n.asm alone)
 
 - **Zero-copy decode:** fields point into the receive buffer. *KvNode:* ✅
   protobuf keys and values.
@@ -315,7 +400,9 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *Cost:* a security-critical rewrite. It needed h2spec (146/146), an
     HPACK decoder differential-tested against nghttp2, a black-box fuzzer
     and an independent client (grpc-dotnet) before shipping; ADR 0007.
-  - *KvNode:* ✅ `h2n.asm`, the default engine. Measured, paired (N1-N3,
+  - *KvNode:* ✅ `h2n.asm`, the only engine since ADR 0008 removed nghttp2
+    from the server (binary −162 KB of text, one code path, no fallback).
+    Measured, paired (N1-N3,
     `benchmarks/results/2026-09-26-native-final`): 1 core 1.51M GET/s,
     2.03× nghttp2, **1.19× Redis, 1.22× Valkey** (6/6 blocks, weakest
     1.10×); 2.07× nghttp2 at 4 cores (7.80M GET/s in the quieter
@@ -340,13 +427,18 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   its scan. *KvNode:* ✅ stream map (client ids are consecutive odd numbers
   and land in their home slots).
 - **Cache lookups the library repeats**
-  - *KvNode:* 🧪 one-entry stream cache (nghttp2 path only). Its effect is
-    within noise (paired median 0.99 at 1 core, 0.98 at 4): nghttp2's own
-    internal lookups dominate.
+  - *KvNode:* 🧪 → removed. The one-entry stream cache existed only for
+    nghttp2's callbacks (within noise: paired median 0.99 at 1 core, 0.98
+    at 4) and left with it (ADR 0008). h2n.asm's stream map is already one
+    load per lookup.
 - **Keyed hash choice**
-  - SipHash-2-4 is the conservative HashDoS defense (*KvNode:* ✅, ~0.8% of
-    time).
-  - SipHash-1-3 (Rust's choice) is cheaper. Keep a keyed hash either way.
+  - SipHash-2-4 is the conservative HashDoS defense (*KvNode:* ✅).
+    Profiled 2026-09-26 with a busy-polling client: 4.9% of the core,
+    ~19 ns per GET, mostly the 128-bit finalization. Scalar SipHash is
+    latency-bound (one dependency chain).
+  - SipHash-1-3 (Rust's choice) is cheaper: about 40% fewer rounds. Keep a
+    keyed hash either way; the snapshot checksum must keep its own
+    function.
 
 ## 9. Code layout and the front end
 
@@ -356,8 +448,9 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   hot loops.
 - **Break false dependencies:** zero idioms (`xor`), and watch
   `popcnt`/`lzcnt` output dependencies on some Intel cores.
-- **Build C dependencies well:** `-O2`/`-O3`, optionally PGO/LTO for
-  nghttp2 (🔜: measure first), keep static linking.
+- **Build C dependencies well:** `-O2`/`-O3`, keep static linking. The
+  server's only C dependency is glibc now (ADR 0008); its string functions
+  are IFUNC-dispatched to AVX2 on this CPU already.
 
 ## 10. Measurement discipline (keeps the cookbook honest)
 
@@ -384,6 +477,28 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Correctness under optimization:** torn-value detector, h2spec baseline,
   reset-in-batch test, full unit suite. Every optimization passes them
   before its numbers count.
+- **Profile the kernel too, and read call chains.** `perf` in the dev
+  container cannot sample kernel symbols (`perf_event_paranoid=2`). Run it
+  from a privileged helper container that shares the dev container's PID
+  namespace (`--privileged --pid=container:kvnode-dev`), sampling the
+  server's vCPU system-wide (`-a -C <cpu>`). WSL2 has no PMU, so
+  `cpu-clock` is the event. Samples cannot land while interrupts are off,
+  so a hot `…_irqrestore`/`__wake_up_common_lock` is the cost of the whole
+  IRQs-off region; use `-g` to see what that region is.
+- **Account for the benchmark topology.** On one machine, the server's
+  send wakes the client (and the client's send wakes the server): 48% of
+  a KvNode core under WSL2. Profile with `kvbench --busy-poll` to see the
+  server's own cost; never mix busy-poll and blocking runs in one
+  comparison.
+- **Pair concurrently when the order matters.** A sequential A/B (fresh
+  server per run, order alternating per block) showed the second run of
+  every pair ~10% cheaper per request and slower, whichever variant it
+  was: host steal and scheduling, larger than the effect under test.
+  Running A and B *at the same time* on two pinned vCPUs with separate
+  client vCPU sets, swapping them every block, cancels time-varying noise.
+  The instrument that proved the mechanism was the within-run profile
+  share (`memmove` 4.2% → 1.05%); a single run's throughput is not
+  evidence.
 
 ## Beyond this cookbook
 

@@ -1,9 +1,13 @@
 # ADR 0002: HTTP/2 via nghttp2 1.70.0, statically linked
 
-- **Status:** accepted; amended by [ADR 0007](0007-native-http2-engine.md).
-  KvNode's own engine (`h2n.asm`) is now the default. nghttp2 remains
-  available as `KVNODE_H2_ENGINE=nghttp2`, and everything below still
-  applies to it.
+- **Status:** superseded by
+  [ADR 0008](0008-remove-nghttp2-from-the-server.md), after being amended
+  by [ADR 0007](0007-native-http2-engine.md). KvNode's own engine
+  (`h2n.asm`) became the default, and nghttp2 was then removed from the
+  server. It remains only as the independent client and HPACK oracle in the
+  tests and in kvbench, built by the same pinned, verified Dockerfile step.
+  The record below is kept as history: why nghttp2 was chosen, and what
+  its versions did under h2spec.
 - **Date:** 2026-09-26
 
 ## Context

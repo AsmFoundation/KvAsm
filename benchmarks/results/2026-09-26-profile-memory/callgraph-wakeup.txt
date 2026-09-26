@@ -1,0 +1,48 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 23K of event 'cpu-clock'
+# Event count (approx.): 7989985128
+#
+# Overhead  Symbol                                       
+# ........  .............................................
+#
+    50.82%  [k] __wake_up_common_lock
+            |
+            ---0x7fe35ba36a00
+               entry_SYSCALL_64_after_hwframe
+               do_syscall_64
+               __x64_sys_sendto
+               __sys_sendto
+               tcp_sendmsg
+               tcp_sendmsg_locked
+               __tcp_push_pending_frames
+               tcp_write_xmit
+               __tcp_transmit_skb
+               __ip_queue_xmit
+               ip_finish_output2
+               __local_bh_enable_ip
+               do_softirq
+               __softirqentry_text_start
+               net_rx_action
+               __napi_poll
+               process_backlog
+               __netif_receive_skb_one_core
+               ip_local_deliver_finish
+               ip_protocol_deliver_rcu
+               tcp_v4_rcv
+               tcp_v4_do_rcv
+               tcp_rcv_established
+               |          
+               |--35.54%--sock_def_readable
+               |          __wake_up_common_lock
+               |          
+                --15.29%--tcp_data_queue
+                          sock_def_readable
+                          __wake_up_common_lock
+     4.49%  [.] 0x0000000000009d70
+#
+# (Tip: Sample related events with: perf record -e '{cycles,instructions}:S')
+#

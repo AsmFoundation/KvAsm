@@ -12,7 +12,11 @@
 #
 # Variables:
 #   NGHTTP2_PREFIX  install prefix of the static libnghttp2 (default
-#                   /opt/nghttp2, provided by the Dockerfile toolchain stage)
+#                   /opt/nghttp2, provided by the Dockerfile toolchain stage).
+#                   Test tools only: the server itself links no HTTP/2
+#                   library (ADR 0008); nghttp2 is the independent client
+#                   (itest_grpc) and HPACK oracle (test_hpack) it is checked
+#                   against.
 #
 # Warnings are errors for both NASM and C: in assembly a "harmless" warning
 # (e.g. an unintended absolute relocation) is often a real bug.
@@ -26,7 +30,7 @@ BUILD          := build
 # Relocation warnings, class by class:
 #  -w-reloc-rel-dword  every cross-section call/lea in x86-64 code is a 32-bit
 #                      PC-relative relocation — exactly what a PIE needs.
-#  -w-reloc-abs-qword  a 64-bit absolute pointer in a data table (nghttp2_nv
+#  -w-reloc-abs-qword  a 64-bit absolute pointer in a data table (HdrField
 #                      arrays, the settings table) becomes R_X86_64_RELATIVE,
 #                      which the loader applies; legal in a PIE *if* the table
 #                      is in a writable section. That condition is enforced
@@ -54,14 +58,14 @@ CORE_ASM  := src/siphash.asm src/util.asm src/cuckoo.asm src/wlock.asm \
              src/pool.asm src/hcache.asm src/hpack.asm
 CORE_OBJ  := $(CORE_ASM:src/%.asm=$(BUILD)/obj/%.o)
 
-# Network server on top of the core: nghttp2 glue (grpc.asm), the native
-# HTTP/2 engine (h2n.asm, ADR 0007), the event loop, config and main.
+# Network server on top of the core: gRPC request handling (grpc.asm), the
+# HTTP/2 engine (h2n.asm, ADR 0007/0008), the event loop, config and main.
 SERVER_ASM := src/config.asm src/grpc.asm src/h2n.asm src/worker.asm src/main.asm
 SERVER_OBJ := $(SERVER_ASM:src/%.asm=$(BUILD)/obj/%.o)
 SERVER_BIN := $(BUILD)/kvnode
 
 # test_abi runs first: every other test trusts the C mirror of the layouts.
-TESTS     := test_abi test_nghttp2_abi test_siphash test_util test_proto \
+TESTS     := test_abi test_siphash test_util test_proto \
              test_store test_store_mt test_snapshot test_pool test_hpack
 TEST_BINS := $(TESTS:%=$(BUILD)/tests/%)
 
@@ -88,13 +92,13 @@ ITEST_DEPS := tests/integration/snapgen.h tests/test_common.h
 all: $(SERVER_BIN)
 
 # gcc is only the link driver (rcrt1/crti for main). The server is a
-# static-PIE: glibc and nghttp2 are linked in, the kernel maps it at a random
+# static-PIE: glibc is linked in, the kernel maps it at a random
 # address (ASLR kept), and it relocates itself at startup. It needs no files
 # at all, so the runtime image is FROM scratch. Static glibc is safe here
 # because the server never uses NSS (no user, group or host-name lookups).
 # The tests run against this exact binary.
 $(SERVER_BIN): $(CORE_OBJ) $(SERVER_OBJ)
-	$(CC) -static-pie $(LDFLAGS) -o $@ $^ $(NGHTTP2_PREFIX)/lib/libnghttp2.a $(LDLIBS)
+	$(CC) -static-pie $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # The bake-off runs in --quick mode as part of `test`: it verifies every
 # answer of every structure, which keeps the benchmark code honest.
@@ -128,9 +132,6 @@ $(BUILD)/bench/%.o: bench/ds/%.asm $(INCLUDES) | $(BUILD)/bench
 
 $(BENCH_BIN): bench/bench_ds.c $(CORE_OBJ) $(BENCH_OBJ) tests/test_common.h tests/kvnode_abi.h | $(BUILD)/bench
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(CORE_OBJ) $(BENCH_OBJ) $(LDLIBS)
-
-$(BUILD)/tests/test_nghttp2_abi: tests/test_nghttp2_abi.c $(CORE_OBJ) tests/test_common.h | $(BUILD)/tests
-	$(CC) $(CFLAGS) $(LDFLAGS) -I $(NGHTTP2_PREFIX)/include -o $@ $< $(CORE_OBJ) $(LDLIBS)
 
 # test_hpack links nghttp2 purely as an oracle: its deflater produces the
 # random blocks and its inflater cross-checks the RFC vectors, so the native

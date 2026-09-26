@@ -1,17 +1,19 @@
 ; =============================================================================
 ; h2n.asm — KvNode's native HTTP/2 server engine (RFC 9113), built for gRPC.
 ;
-; Why it exists (ADR 0007): profiling KvNode at one core showed nghttp2
-; spending ~672 of the 1,427 ns of server time per request — generic frame
-; queues, priority trees, per-header allocations, stream-id hash lookups,
-; data-provider callbacks. This engine does only what a unary gRPC server
-; needs, directly on the connection's buffers:
+; Why it exists (ADR 0007): KvNode first used nghttp2, and profiling it at
+; one core showed the library spending ~672 of the 1,427 ns of server time
+; per request — generic frame queues, priority trees, per-header
+; allocations, stream-id hash lookups, data-provider callbacks. This engine
+; does only what a unary gRPC server needs, directly on the connection's
+; buffers; since ADR 0008 it is the server's only HTTP/2 implementation
+; (nghttp2 remains an independent client and test oracle only).
 ;
 ;   input   frames are parsed in place from the worker's read buffer; a
 ;           partial frame is carried to the next read; header blocks are
 ;           decoded by hpack.asm, whose per-field "meanings" replace string
-;           comparisons; request bodies go through the same buffering and
-;           budgets as the nghttp2 path (grpc.asm).
+;           comparisons; request bodies go through grpc.asm's buffering and
+;           budgets (kv_grpc_stream_append).
 ;   output  responses are framed straight into Conn.out_buf. The response
 ;           header blocks are precomputed: after a connection's first
 ;           response, HEADERS carry 2 bytes (:status 200 + content-type) and
@@ -135,13 +137,6 @@ extern kv_grpc_stream_release
 %define RESET_BURST         1000        ; rapid reset: burst, then 33 per second
 %define RESET_NS_PER_TOKEN  30303030
 
-; nghttp2_nv, the header-array format grpc.asm's static response tables use.
-%define H2NV_NAME           0
-%define H2NV_VALUE          8
-%define H2NV_NAMELEN        16
-%define H2NV_VALUELEN       24
-%define H2NV_SIZE           40
-
 ; Header-decoding context handed to field_handler by decode_fields.
 %define HC_TRAILERS         1           ; the block is trailers (no pseudo-headers)
 %define HC_REGULAR          2           ; a regular field was seen
@@ -186,17 +181,17 @@ global kv_h2n_reply_static
 global kv_h2n_reply_headers
 
 ; =============================================================================
-; kv_h2n_open — make an accepted connection a native HTTP/2 connection.
+; kv_h2n_open — set up HTTP/2 on an accepted connection.
 ;
 ; @param  rdi  Conn* (zeroed by calloc; fd, worker, out_buf already set)
 ; @returns eax = 0, or -1 when out of memory (the caller closes the socket
 ;          after kv_h2n_close, which handles a half-initialized state).
-; @remarks Queues the server connection preface: SETTINGS with the same
-;          values the nghttp2 path sends (MAX_CONCURRENT_STREAMS, a 1 MiB
-;          INITIAL_WINDOW_SIZE, an advisory MAX_HEADER_LIST_SIZE), then a
-;          WINDOW_UPDATE raising the connection window to the connection's
-;          buffering budget. Allocates the worker's Huffman scratch on first
-;          use (freed with the worker).
+; @remarks Queues the server connection preface: SETTINGS
+;          (MAX_CONCURRENT_STREAMS from Config, a 1 MiB INITIAL_WINDOW_SIZE,
+;          an advisory MAX_HEADER_LIST_SIZE), then a WINDOW_UPDATE raising
+;          the connection window to the connection's buffering budget.
+;          Allocates the worker's Huffman scratch on first use (freed with
+;          the worker).
 ; =============================================================================
 kv_h2n_open:
     push    rbx
@@ -204,7 +199,6 @@ kv_h2n_open:
     push    r13
     sub     rsp, 32                     ; [0..18) SETTINGS payload; 3 pushes + 32: aligned
     mov     rbx, rdi
-    or      qword [rbx + Conn.flags], CONN_NATIVE
     mov     r12, [rbx + Conn.worker]
     mov     r13, [r12 + Worker.cfg]
     cmp     qword [r12 + Worker.h2_scratch], 0
@@ -223,7 +217,8 @@ kv_h2n_open:
     mov     rax, [r12 + Worker.now]
     mov     [rbx + Conn.h2 + H2.reset_stamp], rax
     ; Connection receive window = the per-connection buffering budget, capped
-    ; at the protocol maximum (the nghttp2 path does the same).
+    ; at the protocol maximum: the peer may have that much in flight, which
+    ; is exactly what kv_grpc_stream_append lets the connection buffer.
     mov     rax, [r13 + Config.conn_budget]
     mov     ecx, MAX_WINDOW
     cmp     rax, rcx
@@ -294,7 +289,7 @@ kv_h2n_open:
 ; @param  rdi  Conn*
 ; @returns nothing.
 ; @remarks Streams are NOT freed here: they sit on Conn.streams and the
-;          worker frees them with kv_grpc_free_streams (both engines).
+;          worker frees them with kv_grpc_free_streams right after.
 ;          Called from linger and destroy paths, possibly both, so every
 ;          pointer is cleared after its release.
 ; =============================================================================
@@ -337,8 +332,8 @@ kv_h2n_close:
 ; @returns eax = 1 after a connection error, or once GOAWAY was sent or
 ;          received and no stream remains; else 0.
 ; @remarks The worker asks only when all output has been sent, so "1" means
-;          the final GOAWAY (if any) is already on the wire. The analogue of
-;          nghttp2_session_want_read/want_write both returning 0.
+;          the final GOAWAY (if any) is already on the wire: the session
+;          wants neither to read nor to write any more.
 ; =============================================================================
 kv_h2n_finished:
     mov     rax, [rdi + Conn.h2 + H2.flags]
@@ -380,7 +375,7 @@ kv_h2n_goaway:
     ret
 
 ; =============================================================================
-; kv_h2n_read — read one chunk from a native connection and process it.
+; kv_h2n_read — read one chunk from a connection and process it.
 ;
 ; @param  rdi  Worker*   @param rsi  Conn*
 ; @returns rax = 0 (processed or nothing to read: flush next), -1 (destroy
@@ -465,7 +460,8 @@ kv_h2n_read:
 ; @param  rdi  Conn*
 ; @returns eax = 0, or -1 when out of memory.
 ; @remarks Once more than half of the window is used, one WINDOW_UPDATE
-;          restores it in full (what nghttp2 does automatically). Request
+;          restores it in full (the usual HTTP/2 receiver strategy: few
+;          updates, and the sender never stalls on a half-empty window). Request
 ;          memory is bounded by the budgets in kv_grpc_stream_append, not by
 ;          withholding window.
 ; =============================================================================
@@ -1525,8 +1521,9 @@ blocks_equal:
 ;          pseudo-headers only in the request block, before regular fields,
 ;          each once, only the request ones, :path/:method/:scheme non-empty;
 ;          content-length strictly decimal and consistent. gRPC-relevant
-;          facts go straight into the Stream (POST, content-type,
-;          grpc-encoding, route) exactly as grpc.asm's on_header sets them.
+;          facts go straight into the Stream (ST_POST, ST_CT_OK, ST_ENCODED,
+;          the route in Stream.method), which kv_grpc_dispatch validates at
+;          END_STREAM.
 ; =============================================================================
 field_handler:
     mov     r10, [rdi + HCtx.stream]
@@ -1761,7 +1758,8 @@ apply_initial_window:
 ; @param  rdi  Conn*
 ; @returns eax = 0, or 1 when the budget is exhausted (ENHANCE_YOUR_CALM).
 ; @remarks Token bucket: RESET_BURST tokens, refilled at 33 per second from
-;          Worker.now — the defaults nghttp2 adopted for CVE-2023-44487.
+;          Worker.now — the budget nghttp2 and other servers adopted for
+;          CVE-2023-44487 (HTTP/2 rapid reset).
 ;          Only resets of streams that are still open count.
 ; =============================================================================
 reset_budget:
@@ -2035,9 +2033,9 @@ map_remove:
 ; @param  rdi  Conn*   @param esi  stream id (odd, > last_id)
 ; @returns rax = Stream*, or 0 when out of memory.
 ; @remarks The Stream comes from the worker pool, is linked on Conn.streams
-;          (so kv_grpc_free_streams releases it at teardown, as for
-;          nghttp2), and enters the map; its send window starts at the
-;          peer's INITIAL_WINDOW_SIZE, its receive window at ours.
+;          (so kv_grpc_free_streams releases it at teardown), and enters the
+;          map; its send window starts at the peer's INITIAL_WINDOW_SIZE, its
+;          receive window at ours.
 ; =============================================================================
 stream_open:
     push    rbx
@@ -2402,10 +2400,10 @@ kv_h2n_reply_buf:
 ;
 ; @param  rdi  Conn*   @param rsi  Stream* (resp_buf / resp_len = the
 ;              .rodata body, ST_STATIC_RESP set: never freed)
-; @param  rdx  nghttp2_nv array   @param ecx  entry count
+; @param  rdx  HdrField array   @param ecx  entry count
 ; @returns eax = 0, or -1 when out of memory.
-; @remarks The body ends the stream on its last DATA frame (no gRPC
-;          trailers), as grpc.asm's resp_read does for nghttp2. A HEAD
+; @remarks The body ends the stream on its last DATA frame: a plain HTTP
+;          error has no gRPC trailers (they would be meaningless). A HEAD
 ;          request gets the same headers and no body (RFC 9110 §9.3.2).
 ; =============================================================================
 kv_h2n_reply_static:
@@ -2451,7 +2449,7 @@ kv_h2n_reply_static:
 ; ends the stream.
 ;
 ; @param  rdi  Conn*   @param rsi  Stream*
-; @param  rdx  nghttp2_nv array (:status, content-type, grpc-status,
+; @param  rdx  HdrField array (:status, content-type, grpc-status,
 ;              grpc-message[, grpc-accept-encoding])   @param ecx  count
 ; @returns eax = 0, or -1 when out of memory.
 ; =============================================================================
@@ -2877,8 +2875,8 @@ put_tsu:
     ret
 
 ; =============================================================================
-; put_nv_headers — one HEADERS frame from an nghttp2_nv array. Internal.
-; @param  rdi  Conn*   @param rsi  Stream*   @param rdx  nv array
+; put_nv_headers — one HEADERS frame from a HdrField array. Internal.
+; @param  rdi  Conn*   @param rsi  Stream*   @param rdx  HdrField array
 ; @param  ecx  count   @param r8d  frame flags (END_HEADERS [| END_STREAM])
 ; @returns eax = 0, or -1 when out of memory.
 ; =============================================================================
@@ -2930,8 +2928,8 @@ put_nv_headers:
     ret
 
 ; =============================================================================
-; encode_nv — HPACK-encode an nghttp2_nv array. Internal.
-; @param  rdi  Conn*   @param rsi  nv array   @param edx  count
+; encode_nv — HPACK-encode a HdrField array (server.inc). Internal.
+; @param  rdi  Conn*   @param rsi  HdrField array   @param edx  count
 ; @param  rcx  destination (H2_NV_MAX bytes suffice for grpc.asm's arrays:
 ;              at most 5 fields of short constant strings)
 ; @returns rax = bytes written.
@@ -2958,17 +2956,17 @@ encode_nv:
 .field:
     test    r13d, r13d
     jz      .done
-    cmp     qword [r12 + H2NV_NAMELEN], 7
+    cmp     qword [r12 + HdrField.namelen], 7
     jne     .not_status
-    mov     rdi, [r12 + H2NV_NAME]
+    mov     rdi, [r12 + HdrField.name]
     lea     rsi, [s_status]
     mov     edx, 7
     call    kv_keyeq wrt ..plt
     test    eax, eax
     jz      .not_status
-    cmp     qword [r12 + H2NV_VALUELEN], 3
+    cmp     qword [r12 + HdrField.valuelen], 3
     jne     .status_literal
-    mov     rdi, [r12 + H2NV_VALUE]
+    mov     rdi, [r12 + HdrField.value]
     lea     rsi, [v_200]
     mov     edx, 3
     call    kv_keyeq wrt ..plt
@@ -2982,17 +2980,17 @@ encode_nv:
     inc     r15
     jmp     .value
 .not_status:
-    cmp     qword [r12 + H2NV_NAMELEN], 12
+    cmp     qword [r12 + HdrField.namelen], 12
     jne     .new_name
-    mov     rdi, [r12 + H2NV_NAME]
+    mov     rdi, [r12 + HdrField.name]
     lea     rsi, [s_ctype]
     mov     edx, 12
     call    kv_keyeq wrt ..plt
     test    eax, eax
     jz      .new_name
-    cmp     qword [r12 + H2NV_VALUELEN], 16
+    cmp     qword [r12 + HdrField.valuelen], 16
     jne     .ctype_literal
-    mov     rdi, [r12 + H2NV_VALUE]
+    mov     rdi, [r12 + HdrField.value]
     lea     rsi, [v_grpc]
     mov     edx, 16
     call    kv_keyeq wrt ..plt
@@ -3016,18 +3014,18 @@ encode_nv:
 .new_name:
     mov     byte [r15], 0x00            ; literal without indexing, new name
     lea     rdi, [r15 + 1]
-    mov     rsi, [r12 + H2NV_NAME]
-    mov     rdx, [r12 + H2NV_NAMELEN]
+    mov     rsi, [r12 + HdrField.name]
+    mov     rdx, [r12 + HdrField.namelen]
     call    put_string
     mov     r15, rax
 .value:
     mov     rdi, r15
-    mov     rsi, [r12 + H2NV_VALUE]
-    mov     rdx, [r12 + H2NV_VALUELEN]
+    mov     rsi, [r12 + HdrField.value]
+    mov     rdx, [r12 + HdrField.valuelen]
     call    put_string
     mov     r15, rax
 .advance:
-    add     r12, H2NV_SIZE
+    add     r12, HdrField_size
     dec     r13d
     jmp     .field
 .done:

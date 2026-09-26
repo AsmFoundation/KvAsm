@@ -1,10 +1,11 @@
 # KvNode architecture
 
 KvNode is a gRPC key-value server written in x86-64 assembly (NASM). It
-links two C libraries: glibc and nghttp2 (ADR 0002). HTTP/2 comes from one
-of two engines, chosen per process with `KVNODE_H2_ENGINE`: nghttp2, or
-KvNode's own `h2n.asm` (ADR 0007). This page shows how the parts fit
-together. The ADRs record why each choice was made.
+links one C library, glibc. HTTP/2 is KvNode's own engine, `h2n.asm` with
+the HPACK decoder `hpack.asm` (ADR 0007). nghttp2, the library it replaced,
+was removed from the server (ADR 0008) and survives only as the independent
+client the tests and benchmarks check the server with. This page shows how
+the parts fit together. The ADRs record why each choice was made.
 
 ```mermaid
 flowchart LR
@@ -13,13 +14,13 @@ flowchart LR
     subgraph P["kvnode process (static-PIE, FROM scratch)"]
         M["main thread<br/>config → port probe → store → snapshot<br/>→ workers → sigwaitinfo"]
         subgraph W1["worker 0"]
-            E1[epoll loop] --> N1["HTTP/2 engine<br/>h2n.asm or nghttp2"] --> G1[gRPC dispatch]
+            E1[epoll loop] --> N1["HTTP/2 engine<br/>h2n.asm + hpack.asm"] --> G1[gRPC dispatch]
         end
         subgraph W2["worker 1"]
-            E2[epoll loop] --> N2["HTTP/2 engine<br/>h2n.asm or nghttp2"] --> G2[gRPC dispatch]
+            E2[epoll loop] --> N2["HTTP/2 engine<br/>h2n.asm + hpack.asm"] --> G2[gRPC dispatch]
         end
         subgraph Wn["worker n"]
-            En[epoll loop] --> Nn["HTTP/2 engine<br/>h2n.asm or nghttp2"] --> Gn[gRPC dispatch]
+            En[epoll loop] --> Nn["HTTP/2 engine<br/>h2n.asm + hpack.asm"] --> Gn[gRPC dispatch]
         end
         G1 & G2 & Gn --> S[("store<br/>cuckoo buckets + records<br/>lock-free reads · QSBR")]
         M --> S
@@ -32,51 +33,51 @@ flowchart LR
 1. **Accept.** The kernel hashes a new connection to one worker's
    `SO_REUSEPORT` listener. The connection stays on that thread for life,
    so connection state needs no locks.
-2. **Read.** The worker's `epoll` loop reads up to 64 KiB and hands it to
-   the connection's HTTP/2 engine, which parses frames, applies HPACK and
-   flow control and enforces stream limits:
-   - **native** (`h2n.asm`): frames are parsed in place in the read buffer,
-     and a partial frame is carried to the next read. Header blocks are
-     decoded by `hpack.asm`, whose per-field *meanings* (computed once per
-     distinct field) replace string comparisons. Streams live in an
-     open-addressing map, and every RFC 9113 state and error rule is
-     applied (h2spec 146/146).
-   - **nghttp2**: `nghttp2_session_mem_recv2` does the same work and invokes
-     `grpc.asm`'s callbacks.
+2. **Read.** The worker's `epoll` loop hands the connection to the HTTP/2
+   engine (`h2n.asm`), which reads up to 64 KiB, parses frames, applies
+   HPACK and flow control and enforces stream limits. Frames are parsed in
+   place in the read buffer, and a partial frame is carried to the next
+   read. Header blocks are decoded by `hpack.asm`, whose per-field
+   *meanings* (computed once per distinct field) replace string
+   comparisons; a block byte-identical to the connection's previous one
+   under the same HPACK table replays that decode instead. Streams live in
+   an open-addressing map, and every RFC 9113 state and error rule is
+   applied (h2spec 146/146).
 3. **Route.** Headers decide the route: `:path` picks
    `/kvnode.v1.KvNode/{Get,Put,Delete}` or `/grpc.health.v1.Health/Check`,
    and `:method`, `content-type` and `grpc-encoding` are checked. The body
    is buffered per stream within two budgets: the per-request
-   `max_request` and the per-connection `KVNODE_CONN_BUFFER_MB`. Everything
-   from here on is shared by both engines (`grpc.asm` is engine-neutral).
+   `max_request` and the per-connection `KVNODE_CONN_BUFFER_MB`; a body
+   that arrives whole in one DATA frame is used in place instead.
 4. **Execute.** At END_STREAM the worker validates the 5-byte gRPC framing,
    decodes the protobuf (zero-copy, `proto.asm`), checks limits and hashes
    the key (SipHash-2-4-128, secret key).
    - Puts, Deletes and health checks execute right there.
    - **GETs are deferred:** their two candidate buckets are prefetched
      immediately, and the stream joins the connection's batch.
-   - When nghttp2 has consumed the whole read, `kv_grpc_run_batch` runs two
-     passes over the batch: prefetch each candidate record, then look up and
-     answer. The cache misses of up to a whole read's GETs thus overlap
-     instead of stalling one after another (ADR 0005: +28% at 4 cores and
-     +35% at 1 core, paired medians).
+   - When the whole read has been parsed, `kv_grpc_run_batch` runs two
+     passes over the batch: prefetch the first three cache lines of each
+     candidate record, then look up and answer. The cache misses of up to a
+     whole read's GETs thus overlap instead of stalling one after another
+     (ADR 0005: +28% at 4 cores and +35% at 1 core, paired medians; the
+     third line covers a whole record of up to 144 bytes, so the value copy
+     no longer waits on DRAM).
    - A GET the peer resets within the same read is freed, not answered.
 5. **Respond.** HEADERS, then DATA (the message, within the peer's
    flow-control windows), then trailer HEADERS (`grpc-status: 0`). Errors
    are a single Trailers-Only HEADERS frame. All output produced by one
    input batch is coalesced into one `sendto`.
-   - The native engine frames responses straight into the output buffer,
-     with precomputed header blocks: after a connection's first response,
+   - Responses are framed straight into the output buffer, with
+     precomputed header blocks: after a connection's first response,
      HEADERS carry 2 bytes and the trailers 1 byte. A GET hit is copied
-     from the store record into its DATA frame, with no response buffer.
-   - nghttp2 pulls each message through a data provider and encodes the
-     headers every time.
+     from the store record into its DATA frame, with no response buffer and
+     no allocation.
 
-Allocation on this path goes through the worker's own pool (`pool.asm`).
-nghttp2 receives it as its `nghttp2_mem` allocator; the native engine's
-streams, stream maps and HPACK entries, and every request buffer, use it
-too. A connection never leaves its worker thread, so the pool needs no
-locks. Freed blocks are reused LIFO while still cached.
+Allocation on this path goes through the worker's own pool (`pool.asm`):
+streams, stream maps, HPACK rings and entries, and every request buffer. A
+connection never leaves its worker thread, so the pool needs no locks.
+Freed blocks are reused LIFO while still cached. Memory use, measured, is
+in [OPERATIONS.md](OPERATIONS.md#memory).
 
 ## Store (ADR 0001, ADR 0003)
 
@@ -133,8 +134,8 @@ locks. Freed blocks are reused LIFO while still cached.
 | `server/src/h2n.asm` | native HTTP/2 engine: frames, stream states and map, flow control, precomputed responses, flood defenses |
 | `server/src/hpack.asm` | HPACK decoder (RFC 7541): Huffman FSM, dynamic table, per-field meanings |
 | `server/include/huffman.inc` | the Huffman decoding table, generated and self-verified by `server/tools/gen_huffman.py` |
-| `server/src/grpc.asm` | engine-neutral request logic: body budgets, routing, validation, batched GET execution, health service; nghttp2 callbacks and responses |
-| `server/src/pool.asm` | per-worker size-class allocator (nghttp2_mem-compatible) |
+| `server/src/grpc.asm` | request logic: body budgets, validation, dispatch, batched GET execution, health service |
+| `server/src/pool.asm` | per-worker size-class allocator (malloc-shaped, no locks) |
 | `server/src/proto.asm` | protobuf decode (zero-copy, skips unknown fields) and varint encode |
 | `server/src/store.asm` | table lifecycle, Put/Delete, memory accounting, QSBR |
 | `server/src/cuckoo.asm` | lock-free lookup (SWAR or SSE2 tag scan), insert with BFS displacement, remove, prefetch stages |
@@ -150,10 +151,10 @@ locks. Freed blocks are reused LIFO while still cached.
 
 | Layer | What | Where |
 |---|---|---|
-| unit (C over assembly) | ABI layouts, the nghttp2 mirror, SipHash vectors, key compare with guard pages, protobuf, store model and torture, snapshot parsing and every rejection reason, HPACK (RFC vectors and 30,000 blocks differential against nghttp2) | `make -C server test` |
+| unit (C over assembly) | ABI layouts, SipHash vectors, key compare with guard pages, protobuf, store model and torture, snapshot parsing and every rejection reason, HPACK (RFC vectors and 30,000 blocks differential against nghttp2 as the oracle) | `make -C server test` |
 | bake-off | cuckoo vs chaining vs trie, every answer verified | `make -C server bench` |
 | store levels | lookup variants per memory level (SWAR/SSE2, private caches), every answer verified | `make -C server bench-store` |
-| end to end | real server over loopback, **for both HTTP/2 engines**: protocol and limits, pipelining, cancel, torn-value detection, drain with an in-flight request, idle timeout, snapshot source, startup refusals, h2spec (nghttp2: documented baseline, native: 146/146), and fuzzing of the native engine followed by the full suite on the same server | `make -C server itest` |
+| end to end | real server over loopback, driven by an independent HTTP/2 client (nghttp2's client API): protocol and limits, pipelining, cancel, torn-value detection, drain with an in-flight request, idle timeout, snapshot source, startup refusals, h2spec 146/146 (empty baseline), and fuzzing of the HTTP/2 input path followed by the full suite on the same server | `make -C server itest` |
 | client | 64 SipHash vectors, compaction, byte-exact snapshot vs the server tool, and the real container via Testcontainers | `dotnet test --solution client/dotnet/KvNode.Client.slnx` |
 
 The Docker build runs the unit, bake-off and end-to-end layers. An image

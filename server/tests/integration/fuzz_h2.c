@@ -1,6 +1,6 @@
 /*
  * fuzz_h2.c — black-box fuzzing of a running kvnode's HTTP/2 input path
- * (written for the native engine, h2n.asm; works against either engine).
+ * (h2n.asm and hpack.asm, KvNode's own engine: ADR 0007/0008).
  *
  * Usage: fuzz_h2 HOST PORT ITERATIONS SEED PID
  *   ITERATIONS  fuzz connections to run

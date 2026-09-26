@@ -1,16 +1,17 @@
 /*
  * itest_grpc.c — end-to-end tests of a running kvnode over real HTTP/2.
  *
- * Built on nghttp2's *client* API: the same library the server links, but an
- * independent code path (client session, HPACK encoder, client-side flow
- * control), so this verifies the server's bytes on the wire rather than its
- * internals:
+ * Built on nghttp2's *client* API: an HTTP/2 implementation that shares no
+ * code with the server (whose engine is its own h2n.asm/hpack.asm, ADR
+ * 0008), so this verifies the server's bytes on the wire against an
+ * independent client session, HPACK encoder and client-side flow control
+ * rather than against the server's own understanding of the protocol:
  *   - exact response messages, :status, grpc-status and grpc-message for
  *     every success and error path of Get/Put/Delete;
  *   - values of max_value bytes crossing many DATA frames and flow-control
  *     windows in both directions (the client keeps nghttp2's 64 KiB default
- *     window on the main connection, forcing partial reads in the server's
- *     data provider);
+ *     window on the main connection, forcing the server to frame responses
+ *     from its pend list as window updates arrive);
  *   - 300 concurrent streams on one connection (above the server's
  *     max_streams, so the client must queue against the advertised limit);
  *   - a stream cancelled mid-body (RST_STREAM) leaving the connection usable

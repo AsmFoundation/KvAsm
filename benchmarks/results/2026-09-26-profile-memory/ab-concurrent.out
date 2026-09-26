@@ -1,0 +1,23 @@
+block 1 blocking:100:8   A    1,532,148  B    1,526,678  B/A 0.996  (slot0=A)
+block 1 busy:100:6       A    1,994,445  B    2,079,113  B/A 1.042  (slot0=A)
+block 1 blocking:16:8    A    1,568,787  B    1,593,044  B/A 1.015  (slot0=A)
+block 2 blocking:100:8   A    1,528,273  B    1,543,175  B/A 1.010  (slot0=B)
+block 2 busy:100:6       A    2,026,451  B    1,940,905  B/A 0.958  (slot0=B)
+block 2 blocking:16:8    A    1,605,728  B    1,554,838  B/A 0.968  (slot0=B)
+block 3 blocking:100:8   A    1,535,568  B    1,548,378  B/A 1.008  (slot0=A)
+block 3 busy:100:6       A      992,628  B    1,062,695  B/A 1.071  (slot0=A)
+block 3 blocking:16:8    A    1,547,492  B    1,550,435  B/A 1.002  (slot0=A)
+block 4 blocking:100:8   A    1,534,769  B    1,523,032  B/A 0.992  (slot0=B)
+block 4 busy:100:6       A    1,779,390  B    1,819,870  B/A 1.023  (slot0=B)
+block 4 blocking:16:8    A    1,439,746  B    1,433,308  B/A 0.996  (slot0=B)
+block 5 blocking:100:8   A    1,490,261  B    1,486,987  B/A 0.998  (slot0=A)
+block 5 busy:100:6       A    2,058,611  B    2,189,384  B/A 1.064  (slot0=A)
+block 5 blocking:16:8    A    1,565,002  B    1,574,704  B/A 1.006  (slot0=A)
+block 6 blocking:100:8   A    1,520,904  B    1,520,706  B/A 1.000  (slot0=B)
+block 6 busy:100:6       A    2,718,235  B    2,717,099  B/A 1.000  (slot0=B)
+block 6 blocking:16:8    A    1,874,799  B    1,826,118  B/A 0.974  (slot0=B)
+
+blocking:100:8   A    1,530,210  B    1,524,855  B/A median 0.999 geomean 1.001 [0.992-1.010]  2/6 blocks B faster, sign p=0.688
+busy:100:6       A    2,010,448  B    2,010,009  B/A median 1.033 geomean 1.025 [0.958-1.071]  4/6 blocks B faster, sign p=0.688
+blocking:16:8    A    1,566,894  B    1,564,771  B/A median 0.999 geomean 0.993 [0.968-1.015]  3/6 blocks B faster, sign p=1.000
+exit=0

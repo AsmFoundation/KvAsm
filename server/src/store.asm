@@ -89,10 +89,14 @@ global kv_store_enable_inval
 ; @returns rax = Table*, or 0 on invalid arguments or allocation failure
 ;          (everything allocated so far is released).
 ; @remarks Buckets come from an anonymous NORESERVE mapping with transparent
-;          huge pages requested: zeroed by the kernel, touched lazily, and
-;          fewer TLB misses on large tables. nbuckets = next power of two >=
-;          capacity/5, i.e. at most ~83% of the 6-slot buckets are ever used,
-;          which keeps cuckoo paths short.
+;          huge pages requested: zeroed by the kernel, fewer TLB misses on
+;          large tables. Every whole 2 MiB region is written once here (see
+;          the prefault below), so with THP the table is RESIDENT FROM
+;          STARTUP, whatever the key count: 64 bytes x nbuckets (16 MiB at
+;          the default capacity of 1M, 2 GiB at 100M). Without THP only one
+;          4 KiB page per region is touched now, the rest as keys arrive.
+;          nbuckets = next power of two >= capacity/5, i.e. at most ~83% of
+;          the 6-slot buckets are ever used, which keeps cuckoo paths short.
 ; =============================================================================
 kv_store_create:
     push    rbx

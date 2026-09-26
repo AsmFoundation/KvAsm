@@ -3,9 +3,10 @@
 ; connection, gRPC stream) and their tunables.
 ;
 ; Ownership rules (the whole concurrency story of the network layer):
-;   * Config and the nghttp2 callback table are built by main before any
-;     worker starts and are read-only afterwards — shared by all threads.
-;   * Everything else (Worker, Conn, Stream, nghttp2 sessions) belongs to
+;   * Config and the HPACK/Huffman tables (kv_hpack_global_init) are built by
+;     main before any worker starts and are read-only afterwards — shared by
+;     all threads.
+;   * Everything else (Worker, Conn with its HTTP/2 state, Stream) belongs to
 ;     exactly one worker thread for its whole life; no locks are needed and
 ;     none are taken. Workers share only the store, which has its own
 ;     concurrency protocol (store.asm).
@@ -13,18 +14,20 @@
 %ifndef SERVER_INC
 %define SERVER_INC
 
-%include "hpack.inc"                    ; HpackDec, embedded in the native engine's H2
+%include "hpack.inc"                    ; HpackDec, embedded in the HTTP/2 engine's H2
 
 %define READ_CHUNK          65536       ; bytes per recv() into the worker buffer
 %define OUT_INITIAL         65536       ; initial per-connection output buffer
-%define OUT_HIGH_WATER      65536       ; stop producing output above this (both engines)
+%define OUT_HIGH_WATER      65536       ; stop producing output above this
 %define MAX_EVENTS          256         ; epoll events per wait
 %define GRPC_PREFIX         5           ; compressed flag + 4-byte length
-; HTTP/2 flow control, identical for both engines: the per-stream receive
-; window we grant (large values need no WINDOW_UPDATE round trips) and the
-; protocol's window ceiling (RFC 9113 §6.9.1).
+; HTTP/2 flow control: the per-stream receive window we grant (large values
+; need no WINDOW_UPDATE round trips) and the protocol's window ceiling
+; (RFC 9113 §6.9.1).
 %define STREAM_WINDOW       1048576
 %define MAX_WINDOW          0x7FFFFFFF
+; RFC 9113 §7 error code carried by a graceful GOAWAY (drain, idle timeout).
+%define H2_NO_ERROR         0
 
 ; ---- Config: validated settings (see config.asm for the environment names) ---
 struc Config
@@ -43,13 +46,10 @@ struc Config
     .max_request:       resq 1          ; derived: largest acceptable gRPC message
     ; appended fields (C tests read Config only through kv_config_abi offsets)
     .scan_mode:         resq 1          ; KVNODE_SCAN: 0 = swar, 1 = sse2 (kv_set_scan_mode)
-    .h2_engine:         resq 1          ; KVNODE_H2_ENGINE: H2_NGHTTP2 or H2_NATIVE
     .cache_l1_bits:     resq 1          ; KVNODE_CACHE_L1_BITS: 0 = no private L1
     .cache_l2_bits:     resq 1          ; KVNODE_CACHE_L2_BITS: 0 = no private L2
 endstruc
 
-%define H2_NGHTTP2          0           ; HTTP/2 by nghttp2 (ADR 0002)
-%define H2_NATIVE           1           ; KvNode's own HTTP/2 engine (h2n.asm, ADR 0007)
 %define INVAL_BITS_DEFAULT  16          ; generation slots when private caches are on
 
 ; ---- Worker: one epoll event loop, pinned to nothing, owns its connections ----
@@ -75,7 +75,6 @@ struc Worker
     .event_fd:          resq 1          ; wake-up from main (shutdown)
     .table:             resq 1          ; KvTable* (shared)
     .cfg:               resq 1          ; Config* (shared, read-only)
-    .callbacks:         resq 1          ; nghttp2_session_callbacks* (shared)
     .conns:             resq 1          ; doubly linked list of Conn
     .nconns:            resq 1
     .draining:          resq 1          ; 1 after shutdown was requested
@@ -90,18 +89,16 @@ struc Worker
     .now:               resq 1          ; monotonic ns, refreshed once per loop pass
     .accept_paused:     resq 1          ; 1 while out of fds (listener unregistered)
     .st_rejected:       resq 1          ; connections refused (limit or fds)
-    .pool:              resb Pool_size  ; this worker's allocator (sessions, streams)
-    .mem:               resq 5          ; nghttp2_mem {user_data, malloc, free, calloc, realloc}
+    .pool:              resb Pool_size  ; this worker's allocator (streams, maps, HPACK rings)
     .hcache:            resq 1          ; private L1/L2 record cache (hcache.asm), or 0
-    ; Huffman output of the native engine's HPACK decoder (h2n.asm): decoding
-    ; is synchronous, so one buffer serves every connection of the worker.
-    ; malloc'd by the first native connection, freed with the worker.
+    ; Huffman output of the HPACK decoder (h2n.asm): decoding is synchronous,
+    ; so one buffer serves every connection of the worker. malloc'd by the
+    ; worker's first connection, freed with the worker.
     .h2_scratch:        resq 1
 endstruc
 
-; ---- H2: the native HTTP/2 engine's per-connection state (h2n.asm, ADR 0007) ----
-; Embedded in Conn (no extra allocation or pointer chase on the hot path);
-; zero on nghttp2 connections, which never touch it.
+; ---- H2: the HTTP/2 engine's per-connection state (h2n.asm, ADR 0007) ---------
+; Embedded in Conn (no extra allocation or pointer chase on the hot path).
 %define H2_RING             32          ; remembered ids per ring (power of two)
 %define H2_HC_MAX           128         ; largest request header block cached
 struc H2
@@ -154,11 +151,9 @@ endstruc
 ; ---- Conn: one HTTP/2 connection ------------------------------------------------
 %define CONN_WANT_OUT       1           ; epoll interest is EPOLLOUT (output pending)
 %define CONN_LINGER         2           ; session done, write side shut, draining input
-%define CONN_NATIVE         4           ; HTTP/2 by h2n.asm (session = 0, h2 in use)
 struc Conn
     .fd:                resq 1
     .flags:             resq 1
-    .session:           resq 1          ; nghttp2_session*
     .worker:            resq 1          ; owning Worker*
     .streams:           resq 1          ; list of live Stream
     .out_buf:           resq 1
@@ -169,15 +164,21 @@ struc Conn
     .last_active:       resq 1          ; monotonic ns of the last received bytes
     .prev:              resq 1
     .next:              resq 1
-    ; Stream cache: nghttp2 callbacks name streams by id, and resolving an id
-    ; is a hash-map lookup; the headers and data of one request arrive
-    ; back to back, so remembering the last stream answers almost every call.
-    .cur_id:            resq 1          ; id of cur_stream
-    .cur_stream:        resq 1          ; Stream* or 0 (cleared when it closes)
     ; GETs parsed from the current read, answered after it (prefetch batch).
     .batch_head:        resq 1
     .batch_tail:        resq 1
-    .h2:                resb H2_size    ; native engine state (CONN_NATIVE only)
+    .h2:                resb H2_size    ; HTTP/2 engine state (h2n.asm)
+endstruc
+
+; ---- HdrField: one response header field, for the error-path replies ----------
+; grpc.asm's static header tables (Trailers-Only gRPC errors, 405/415) are
+; arrays of these, handed to kv_h2n_reply_headers / kv_h2n_reply_static;
+; h2n.asm's encode_nv HPACK-encodes them. Strings are not NUL-terminated.
+struc HdrField
+    .name:              resq 1          ; const char*
+    .value:             resq 1          ; const char*
+    .namelen:           resq 1
+    .valuelen:          resq 1
 endstruc
 
 ; ---- Stream: one gRPC call --------------------------------------------------------
@@ -223,7 +224,7 @@ struc Stream
     .h1:                resq 1
     .h2:                resq 1
     .batch_next:        resq 1
-    ; Native engine only (h2n.asm); zero and unused on nghttp2 connections.
+    ; HTTP/2 stream state, owned by h2n.asm.
     .send_window:       resq 1          ; signed: what the peer lets us send here
     .recv_window:       resq 1          ; signed: what we still let the peer send
     .h2flags:           resq 1          ; SN_* stream state bits (h2n.asm)

@@ -48,14 +48,12 @@ extern kv_store_destroy
 extern kv_store_reclaim
 extern kv_store_stats
 extern kv_snapshot_load
-extern kv_grpc_callbacks_new
 extern kv_hpack_global_init
 extern kv_port_probe
 extern kv_worker_create
 extern kv_worker_start
 extern kv_worker_stop
 extern kv_worker_join
-extern nghttp2_session_callbacks_del
 extern kv_logb_init
 extern kv_logb_str
 extern kv_logb_cstr
@@ -97,13 +95,10 @@ k_streams:  db " max_streams="
 k_snapshot: db " snapshot="
 k_none:     db "none", 0
 k_scan:     db " scan="
-k_engine:   db " h2_engine="
 k_l1:       db " cache_l1_bits="
 k_l2:       db " cache_l2_bits="
 v_swar:     db "swar", 0
 v_sse2:     db "sse2", 0
-v_nghttp2:  db "nghttp2", 0
-v_native:   db "native", 0
 m_listen:   db ' msg="listening" transport=h2c'
 L_listen    equ $ - m_listen
 m_loaded:   db ' msg="snapshot loaded" records='
@@ -217,13 +212,6 @@ main:
     lea     rsi, [v_swar]
     lea     rax, [v_sse2]
     cmp     qword [r15 + Config.scan_mode], 0
-    cmovne  rsi, rax
-    call    kv_logb_cstr wrt ..plt
-    LOGLIT  k_engine, 11
-    lea     rdi, [rsp + F_LOG]
-    lea     rsi, [v_nghttp2]
-    lea     rax, [v_native]
-    cmp     qword [r15 + Config.h2_engine], H2_NGHTTP2
     cmovne  rsi, rax
     call    kv_logb_cstr wrt ..plt
     LOGLIT  k_l1, 15
@@ -360,13 +348,9 @@ main:
     xor     edx, edx
     call    pthread_sigmask wrt ..plt
 
-    ; The native engine's HPACK decoder classifies the 61 static entries
-    ; once, before any worker could decode a header block (read-only after).
+    ; The HPACK decoder (hpack.asm) classifies the 61 static entries once,
+    ; before any worker could decode a header block (read-only after).
     call    kv_hpack_global_init wrt ..plt
-    call    kv_grpc_callbacks_new wrt ..plt
-    test    rax, rax
-    jz      .worker_failed_early
-    mov     rbp, rax                    ; callbacks
 
     mov     rdi, [r15 + Config.workers]
     mov     esi, 8
@@ -381,7 +365,6 @@ main:
     mov     rdi, r12
     mov     rsi, rbx
     mov     rdx, r15
-    mov     rcx, rbp
     call    kv_worker_create wrt ..plt
     test    rax, rax
     jz      .worker_failed
@@ -468,8 +451,6 @@ main:
     LOGEND
     mov     rdi, r14
     call    free wrt ..plt
-    mov     rdi, rbp
-    call    nghttp2_session_callbacks_del wrt ..plt
     mov     rdi, rbx
     call    kv_store_destroy wrt ..plt
     xor     eax, eax

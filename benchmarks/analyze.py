@@ -36,10 +36,17 @@ from collections import defaultdict
 
 ORDER = ["kvnode", "kvnode-native", "kvnode-nghttp2", "redis", "valkey", "dragonfly", "garnet",
          "memcached"]
+"""Row order of every table. kvnode-native / kvnode-nghttp2 only occur in
+results recorded before ADR 0008 (KvNode's two HTTP/2 engines, N1-N3)."""
 
 NATIVE_EXPERIMENTS = ("N1", "N2", "N3")
-"""KvNode's two HTTP/2 engines (suite.VARIANTS), compared with each other and
-with Redis/Valkey; their tables use kvnode-native as the base of the ratios."""
+"""One-core headline experiments. Results recorded before ADR 0008 compare
+KvNode's two HTTP/2 engines there (variants kvnode-native / kvnode-nghttp2,
+with kvnode-native as the base of the ratios); later ones compare kvnode
+with Redis and Valkey (base kvnode)."""
+
+LEGACY_NATIVE = "kvnode-native"
+"""The base system of pre-ADR 0008 N results (see NATIVE_EXPERIMENTS)."""
 
 ADJUSTED_EXPERIMENTS = ("E1", "E2", "E3", "E5", "E6", "E7")
 """Closed-loop throughput experiments that get the outside-load adjusted
@@ -894,14 +901,30 @@ class Report:
                               fmt=lambda v: fmt_ops(v) if v > 10000 else f"{v:.0f}")
 
     def native(self) -> None:
-        """N1-N3: KvNode's native HTTP/2 engine against nghttp2, Redis, Valkey."""
-        if not any(r["experiment"] in NATIVE_EXPERIMENTS for r in self.res.records):
+        """N1-N3: the one-core headline.
+
+        Results recorded before ADR 0008 compare KvNode's native HTTP/2
+        engine with its nghttp2 engine (and Redis/Valkey), ratios based on
+        kvnode-native; later results compare kvnode with Redis and Valkey.
+        The section adapts to whichever the records contain, so archived
+        sessions keep rendering exactly as they were published.
+        """
+        recs = [r for r in self.res.records if r["experiment"] in NATIVE_EXPERIMENTS]
+        if not recs:
             return
-        self.w("## N — KvNode's native HTTP/2 engine (h2n.asm) vs nghttp2", "",
-               "The same image, one variable: `KVNODE_H2_ENGINE=native` (KvNode's own HTTP/2 "
-               "engine, ADR 0007) or `nghttp2` (nghttp2 1.70). Ratios are native ÷ X, paired by "
-               "block.", "")
-        if any(r["experiment"] == "N1" for r in self.res.records):
+        legacy = any(r["system"] == LEGACY_NATIVE for r in recs)
+        base = LEGACY_NATIVE if legacy else "kvnode"
+        if legacy:
+            self.w("## N — KvNode's native HTTP/2 engine (h2n.asm) vs nghttp2", "",
+                   "The same image, one variable: `KVNODE_H2_ENGINE=native` (KvNode's own HTTP/2 "
+                   "engine, ADR 0007) or `nghttp2` (nghttp2 1.70). Ratios are native ÷ X, paired by "
+                   "block. (Recorded before ADR 0008 removed nghttp2 from the server.)", "")
+        else:
+            self.w("## N — one core: KvNode vs Redis and Valkey", "",
+                   "E1's and E5's 1-core cells for the single-threaded-execution servers, run on "
+                   "their own so the headline is re-checked with full pairing. Ratios are "
+                   "KvNode ÷ X, paired by block.", "")
+        if any(r["experiment"] == "N1" for r in recs):
             self.w("### N1 — 1 core, E1's workload (100% GET, 100-byte values, 1M keys, 64×16)", "")
             self.comparison_table("metric", [("ops/s", self.res.values("N1", "ops"), True),
                                              ("ops per CPU-second", self.res.values("N1", "ops_per_cpu_s"), True),
@@ -909,22 +932,22 @@ class Report:
                                              ("p50 µs", self.res.values("N1", "p50"), False),
                                              ("p99 µs", self.res.values("N1", "p99"), False)],
                                   fmt=lambda v: fmt_ops(v) if v > 10000 else f"{v:.0f}",
-                                  base="kvnode-native")
-        cores = sorted({r["cores"] for r in self.res.records if r["experiment"] == "N2"})
+                                  base=base)
+        cores = sorted({r["cores"] for r in recs if r["experiment"] == "N2"})
         if cores:
             self.w("### N2 — scaling (E1's workload)", "")
             self.comparison_table("Throughput (ops/s)",
                                   [(f"{c} cores", self.res.values("N2", "ops", cores=c)) for c in cores],
-                                  base="kvnode-native")
+                                  base=base)
             self.comparison_table("ops per CPU-second",
                                   [(f"{c} cores", self.res.values("N2", "ops_per_cpu_s", cores=c))
-                                   for c in cores], base="kvnode-native")
-        if any(r["experiment"] == "N3" for r in self.res.records):
+                                   for c in cores], base=base)
+        if any(r["experiment"] == "N3" for r in recs):
             self.w("### N3 — per-request floor (no-op round trip, 1 core)", "")
             self.comparison_table("metric", [("ops/s", self.res.values("N3", "ops"), True),
                                              ("server CPU ns/op", self.res.values("N3", "cpu_ns_per_op"), False)],
                                   fmt=lambda v: fmt_ops(v) if v > 10000 else f"{v:.0f}",
-                                  base="kvnode-native")
+                                  base=base)
 
     def e6(self) -> None:
         """Value size effects."""

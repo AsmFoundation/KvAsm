@@ -1,12 +1,15 @@
 ; =============================================================================
-; pool.asm — per-worker size-class allocator with nghttp2_mem signatures.
+; pool.asm — per-worker size-class allocator (malloc-shaped, Pool* last).
 ;
 ; Why: profiling KvNode under GET load showed ~12% of user CPU in glibc
-; malloc/free — nghttp2 allocates a stream, outbound items and frame buffers
-; per request, and so did KvNode (Stream, request and response buffers).
-; Every one of those objects is created and destroyed on the same worker
-; thread (a session never migrates), so a lock-free, unsynchronized pool per
-; worker serves them in a few instructions:
+; malloc/free — its first HTTP/2 layer (nghttp2) allocated a stream,
+; outbound items and frame buffers per request, and so did KvNode (Stream,
+; request and response buffers). Today's users are the Stream objects,
+; request bodies, small responses, stream maps, header-block and carry
+; buffers and HPACK rings. Every one of those objects is created and
+; destroyed on the same worker thread (a connection never migrates), so a
+; lock-free, unsynchronized pool per worker serves them in a few
+; instructions:
 ;
 ;   * 7 size classes, 64 .. 4096 bytes per block (16-byte header included);
 ;   * free blocks form one LIFO list per class (a freed block is reused first,
@@ -73,7 +76,8 @@ global kv_pool_destroy
 ; @param  rdi  size in bytes
 ; @param  rsi  Pool*
 ; @returns rax = 16-byte-aligned pointer, or 0 when out of memory (malloc's
-;          contract, which nghttp2 relies on).
+;          contract, which every caller relies on: 0 means "fail this
+;          operation", never a crash).
 ; =============================================================================
 kv_pool_malloc:
     POOL_CLASS rdi, rcx

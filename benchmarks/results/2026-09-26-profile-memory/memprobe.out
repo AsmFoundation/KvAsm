@@ -1,0 +1,108 @@
+binary: 1125504 bytes (unstripped)
+TCP: inuse 0 orphan 0 tw 0 alloc 28 mem 7
+idle-1: Rss 15064 KiB, Anonymous 14424, AnonHugePages 14336, Pss 15060
+--- idle-1: mappings (KiB) ---
+  size       136  rss      24  anon      24  thp      0  rw-p  [heap]
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size     16384  rss   14336  anon   14336  thp  14336  rw-p  
+  size        36  rss      36  anon       0  thp      0  r--p  /src/server/build/kvnode
+  size       600  rss     536  anon       0  thp      0  r-xp  /src/server/build/kvnode
+  size       204  rss      64  anon       0  thp      0  r--p  /src/server/build/kvnode
+  size        24  rss      24  anon      24  thp      0  r--p  /src/server/build/kvnode
+  size         8  rss       8  anon       8  thp      0  rw-p  /src/server/build/kvnode
+  size        24  rss      12  anon      12  thp      0  rw-p  
+  size       132  rss      12  anon      12  thp      0  rw-p  [stack]
+  size         8  rss       4  anon       0  thp      0  r-xp  [vdso]
+  total rss 15064 KiB
+idle-4: Rss 15100 KiB, Anonymous 14468, AnonHugePages 14336, Pss 15096
+idle-32: Rss 15508 KiB, Anonymous 14912, AnonHugePages 14336, Pss 15504
+--- idle-32: mappings (KiB) ---
+  size      2300  rss     264  anon     264  thp      0  rw-p  [heap]
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size     16384  rss   14336  anon   14336  thp  14336  rw-p  
+  size        36  rss      36  anon       0  thp      0  r--p  /src/server/build/kvnode
+  size       600  rss     476  anon       0  thp      0  r-xp  /src/server/build/kvnode
+  size       204  rss      80  anon       0  thp      0  r--p  /src/server/build/kvnode
+  size        24  rss      24  anon      24  thp      0  r--p  /src/server/build/kvnode
+  size         8  rss       8  anon       8  thp      0  rw-p  /src/server/build/kvnode
+  size        24  rss      12  anon      12  thp      0  rw-p  
+  size       132  rss      12  anon      12  thp      0  rw-p  [stack]
+  size         8  rss       4  anon       0  thp      0  r-xp  [vdso]
+  total rss 15508 KiB
+capacity-1000: Rss 740 KiB, AnonHugePages 0
+capacity-1000000: Rss 15060 KiB, AnonHugePages 14336
+capacity-10000000: Rss 129756 KiB, AnonHugePages 129024
+capacity-100000000: Rss 2095812 KiB, AnonHugePages 2095104
+keys: before 15060 KiB, after 1M x 100 B 173484 KiB, delta 162.2 B/key, THP 14336
+--- after 1M keys: mappings (KiB) ---
+  size       136  rss      28  anon      28  thp      0  rw-p  [heap]
+  size     91048  rss   91048  anon   91048  thp      0  rw-p  
+  size     40024  rss       0  anon       0  thp      0  ---p  
+  size     65536  rss   65240  anon   65240  thp      0  rw-p  
+  size       260  rss      84  anon      84  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size     16384  rss   16384  anon   16384  thp  14336  rw-p  
+  size        36  rss      36  anon       0  thp      0  r--p  /src/server/build/kvnode
+  size       600  rss     536  anon       0  thp      0  r-xp  /src/server/build/kvnode
+  size       204  rss      64  anon       0  thp      0  r--p  /src/server/build/kvnode
+  size        24  rss      24  anon      24  thp      0  r--p  /src/server/build/kvnode
+  size         8  rss       8  anon       8  thp      0  rw-p  /src/server/build/kvnode
+  size        24  rss      12  anon      12  thp      0  rw-p  
+  size       132  rss       8  anon       8  thp      0  rw-p  [stack]
+  size         8  rss       4  anon       0  thp      0  r-xp  [vdso]
+  total rss 173484 KiB
+keys-v16: 1000000 keys, delta 66.3 B/key (value 16 B, key 16 B)
+keys-v1024: 200000 keys, delta 1083.2 B/key (value 1024 B, key 16 B)
+conns: 1000 idle h2 connections: Rss 808 -> 9952 KiB = 9363 B/connection
+  sockstat before: TCP: inuse 1 orphan 0 tw 49 alloc 26 mem 0
+  sockstat idle:   TCP: inuse 2001 orphan 0 tw 45 alloc 2025 mem 997
+conns: after one Get each (1000 answered): Rss 10072 KiB = 9486 B/connection
+  sockstat after gets: TCP: inuse 2001 orphan 0 tw 0 alloc 2025 mem 995
+--- 1000 connections after one Get each: mappings (KiB) ---
+  size       136  rss      28  anon      28  thp      0  rw-p  [heap]
+  size     64944  rss    5040  anon    5040  thp      0  rw-p  
+  size      4420  rss    4268  anon    4268  thp      0  rw-p  
+  size      8192  rss       8  anon       8  thp      0  rw-p  
+  size        16  rss      16  anon      16  thp      0  rw-p  
+  size        36  rss      36  anon       0  thp      0  r--p  /src/server/build/kvnode
+  size       600  rss     516  anon       0  thp      0  r-xp  /src/server/build/kvnode
+  size       204  rss     100  anon       0  thp      0  r--p  /src/server/build/kvnode
+  size        24  rss      24  anon      24  thp      0  r--p  /src/server/build/kvnode
+  size         8  rss       8  anon       8  thp      0  rw-p  /src/server/build/kvnode
+  size        24  rss      12  anon      12  thp      0  rw-p  
+  size       132  rss      12  anon      12  thp      0  rw-p  [stack]
+  size         8  rss       4  anon       0  thp      0  r-xp  [vdso]
+  total rss 10072 KiB
+conns: all closed: Rss 5100 KiB (pool/arena memory is kept for reuse)
+load: 1M keys loaded 173504 KiB; peak during 64x16 GET load 174260 KiB (+756 KiB); 1192951 ops/s

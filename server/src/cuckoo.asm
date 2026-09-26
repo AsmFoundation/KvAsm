@@ -176,9 +176,23 @@ kv_cuckoo_prefetch:
 ; @returns nothing. Clobbers rax, rcx, rdx, rsi, rdi, r8 .. r11.
 ; @remarks Meant to run once the buckets arrived (after kv_cuckoo_prefetch
 ;          and other work): scans both tag words with the exact SWAR match (or
-;          one SSE2 compare, per kv_scan_mode) and prefetches the first two
+;          one SSE2 compare, per kv_scan_mode) and prefetches the first three
 ;          lines of each candidate record — the key compare and the value copy
 ;          of the real lookup then hit the cache.
+;          Why three: a record (24-byte header, padded key, value) starts on
+;          any 16-byte boundary, so lines [rec], [rec + 64] and [rec + 128]
+;          cover a whole record of up to 144 bytes at every alignment — a
+;          16-byte key with a value of up to ~104 bytes (the benchmarks' 100
+;          makes 140). Measured with two lines (1 core, 100-byte values,
+;          busy-polling client so the profile shows only server work): the
+;          value copy took the third line's DRAM miss, glibc memmove was 4.2%
+;          of the core; with three, 1.05%. Throughput, paired and concurrent
+;          (6 blocks): 1.001x with a blocking client, 1.025x busy-polling
+;          (4/6 blocks), 0.993x with 16-byte values — within noise either
+;          way, so it is kept for the stall it removes, not for a proven
+;          gain. For a smaller record the third line is a wasted hint (one
+;          extra line of memory traffic per candidate); a larger value's
+;          remaining lines stream in behind the copy.
 ;          Racing writers are harmless: tags and pointers are read with plain
 ;          aligned loads, and a prefetch of a stale or freed address is only
 ;          a wasted hint (prefetch never faults). No versions are checked —
@@ -213,6 +227,7 @@ kv_cuckoo_prefetch_records:
     mov     rax, [rdi + Bucket.slot + rcx*8]
     prefetcht0 [rax]                    ; header + key (+ value start)
     prefetcht0 [rax + 64]               ; rest of a typical small value
+    prefetcht0 [rax + 128]              ; its tail line (see @remarks: 3 lines)
     lea     rax, [rsi - 1]
     and     rsi, rax                    ; clear the lowest match (baseline x86-64, no BMI)
     jnz     .match
@@ -243,6 +258,7 @@ kv_cuckoo_prefetch_records:
     mov     rsi, [rdx + Bucket.slot + rcx*8]
     prefetcht0 [rsi]                    ; 0 (slot cleared meanwhile) is a harmless hint
     prefetcht0 [rsi + 64]
+    prefetcht0 [rsi + 128]              ; the tail line (see @remarks: 3 lines)
     lea     ecx, [rax - 1]
     and     eax, ecx                    ; next match
     jnz     .sse2_match

@@ -54,6 +54,8 @@ static void usage(const char *argv0) {
           "  --cgroup-mem FILE   server cgroup memory.stat (v1 or v2)\n"
           "  --wait-ready S      wait up to S seconds for the port to accept (30)\n"
           "  --interval S        throughput timeline sampling period (1)\n"
+          "  --busy-poll         client threads never sleep (diagnostic: the server then\n"
+          "                      pays no cross-CPU wakeup per send; burns client CPUs)\n"
           "  --seed N            RNG seed (1)\n"
           "  --label TEXT        echoed into the JSON\n",
           argv0);
@@ -94,8 +96,8 @@ static void parse_options(int argc, char **argv) {
       {"warmup", 1, 0, 'w'},   {"duration", 1, 0, 'D'},   {"load", 0, 0, 'l'},
       {"load-only", 0, 0, 'L'}, {"settle", 1, 0, 's'},    {"cgroup-cpu", 1, 0, 'C'},
       {"cgroup-mem", 1, 0, 'M'}, {"seed", 1, 0, 'S'},     {"label", 1, 0, 'b'},
-      {"wait-ready", 1, 0, 'W'}, {"interval", 1, 0, 'I'}, {"help", 0, 0, '?'},
-      {0, 0, 0, 0}};
+      {"wait-ready", 1, 0, 'W'}, {"interval", 1, 0, 'I'}, {"busy-poll", 0, 0, 'B'},
+      {"help", 0, 0, '?'},     {0, 0, 0, 0}};
   int ch;
   while ((ch = getopt_long(argc, argv, "", longopts, NULL)) != -1) {
     switch (ch) {
@@ -127,6 +129,7 @@ static void parse_options(int argc, char **argv) {
     case 'b': g_opt.label = optarg; break;
     case 'W': g_opt.wait_ready = num(optarg, "wait-ready"); break;
     case 'I': g_opt.interval = num(optarg, "interval"); break;
+    case 'B': g_opt.busy_poll = 1; break;
     default: usage(argv[0]); exit(2);
     }
   }
@@ -333,11 +336,11 @@ int main(int argc, char **argv) {
   printf(",\"config\":{\"protocol\":\"%s\",\"threads\":%d,\"connections\":%d,\"depth\":%d,"
          "\"keys\":%" PRIu64 ",\"key_size\":%d,\"value_size\":%u,\"read_ratio\":%.4f,"
          "\"workload\":\"%s\",\"distribution\":\"%s\",\"zipf_theta\":%.3f,\"rate\":%.0f,"
-         "\"warmup_s\":%.2f,\"duration_s\":%.2f,\"seed\":%" PRIu64 "}",
+         "\"warmup_s\":%.2f,\"duration_s\":%.2f,\"seed\":%" PRIu64 ",\"busy_poll\":%s}",
          proto_names[g_opt.proto], g_opt.threads, g_opt.connections, g_opt.depth, g_opt.keys,
          KEY_BYTES, g_opt.value_size, g_opt.read_ratio, g_opt.workload == WL_PING ? "ping" : "mixed",
          g_opt.zipf ? "zipf" : "uniform", g_opt.zipf_theta, g_opt.rate, g_opt.warmup,
-         g_opt.duration, g_opt.seed);
+         g_opt.duration, g_opt.seed, g_opt.busy_poll ? "true" : "false");
 
   int rc = 0;
   if (g_opt.load) {

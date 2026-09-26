@@ -4,15 +4,18 @@
 #
 # Stages:
 #   toolchain  Debian trixie + NASM/GCC + nghttp2 (pinned, verified, built as a
-#              static PIC library) + h2spec. Also used as the development and
-#              test container: `docker build --target toolchain -t kvnode-toolchain .`
+#              static PIC library) + h2spec. nghttp2 is for the test and
+#              benchmark CLIENTS only (itest_grpc, test_hpack's oracle,
+#              kvbench): the server has its own HTTP/2 engine (ADR 0008).
+#              Also used as the development and test container:
+#              `docker build --target toolchain -t kvnode-toolchain .`
 #   build      Assembles/links the server, runs the native unit tests and the
 #              end-to-end suite (real server over loopback: gRPC protocol,
-#              concurrency, shutdown, snapshots, h2spec baseline); any failure
-#              fails the image build.
-#   runtime    FROM scratch: the single static-PIE server binary (glibc and
-#              nghttp2 linked in, ~1.2 MB) and nothing else — no shell, no
-#              package manager, no libraries to patch or exploit. Runs as the
+#              concurrency, shutdown, snapshots, h2spec baseline, fuzzing);
+#              any failure fails the image build.
+#   runtime    FROM scratch: the single static-PIE server binary (glibc
+#              linked in, ~1 MB) and nothing else — no shell, no package
+#              manager, no libraries to patch or exploit. Runs as the
 #              unprivileged uid/gid 10001. To debug, use the build stage
 #              (`docker build --target build`), which has the same binary plus
 #              gdb/strace/nghttp/h2load.
@@ -34,7 +37,8 @@ RUN apt-get update \
       nghttp2-client procps strace gdb \
  && rm -rf /var/lib/apt/lists/*
 # nghttp2 is built library-only (C99, no C++ toolchain needed) and position
-# independent, because the server is linked as a PIE.
+# independent (the test clients and kvbench are PIEs). It never reaches the
+# server binary or the runtime image.
 RUN curl -fsSL -o /tmp/nghttp2.tar.xz \
       "https://github.com/nghttp2/nghttp2/releases/download/v${NGHTTP2_VERSION}/nghttp2-${NGHTTP2_VERSION}.tar.xz" \
  && echo "${NGHTTP2_SHA256}  /tmp/nghttp2.tar.xz" | sha256sum -c - \
@@ -62,8 +66,9 @@ RUN make -C server NGHTTP2_PREFIX=/opt/nghttp2 all test itest \
  && strip --strip-debug -o /kvnode server/build/kvnode
 
 # ---- benchmark client (benchmarks/): not part of the server image ----------
-# kvbench shares the toolchain (and therefore the pinned nghttp2) with the
-# server, is unit-tested here, and ships as a static binary in its own
+# kvbench shares the toolchain (and therefore the pinned nghttp2, its HTTP/2
+# client library) with the server's tests, is unit-tested here, and ships as
+# a static binary in its own
 # scratch image. These stages come before `runtime` so that a plain
 # `docker build .` still produces the server.
 FROM toolchain AS kvbench-build
