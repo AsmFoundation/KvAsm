@@ -168,6 +168,35 @@ SYSTEMS: dict[str, System] = {
             notes="gRPC over h2c; one worker thread per core (KVNODE_WORKERS).",
             build="docker build --target runtime -t kvnode:0.1.0 . (repository root)",
         ),
+        # The two HTTP/2 engines of the same image, named explicitly so a
+        # result never depends on which one is the default (ADR 0007). They
+        # are variants: excluded from ALL, used by the N experiments only.
+        System(
+            name="kvnode-native", title="KvNode 0.1.0 native-h2", image="kvnode:0.1.0",
+            protocol="grpc", port=50051,
+            args=lambda t, w: [],
+            env=lambda t, w: {
+                "KVNODE_WORKERS": str(t),
+                "KVNODE_CAPACITY": str(max(1000, int(w.keys * 1.25))),
+                "KVNODE_MAX_VALUE_BYTES": str(max(1 << 20, w.value_size)),
+                "KVNODE_H2_ENGINE": "native",
+            },
+            notes="KvNode with its own HTTP/2 engine (server/src/h2n.asm, KVNODE_H2_ENGINE=native).",
+            build="docker build --target runtime -t kvnode:0.1.0 . (repository root)",
+        ),
+        System(
+            name="kvnode-nghttp2", title="KvNode 0.1.0 nghttp2", image="kvnode:0.1.0",
+            protocol="grpc", port=50051,
+            args=lambda t, w: [],
+            env=lambda t, w: {
+                "KVNODE_WORKERS": str(t),
+                "KVNODE_CAPACITY": str(max(1000, int(w.keys * 1.25))),
+                "KVNODE_MAX_VALUE_BYTES": str(max(1 << 20, w.value_size)),
+                "KVNODE_H2_ENGINE": "nghttp2",
+            },
+            notes="KvNode with nghttp2 1.70 as its HTTP/2 engine (KVNODE_H2_ENGINE=nghttp2).",
+            build="docker build --target runtime -t kvnode:0.1.0 . (repository root)",
+        ),
         System(
             name="redis", title="Redis 8.10.2", image="redis:8.10.2", protocol="resp", port=6379,
             args=lambda t, w: ["redis-server", "--save", "", "--appendonly", "no",
@@ -259,8 +288,13 @@ class Experiment:
     kind: str = "kvbench"
 
 
-ALL = tuple(SYSTEMS)
+VARIANTS = ("kvnode-native", "kvnode-nghttp2")
+"""Configurations of a system already in the suite (KvNode's two HTTP/2
+engines): measured by the N experiments only, so the general experiments do
+not run KvNode three times."""
+ALL = tuple(s for s in SYSTEMS if s not in VARIANTS)
 BASE = Workload()  # 100% GET, 100-byte values, 1M keys, uniform, 64 conns x 16 deep
+ENGINES = ("kvnode-native", "kvnode-nghttp2")
 
 STANDARD: list[Experiment] = [
     Experiment(
@@ -309,6 +343,19 @@ STANDARD: list[Experiment] = [
         "E8", "Client validation",
         "Is kvbench as efficient a client as each ecosystem's standard tool?",
         systems=("redis", "kvnode"), cores=(4,), workloads=(BASE,), reps=3, kind="validation"),
+    Experiment(
+        "N1", "Native HTTP/2 engine on 1 core",
+        "Does KvNode's own HTTP/2 engine (h2n.asm) beat nghttp2 — and Redis and Valkey — on a "
+        "single core? E1's workload.",
+        systems=(*ENGINES, "redis", "valkey"), cores=(1,), workloads=(BASE,)),
+    Experiment(
+        "N2", "Native HTTP/2 engine scaling",
+        "The two engines at 2 and 4 cores (E1's workload): does the gain hold as cores grow?",
+        systems=ENGINES, cores=(2, 4), workloads=(BASE,)),
+    Experiment(
+        "N3", "Native HTTP/2 engine per-request floor",
+        "E5's no-op round trip on 1 core with each engine, against PING on Redis and Valkey.",
+        systems=(*ENGINES, "redis", "valkey"), cores=(1,), workloads=(replace(BASE, ping=True),)),
     Experiment(
         "S1", "Measurement stability",
         "Are the measurements repeatable? Ten fresh-server repetitions of E1's 4-core cell. "

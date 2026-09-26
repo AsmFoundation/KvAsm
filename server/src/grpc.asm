@@ -25,6 +25,14 @@
 ; Threading: all functions run on the worker thread that owns the connection
 ; (user_data = Conn*). The worker is QSBR-online while nghttp2 callbacks run,
 ; so records returned by kv_store_get stay valid while their value is copied.
+;
+; Engine neutrality (ADR 0007): the request logic — body buffering and
+; budgets, validation, routing, store operations, the GET batch — also
+; serves the native HTTP/2 engine (h2n.asm). It calls kv_grpc_dispatch,
+; kv_grpc_stream_append and kv_grpc_stream_release; dispatch and the batch
+; see session = 0 for such connections and answer through h2n's reply
+; functions instead of nghttp2_submit_*. One implementation of the gRPC
+; rules, two transports.
 ; =============================================================================
 
 default rel
@@ -70,6 +78,10 @@ extern nghttp2_session_set_stream_user_data
 extern nghttp2_submit_response2
 extern nghttp2_submit_trailer
 extern nghttp2_submit_rst_stream
+extern kv_h2n_reply_parts
+extern kv_h2n_reply_buf
+extern kv_h2n_reply_static
+extern kv_h2n_reply_headers
 
 ; PbKv as written by kv_pb_decode_kv (proto.asm)
 struc PbKv
@@ -192,6 +204,9 @@ section .text
 global kv_grpc_callbacks_new
 global kv_grpc_free_streams
 global kv_grpc_run_batch
+global kv_grpc_dispatch
+global kv_grpc_stream_append
+global kv_grpc_stream_release
 
 ; =============================================================================
 ; kv_grpc_callbacks_new — the callback table shared by every session.
@@ -301,6 +316,9 @@ stream_lookup:
 ; stream_free — release a Stream and its buffers to the worker's pool. Internal.
 ; @param  rdi  Stream* (its conn and conn's worker must still be alive)
 ; @returns nothing.
+; @remarks Buffers the Stream does not own are left alone: a borrowed request
+;          body (ST_BORROWED, native engine zero-copy) and a static response
+;          body (ST_STATIC_RESP, .rodata).
 ; =============================================================================
 stream_free:
     push    rbx
@@ -310,9 +328,12 @@ stream_free:
     mov     rax, [rbx + Stream.conn]
     mov     rax, [rax + Conn.worker]
     lea     r12, [rax + Worker.pool]
+    test    qword [rbx + Stream.flags], ST_BORROWED
+    jnz     .borrowed                   ; points into the read buffer: not ours
     mov     rdi, [rbx + Stream.req_buf]
     mov     rsi, r12
     call    kv_pool_free
+.borrowed:
     test    qword [rbx + Stream.flags], ST_STATIC_RESP
     jnz     .static_resp                ; .rodata text: freeing it would crash
     mov     rdi, [rbx + Stream.resp_buf]
@@ -526,21 +547,17 @@ on_header:
 ; @param  rdi  session  @param sil  flags  @param edx  stream id
 ; @param  rcx  data     @param r8   len    @param r9   Conn*
 ; @returns eax = 0 (always: returning an error would kill the connection).
-; @remarks Two budgets bound memory: a stream whose body exceeds max_request
-;          is marked TOO_LARGE (answered RESOURCE_EXHAUSTED at END_STREAM, its
-;          bytes dropped); a connection whose buffered bytes would exceed
-;          conn_budget gets that stream reset with ENHANCE_YOUR_CALM.
-;          Buffers grow geometrically, capped at max_request.
+; @remarks The buffering and its budgets are kv_grpc_stream_append's (shared
+;          with the native engine); a stream over the connection budget is
+;          reset here with ENHANCE_YOUR_CALM.
 ; =============================================================================
 on_data_chunk_recv:
     push    rbx
-    push    rbp
     push    r12
     push    r13
     push    r14
-    push    r15
-    sub     rsp, 8
-    mov     [rsp], rdi                  ; session
+    push    r15                         ; 5 pushes: rsp 16-aligned for calls
+    mov     rbx, rdi                    ; session
     mov     r12, rcx                    ; data
     mov     r13, r8                     ; len
     mov     r14, r9                     ; Conn*
@@ -550,7 +567,55 @@ on_data_chunk_recv:
     call    stream_lookup
     test    rax, rax
     jz      .out
-    mov     rbx, rax
+    mov     rdi, r14
+    mov     rsi, rax
+    mov     rdx, r12
+    mov     rcx, r13
+    call    kv_grpc_stream_append
+    test    eax, eax
+    jz      .out
+    mov     rdi, rbx
+    mov     esi, NGHTTP2_FLAG_NONE
+    mov     edx, r15d
+    mov     ecx, NGHTTP2_ENHANCE_YOUR_CALM
+    call    nghttp2_submit_rst_stream wrt ..plt
+.out:
+    xor     eax, eax
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
+; kv_grpc_stream_append — buffer request body bytes of a stream.
+;
+; @param  rdi  Conn*   @param rsi  Stream*   @param rdx  data   @param rcx  len
+; @returns eax = 0 (appended, or dropped because the stream is TOO_LARGE),
+;          or 1 (the connection's buffering budget would be exceeded: the
+;          stream is now TOO_LARGE and the caller must reset it with
+;          ENHANCE_YOUR_CALM).
+; @remarks Two budgets bound memory: a stream whose body exceeds max_request
+;          is marked TOO_LARGE (answered RESOURCE_EXHAUSTED at END_STREAM, its
+;          bytes dropped); a connection whose buffered bytes would exceed
+;          conn_budget gets that stream reset. Buffers grow geometrically,
+;          capped at max_request; out of memory is treated as oversize.
+;          Shared by both HTTP/2 engines (on_data_chunk_recv, h2n.asm).
+; =============================================================================
+kv_grpc_stream_append:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8                      ; [0] result; 6 pushes + 8: aligned for calls
+    mov     qword [rsp], 0
+    mov     r14, rdi                    ; Conn*
+    mov     rbx, rsi                    ; Stream*
+    mov     r12, rdx                    ; data
+    mov     r13, rcx                    ; len
     test    qword [rbx + Stream.flags], ST_TOO_LARGE
     jnz     .out
     mov     rbp, [rbx + Stream.req_len]
@@ -602,11 +667,7 @@ on_data_chunk_recv:
     mov     [rbx + Stream.req_len], rbp
     jmp     .out
 .over_budget:
-    mov     rdi, [rsp]
-    mov     esi, NGHTTP2_FLAG_NONE
-    mov     edx, r15d
-    mov     ecx, NGHTTP2_ENHANCE_YOUR_CALM
-    call    nghttp2_submit_rst_stream wrt ..plt
+    mov     qword [rsp], 1              ; the caller resets the stream
 .too_large:
     or      qword [rbx + Stream.flags], ST_TOO_LARGE
     mov     rax, [rbx + Stream.req_cap]
@@ -620,7 +681,7 @@ on_data_chunk_recv:
     mov     [rbx + Stream.req_len], rax
     mov     [rbx + Stream.req_cap], rax
 .out:
-    xor     eax, eax
+    mov     eax, [rsp]
     add     rsp, 8
     pop     r15
     pop     r14
@@ -669,13 +730,16 @@ on_stream_close:
     ret
 
 ; =============================================================================
-; stream_unlink_free — remove a Stream from its connection and free it.
-; Internal.
+; stream_unlink_free (exported as kv_grpc_stream_release) — remove a Stream
+; from its connection and free it.
 ; @param  rdi  Conn*   @param rsi  Stream*
 ; @returns nothing.
 ; @remarks Also returns the stream's buffered request bytes to the
-;          connection's budget.
+;          connection's budget. The native engine (h2n.asm) releases its
+;          streams through the same function, so both engines keep
+;          Conn.streams and Conn.buffered exact.
 ; =============================================================================
+kv_grpc_stream_release:
 stream_unlink_free:
     mov     rcx, [rsi + Stream.prev]
     mov     rdx, [rsi + Stream.next]
@@ -941,6 +1005,8 @@ dispatch:
     call    write_prefix
 
 .submit_ok:
+    cmp     qword [rsp + 56], 0
+    je      .native_ok                  ; session 0: the native engine's connection
     ; nghttp2 copies the provider struct, so a stack-resident one is fine;
     ; the Stream it points to lives until on_stream_close.
     mov     qword [rbx + Stream.resp_off], 0
@@ -972,6 +1038,8 @@ dispatch:
     mov     [rbx + Stream.resp_buf], rax
     mov     [rbx + Stream.resp_len], rcx
     mov     qword [rbx + Stream.resp_off], 0
+    cmp     qword [rsp + 56], 0
+    je      .native_static              ; rdx = nva still
     mov     [rsp + 64], rbx             ; provider.source.ptr = Stream*
     lea     rax, [resp_read]
     mov     [rsp + 72], rax             ; provider.read_callback
@@ -1026,11 +1094,33 @@ dispatch:
     mov     rax, [r12 + Conn.worker]
     inc     qword [rax + Worker.st_errors]
 .headers_only:
+    cmp     qword [rsp + 56], 0
+    je      .native_headers             ; rdx = nva, ecx = count still
     ; No data provider => nghttp2 ends the stream on this HEADERS frame.
     mov     rdi, [rsp + 56]
     mov     esi, [rbx + Stream.id]
     xor     r8d, r8d
     call    nghttp2_submit_response2 wrt ..plt
+    jmp     .submitted
+
+    ; ---- native engine (h2n.asm): same responses, framed by h2n ----
+    ; Its reply functions return 0 or -1 (out of memory), which .submitted
+    ; turns into the failure code the native caller treats as fatal.
+.native_ok:
+    mov     rdi, r12
+    mov     rsi, rbx                    ; resp_buf / resp_len hold the message
+    call    kv_h2n_reply_buf wrt ..plt
+    jmp     .submitted
+.native_static:
+    mov     rdi, r12
+    mov     rsi, rbx
+    mov     ecx, 3                      ; rdx = nva (405 or 415)
+    call    kv_h2n_reply_static wrt ..plt
+    jmp     .submitted
+.native_headers:
+    mov     rdi, r12
+    mov     rsi, rbx
+    call    kv_h2n_reply_headers wrt ..plt
 .submitted:
     test    eax, eax
     jz      .ok
@@ -1047,6 +1137,23 @@ dispatch:
     pop     rbp
     pop     rbx
     ret
+
+; =============================================================================
+; kv_grpc_dispatch — validate, run and answer a complete request that the
+; native HTTP/2 engine received.
+;
+; @param  rdi  Conn*   @param rsi  Stream* (END_STREAM received)
+; @returns eax = 0, or non-zero (negative) when the answer could not be
+;          queued (out of memory: the engine ends the connection).
+; @remarks dispatch with session 0: identical validation, routing and store
+;          work as for nghttp2; GETs join the connection's batch. The Stream
+;          may be answered and freed before this returns.
+; =============================================================================
+kv_grpc_dispatch:
+    mov     rdx, rsi
+    mov     rsi, rdi
+    xor     edi, edi                    ; session 0 = native engine
+    jmp     dispatch                    ; tail call
 
 ; =============================================================================
 ; kv_grpc_run_batch — answer every GET queued while parsing the last read.
@@ -1157,6 +1264,8 @@ get_execute:
     mov     rdi, [rax + Worker.table]
     call    kv_store_get wrt ..plt
 .looked_up:
+    test    r14, r14
+    jz      .native                     ; session 0: the native engine's connection
     test    rax, rax
     jz      .missing
     mov     r15, rax                    ; Rec* (valid while this worker is online)
@@ -1216,6 +1325,56 @@ get_execute:
     lea     rcx, [nv_e_oom]
     mov     r8d, 4
     call    respond_error
+    jmp     .out
+
+    ; ---- native engine: the value goes from the record into the DATA frame ----
+    ; The message is head || value: head = gRPC prefix + 08 01 [12 <varint
+    ; len>] built on the stack, value = the record's bytes, copied once by
+    ; h2n (straight into the output buffer when the windows allow). A miss
+    ; is the empty message (found = false).
+.native:
+    sub     rsp, 32                     ; head scratch; keeps the 16-byte alignment
+    test    rax, rax
+    jz      .native_missing
+    mov     r15, rax                    ; Rec* (valid while this worker is online)
+    mov     ebp, [r15 + Rec.val_len]
+    mov     word [rsp + GRPC_PREFIX], 0x0108   ; field 1 (found) = true
+    mov     r13d, 2
+    test    rbp, rbp
+    jz      .native_head                ; empty value: the field is omitted
+    mov     byte [rsp + GRPC_PREFIX + 2], 0x12 ; field 2 (value), length-delimited
+    lea     rdi, [rsp + GRPC_PREFIX + 3]
+    mov     rsi, rbp
+    call    kv_pb_write_varint wrt ..plt
+    lea     r13, [rax + 3]              ; 08 01 12 <varint>
+.native_head:
+    mov     rdi, rsp
+    lea     rsi, [r13 + rbp]            ; protobuf payload length
+    call    write_prefix
+    mov     rdi, r12
+    mov     rsi, rbx
+    mov     rdx, rsp
+    lea     rcx, [r13 + GRPC_PREFIX]
+    mov     eax, [r15 + Rec.key_len]
+    add     rax, 7
+    and     rax, -8
+    lea     r8, [r15 + Rec.data + rax]  ; value follows the padded key
+    mov     r9, rbp
+    call    kv_h2n_reply_parts wrt ..plt
+    add     rsp, 32
+    jmp     .out
+.native_missing:
+    mov     rdi, rsp
+    xor     esi, esi
+    call    write_prefix                ; 00 00 00 00 00: GetResponse{}
+    mov     rdi, r12
+    mov     rsi, rbx
+    mov     rdx, rsp
+    mov     ecx, GRPC_PREFIX
+    xor     r8d, r8d
+    xor     r9d, r9d
+    call    kv_h2n_reply_parts wrt ..plt
+    add     rsp, 32
 .out:
     add     rsp, 8
     pop     r15

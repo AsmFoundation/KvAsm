@@ -227,8 +227,14 @@ static void run_phase(const char *name, uint64_t capacity, uint32_t nids, uint32
   atomic_store(&sh.stop, 1);
   for (uint32_t i = 0; i < nr + nw; i++) pthread_join(th[i], NULL);
 
-  /* Quiescent end state: all readers offline => everything retired is free-able. */
-  kv_store_reclaim(sh.t);
+  /* Quiescent end state: all readers offline => everything retired is free-able.
+   * kv_store_reclaim frees at most RECLAIM_BATCH_FORCE (4096) records per call
+   * (bounded work for the server's housekeeping tick) and returns how many
+   * still wait, so drain in a loop: a busy host can end a phase with tens of
+   * thousands in limbo. With every reader offline each call makes progress;
+   * the cap only guards against a store that stopped freeing. */
+  for (int round = 0; round < 1000 && kv_store_reclaim(sh.t) > 0; round++) {
+  }
   KvStats st;
   kv_store_stats(sh.t, &st);
   uint64_t live_bytes = 0, live = 0;

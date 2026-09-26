@@ -49,6 +49,7 @@ extern kv_store_reclaim
 extern kv_store_stats
 extern kv_snapshot_load
 extern kv_grpc_callbacks_new
+extern kv_hpack_global_init
 extern kv_port_probe
 extern kv_worker_create
 extern kv_worker_start
@@ -359,6 +360,9 @@ main:
     xor     edx, edx
     call    pthread_sigmask wrt ..plt
 
+    ; The native engine's HPACK decoder classifies the 61 static entries
+    ; once, before any worker could decode a header block (read-only after).
+    call    kv_hpack_global_init wrt ..plt
     call    kv_grpc_callbacks_new wrt ..plt
     test    rax, rax
     jz      .worker_failed_early

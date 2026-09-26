@@ -5,6 +5,47 @@ Valkey, Dragonfly, Garnet and Memcached), using one client, one placement
 and one statistical method for all of them. The rules, and the reasons
 behind each, are in [METHODOLOGY.md](METHODOLOGY.md).
 
+## Native HTTP/2 engine: 1 core now beats Redis and Valkey (2026-09-26)
+
+KvNode's own HTTP/2 engine (`server/src/h2n.asm`,
+[ADR 0007](../docs/adr/0007-native-http2-engine.md)) replaced nghttp2 as
+the default. N1–N3 compare it with nghttp2 in the same image, and with Redis
+and Valkey, with the same method as below. Final session:
+[REPORT.md](results/2026-09-26-native-final/REPORT.md)
+([README](results/2026-09-26-native-final/README.md)); the two earlier
+sessions record the engine's first version and the header-block cache.
+
+| 1 core (N1) | KvNode native | Redis | Valkey | KvNode nghttp2 |
+|---|---|---|---|---|
+| GET/s, median of 6 | **1.51 M** | 1.27 M | 1.24 M | 744 k |
+| native ÷ X (paired, 6/6 blocks) | — | **1.19×** [1.10–1.35] | **1.22×** [1.14–1.34] | 2.03× |
+| server CPU per GET | 665 ns | 788 ns | 813 ns | 1,348 ns |
+
+- **Scaling (N2):** native vs nghttp2 is 1.96× at 2 cores and 2.07× at 4
+  cores (5.45M GET/s). In the quieter preceding session it was 2.29× and
+  3.06×, with 7.80M GET/s at 4 cores.
+- **No-op floor (N3):** a native gRPC health check round trip runs at
+  1.93M/s, level with a Redis `PING` (1.00×). That is 1.07× Valkey and
+  2.40× nghttp2.
+- **Host:** outside load was a median of 7–8 logical CPUs; 72 of 72 runs
+  were valid.
+
+- **The 1-core goal is met.** The engine removed ~700 ns per request.
+  Server CPU per GET is 665 ns against Redis's 788 and Valkey's 813, and
+  the median latency is lower too (p50 0.79× Redis's).
+- **Where the rest goes:** about three quarters of a request is now kernel
+  time (one `read` and one `sendto` per 16 requests over loopback TCP),
+  shared by every server here. The remaining user time is dominated by the
+  store's DRAM latency, already overlapped by batched prefetching
+  ([cookbook](../.claude/skills/asm-perf-cookbook/SKILL.md) §0).
+- **Scaling caveat.** On this virtualized hybrid CPU, 1-core runs share
+  vCPU 0 with the VM's interrupt work, and throughput grows faster than
+  linearly from 1 to 4 cores for every server. Compare servers within one
+  core budget, not across budgets.
+
+The standard session below predates the native engine: its KvNode is the
+nghttp2 build (at the time, the only engine).
+
 ## Results (2026-09-26)
 
 **Setup.** Intel i9-13900K under Docker Desktop / WSL2, revision `8cb0fef`,
@@ -132,9 +173,13 @@ Yes, reading the goal as 2M GET/s at 4 cores on the standard workload:
 - **4 cores:** **3.02M GET/s** (6 runs, 2.80–3.23M), and 2.93M in S1's
   ten runs.
 - **8 cores:** 5.18M.
-- **1 core:** 813k. 2M per core would need about 500 ns per request, below
-  the protocol's measured floor of 1,086 ns (E5). The cookbook's §8 lists
-  what could lower that floor.
+- **1 core:** 813k with nghttp2. The native HTTP/2 engine lowered the
+  protocol floor from 1,086 to about 520 ns of server CPU (N3) and serves
+  1.51M GET/s on one core, ahead of Redis and Valkey (N1, section above).
+  A full 2M per core would need ~500 ns per GET including the lookup; three
+  quarters of today's ~650 ns is kernel time.
+- **4 cores with the native engine:** 5.45M GET/s in the final N2 session,
+  7.80M in the quieter one before it.
 
 How KvNode got there (+28% from batched GET prefetching, ablation-tested):
 [ADR 0005](../docs/adr/0005-batched-get-prefetch-and-worker-pool.md) and
@@ -195,6 +240,9 @@ correct, 1 when any was wrong, missing or an error, and 2 on usage errors.
 | E6 | Value size: 1 KiB and 16 KiB values, about 1 GiB of data, 4 cores | 6 × 2 × 3 |
 | E7 | Concurrency sweep: 1, 16, 64, 256 and 1,024 requests in flight, 4 cores | 6 × 5 × 3 |
 | E8 | Is kvbench as good a client as redis-benchmark, memtier_benchmark and h2load? | 7 tool configurations × 3 |
+| N1 | KvNode's native HTTP/2 engine vs nghttp2, Redis and Valkey on 1 core (E1's workload) | 4 × 1 × 6 |
+| N2 | The two KvNode engines at 2 and 4 cores | 2 × 2 × 6 |
+| N3 | Per-request floor on 1 core: native vs nghttp2 health check, Redis/Valkey `PING` | 4 × 1 × 6 |
 | S1 | Stability: E1's 4-core cell ten more times, at the end of the session | 6 × 1 × 10 |
 
 Default workload: 100% GET, 1,000,000 keys (all preloaded), 100-byte

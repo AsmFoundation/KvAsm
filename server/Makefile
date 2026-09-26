@@ -54,8 +54,9 @@ CORE_ASM  := src/siphash.asm src/util.asm src/cuckoo.asm src/wlock.asm \
              src/pool.asm src/hcache.asm src/hpack.asm
 CORE_OBJ  := $(CORE_ASM:src/%.asm=$(BUILD)/obj/%.o)
 
-# Network server on top of the core (needs nghttp2).
-SERVER_ASM := src/config.asm src/grpc.asm src/worker.asm src/main.asm
+# Network server on top of the core: nghttp2 glue (grpc.asm), the native
+# HTTP/2 engine (h2n.asm, ADR 0007), the event loop, config and main.
+SERVER_ASM := src/config.asm src/grpc.asm src/h2n.asm src/worker.asm src/main.asm
 SERVER_OBJ := $(SERVER_ASM:src/%.asm=$(BUILD)/obj/%.o)
 SERVER_BIN := $(BUILD)/kvnode
 
@@ -75,9 +76,11 @@ BENCH_BIN := $(BUILD)/bench/bench_ds
 # where it verifies every variant's answers; `make bench-store` is the full run.
 BENCH_STORE_BIN := $(BUILD)/bench/bench_store
 
-# End-to-end tools: an nghttp2-based gRPC client and a snapshot writer.
+# End-to-end tools: an nghttp2-based gRPC client, a snapshot writer, and a
+# black-box HTTP/2 fuzzer (raw frames; decodes responses with hpack.asm).
 ITEST_BIN  := $(BUILD)/tests/itest_grpc
 MKSNAP_BIN := $(BUILD)/tests/mksnap
+FUZZ_BIN   := $(BUILD)/tests/fuzz_h2
 ITEST_DEPS := tests/integration/snapgen.h tests/test_common.h
 
 .PHONY: all test itest bench bench-store clean
@@ -101,8 +104,12 @@ test: $(TEST_BINS) $(BENCH_BIN) $(BENCH_STORE_BIN) $(SERVER_BIN)
 	@$(BENCH_STORE_BIN) --quick > /dev/null && echo "bench_store --quick: all checks passed"
 
 # bash explicitly: the script may lack its exec bit on a Windows checkout.
-itest: $(SERVER_BIN) $(ITEST_BIN) $(MKSNAP_BIN)
-	bash tests/integration/run.sh $(SERVER_BIN) $(ITEST_BIN) $(MKSNAP_BIN)
+# FUZZ_ITERATIONS sizes run.sh's fuzz phase (a short pass in every build;
+# `make itest FUZZ_ITERATIONS=100000` for a long soak).
+FUZZ_ITERATIONS ?= 3000
+itest: $(SERVER_BIN) $(ITEST_BIN) $(MKSNAP_BIN) $(FUZZ_BIN)
+	FUZZ_BIN=$(FUZZ_BIN) FUZZ_ITERATIONS=$(FUZZ_ITERATIONS) \
+	    bash tests/integration/run.sh $(SERVER_BIN) $(ITEST_BIN) $(MKSNAP_BIN)
 
 bench: $(BENCH_BIN)
 	$(BENCH_BIN)
@@ -140,6 +147,11 @@ $(BUILD)/tests/%: tests/%.c $(CORE_OBJ) tests/test_common.h tests/kvnode_abi.h |
 $(ITEST_BIN): tests/integration/itest_grpc.c $(ITEST_DEPS) | $(BUILD)/tests
 	$(CC) $(CFLAGS) $(LDFLAGS) -I $(NGHTTP2_PREFIX)/include -o $@ $< \
 	    $(NGHTTP2_PREFIX)/lib/libnghttp2.a $(LDLIBS)
+
+# The fuzzer builds its frames by hand (no nghttp2: it must be able to send
+# what nghttp2 never would) and links the core only for hpack.asm.
+$(FUZZ_BIN): tests/integration/fuzz_h2.c $(CORE_OBJ) tests/test_common.h | $(BUILD)/tests
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(CORE_OBJ) $(LDLIBS)
 
 # mksnap reuses the server's SipHash on purpose: its checksum must be the one
 # the loader verifies (the C# writer is checked against the same vectors).

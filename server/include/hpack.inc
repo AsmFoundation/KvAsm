@@ -76,6 +76,12 @@ struc HpackDec
     .max:       resq 1                  ; current maximum (size updates, <= limit)
     .limit:     resq 1                  ; our SETTINGS_HEADER_TABLE_SIZE
     .pool:      resq 1                  ; Pool* the entry blocks come from
+    ; Table generation: +1 whenever the dynamic table may change (insertion,
+    ; including the oversized one that empties it, and every size update).
+    ; Equal generations = identical tables, so a byte-identical block
+    ; decodes to identical fields: callers may cache a block's result
+    ; keyed by (bytes, generation) — h2n.asm does, per connection.
+    .gen:       resq 1
 endstruc
 
 %endif

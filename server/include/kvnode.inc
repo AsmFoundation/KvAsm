@@ -39,6 +39,7 @@
 %define MAP_ANONYMOUS       0x20
 %define MAP_NORESERVE       0x4000
 %define MADV_HUGEPAGE       14
+%define HUGE_PAGE           0x200000    ; x86-64 transparent huge page (2 MiB)
 
 ; ---- private-cache limits (hcache.asm / store.asm) ------------------------------
 %define INVAL_BITS_MAX      24          ; 16 Mi generations = 128 MiB at most

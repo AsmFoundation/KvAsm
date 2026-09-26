@@ -96,7 +96,10 @@ static void test_model(void) {
     expect_get(t, key, klen, g_model[id].present, g_model[id].val, g_model[id].vlen);
   }
   kv_qsbr_offline(t, 0);
-  kv_store_reclaim(t); /* reader offline => every retired record is free-able */
+  /* Reader offline => every retired record is free-able; each call frees at
+   * most 4096 (bounded housekeeping work), so drain until none remain. */
+  for (int round = 0; round < 1000 && kv_store_reclaim(t) > 0; round++) {
+  }
   KvStats st;
   kv_store_stats(t, &st);
   CHECK_EQ_U64(st.count, live);

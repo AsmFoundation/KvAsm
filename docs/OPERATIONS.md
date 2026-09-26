@@ -3,8 +3,8 @@
 ## Configuration
 
 Every setting is an environment variable. Numeric values are strict decimal
-integers: no sign, no spaces, no units. Named choices (`KVNODE_SCAN`)
-must be one of the listed lowercase words exactly.
+integers: no sign, no spaces, no units. Named choices (`KVNODE_SCAN`,
+`KVNODE_H2_ENGINE`) must be one of the listed lowercase words exactly.
 Out-of-range, malformed or unknown values stop startup with exit code **2**
 and a log line naming the variable, the value and what is allowed. A typo
 never silently falls back to a default.
@@ -26,6 +26,7 @@ never silently falls back to a default.
 | `KVNODE_SCAN` | `swar` \| `sse2` | `sse2` | how lookups match tags. `sse2` matches both candidate buckets in one compare: 2–6% faster per batched lookup, and SSE2 is part of every x86-64 CPU. `swar` is the scalar path. Results are identical ([ADR 0006](adr/0006-store-memory-levels-simd-and-private-caches.md)) |
 | `KVNODE_CACHE_L1_BITS` | 0–24 | 0 | per-worker private L1 record cache of 2^bits entries (32 bytes each); 0 = off. Measured slower than the CPU's own caches except for tiny hot sets, so off by default (ADR 0006) |
 | `KVNODE_CACHE_L2_BITS` | 0–24 | 0 | the same for a second, larger private level |
+| `KVNODE_H2_ENGINE` | `native` \| `nghttp2` | `native` | which HTTP/2 implementation serves every connection. `native` is KvNode's own engine (`h2n.asm`): h2spec 146/146, and 2–3× the throughput of nghttp2 on the same hardware. `nghttp2` is nghttp2 1.70 (h2spec 138/146), kept as a fallback. Both give the same gRPC behavior, limits and statuses; the starting log line shows the engine in use ([ADR 0007](adr/0007-native-http2-engine.md)) |
 
 ## Exit codes and signals
 
@@ -104,14 +105,21 @@ restart it serves the snapshot again, not the later changes.
 ## Sizing
 
 - **Table (fixed, allocated at startup):** 64 bytes × the power of two ≥
-  ⌈capacity / 5⌉. The default 1,000,000 keys → 262,144 buckets → 16 MiB. It
-  is mapped with `MAP_NORESERVE` and touched lazily.
+  ⌈capacity / 5⌉. The default 1,000,000 keys → 262,144 buckets → 16 MiB.
+  With transparent huge pages enabled (`always` or `madvise`), every whole
+  2 MiB region of it is faulted in at startup as one huge page, so the
+  table is resident from the start and every lookup hits the TLB; without
+  THP it is touched lazily as keys arrive.
 - **Records:** `24 + key rounded up to 8 + value` bytes each, plus the
   allocator's overhead (about 16 bytes). `KVNODE_MAX_MEMORY_MB` caps the sum
   of the first part. Replaced and deleted records stay counted until
   reclamation frees them, typically within milliseconds.
-- **Per connection:** nghttp2 state plus buffered request bytes, bounded by
-  `KVNODE_CONN_BUFFER_MB`.
+- **Per connection:** HTTP/2 state plus buffered request bytes, bounded by
+  `KVNODE_CONN_BUFFER_MB`. With the native engine that is about 4 KiB per
+  connection: ~0.6 KiB in the connection record, a 3 KiB HPACK entry ring,
+  and a stream map of 8 bytes per slot (16 slots, doubling with concurrent
+  requests); the peer's HPACK entries add at most 4 KiB. nghttp2's session
+  is larger and allocates per stream and per header.
 - A Put that finds the table full (capacity, or a failed cuckoo
   displacement near the load limit) or the memory cap reached gets
   `RESOURCE_EXHAUSTED`. Existing data is unaffected.
@@ -126,7 +134,11 @@ restart it serves the snapshot again, not the later changes.
   (ADR 0004).
 - **Resource limits:** key and value sizes, request size, per-connection
   buffering, streams per connection, connections per worker, idle timeout,
-  and nghttp2's own flood defenses.
+  and the HTTP/2 engine's flood defenses. The native engine limits rapid
+  stream resets to a burst of 1,000 then 33 per second (CVE-2023-44487),
+  caps a header block at 64 KiB and 64 CONTINUATION frames, and never
+  buffers an oversized frame (it is rejected from its header). nghttp2
+  applies its own equivalents.
 - **Container:** the image contains only the static binary. It runs as
   uid/gid 10001 and needs no capabilities and no writable file system:
   `--read-only --cap-drop ALL --security-opt no-new-privileges` all work.

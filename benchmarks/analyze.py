@@ -34,7 +34,12 @@ import statistics
 import sys
 from collections import defaultdict
 
-ORDER = ["kvnode", "redis", "valkey", "dragonfly", "garnet", "memcached"]
+ORDER = ["kvnode", "kvnode-native", "kvnode-nghttp2", "redis", "valkey", "dragonfly", "garnet",
+         "memcached"]
+
+NATIVE_EXPERIMENTS = ("N1", "N2", "N3")
+"""KvNode's two HTTP/2 engines (suite.VARIANTS), compared with each other and
+with Redis/Valkey; their tables use kvnode-native as the base of the ratios."""
 
 ADJUSTED_EXPERIMENTS = ("E1", "E2", "E3", "E5", "E6", "E7")
 """Closed-loop throughput experiments that get the outside-load adjusted
@@ -492,9 +497,22 @@ class Report:
         """
         self.lines.extend(lines)
 
+    def short(self, s: str) -> str:
+        """Short label of a system for ratio rows.
+
+        Args:
+            s: system id.
+
+        Returns:
+            "native" / "nghttp2" for KvNode's engine variants (their titles
+            all start with "KvNode"), else the title's first word.
+        """
+        return {"kvnode-native": "native", "kvnode-nghttp2": "nghttp2"}.get(s, self.title(s).split()[0])
+
     def comparison_table(self, header: str, columns: list[tuple], fmt=fmt_ops,
-                         higher_is_better: bool = True) -> None:
-        """A systems x columns table of medians, plus KvNode ratios per column.
+                         higher_is_better: bool = True, base: str = "kvnode") -> None:
+        """A systems x columns table of medians, plus base-system ratios per
+        column.
 
         Args:
             header: first column label.
@@ -506,6 +524,8 @@ class Report:
                 cost, or the ▲/▼ verdicts point the wrong way.
             fmt: number formatter.
             higher_is_better: default orientation for columns without one.
+            base: system every other one is compared with ("kvnode" in the
+                general experiments, "kvnode-native" in the N experiments).
         """
         cols = [(c[0], c[1], c[2] if len(c) > 2 else higher_is_better) for c in columns]
         systems = []
@@ -516,12 +536,13 @@ class Report:
         for s in systems:
             self.w(f"| {self.title(s)} | " + " | ".join(cell_text(summary(v.get(s, {})), fmt)
                                                         for _, v, _ in cols) + " |")
-        if any("kvnode" in v for _, v, _ in cols):
+        if any(base in v for _, v, _ in cols):
+            label = "KvNode" if base == "kvnode" else f"KvNode {self.short(base)}"
             for s in systems:
-                if s == "kvnode":
+                if s == base:
                     continue
-                self.w(f"| *KvNode ÷ {self.title(s).split()[0]}* | " + " | ".join(
-                    cmp_text(compare(v.get("kvnode", {}), v.get(s, {}), hib)) for _, v, hib in cols) + " |")
+                self.w(f"| *{label} ÷ {self.short(s)}* | " + " | ".join(
+                    cmp_text(compare(v.get(base, {}), v.get(s, {}), hib)) for _, v, hib in cols) + " |")
         self.w("")
 
     def chart(self, name: str, xlabel: str, ylabel: str, series: dict[str, list[tuple[float, float]]],
@@ -872,6 +893,39 @@ class Report:
                                          ("server CPU ns/op", self.res.values("E5", "cpu_ns_per_op"), False)],
                               fmt=lambda v: fmt_ops(v) if v > 10000 else f"{v:.0f}")
 
+    def native(self) -> None:
+        """N1-N3: KvNode's native HTTP/2 engine against nghttp2, Redis, Valkey."""
+        if not any(r["experiment"] in NATIVE_EXPERIMENTS for r in self.res.records):
+            return
+        self.w("## N — KvNode's native HTTP/2 engine (h2n.asm) vs nghttp2", "",
+               "The same image, one variable: `KVNODE_H2_ENGINE=native` (KvNode's own HTTP/2 "
+               "engine, ADR 0007) or `nghttp2` (nghttp2 1.70). Ratios are native ÷ X, paired by "
+               "block.", "")
+        if any(r["experiment"] == "N1" for r in self.res.records):
+            self.w("### N1 — 1 core, E1's workload (100% GET, 100-byte values, 1M keys, 64×16)", "")
+            self.comparison_table("metric", [("ops/s", self.res.values("N1", "ops"), True),
+                                             ("ops per CPU-second", self.res.values("N1", "ops_per_cpu_s"), True),
+                                             ("server CPU ns/op", self.res.values("N1", "cpu_ns_per_op"), False),
+                                             ("p50 µs", self.res.values("N1", "p50"), False),
+                                             ("p99 µs", self.res.values("N1", "p99"), False)],
+                                  fmt=lambda v: fmt_ops(v) if v > 10000 else f"{v:.0f}",
+                                  base="kvnode-native")
+        cores = sorted({r["cores"] for r in self.res.records if r["experiment"] == "N2"})
+        if cores:
+            self.w("### N2 — scaling (E1's workload)", "")
+            self.comparison_table("Throughput (ops/s)",
+                                  [(f"{c} cores", self.res.values("N2", "ops", cores=c)) for c in cores],
+                                  base="kvnode-native")
+            self.comparison_table("ops per CPU-second",
+                                  [(f"{c} cores", self.res.values("N2", "ops_per_cpu_s", cores=c))
+                                   for c in cores], base="kvnode-native")
+        if any(r["experiment"] == "N3" for r in self.res.records):
+            self.w("### N3 — per-request floor (no-op round trip, 1 core)", "")
+            self.comparison_table("metric", [("ops/s", self.res.values("N3", "ops"), True),
+                                             ("server CPU ns/op", self.res.values("N3", "cpu_ns_per_op"), False)],
+                                  fmt=lambda v: fmt_ops(v) if v > 10000 else f"{v:.0f}",
+                                  base="kvnode-native")
+
     def e6(self) -> None:
         """Value size effects."""
         recs = [r for r in self.res.records if r["experiment"] == "E6"]
@@ -1012,6 +1066,7 @@ class Report:
         self.e6()
         self.e7()
         self.e8()
+        self.native()
         self.stability()
         self.w("---", "", "Legend: `median (min–max)` over repetitions, each with a fresh server. "
                "KvNode ÷ X: ratio of medians, then either **sign** — [min–max of the per-block "

@@ -1,6 +1,9 @@
 # ADR 0002: HTTP/2 via nghttp2 1.70.0, statically linked
 
-- **Status:** accepted
+- **Status:** accepted; amended by [ADR 0007](0007-native-http2-engine.md).
+  KvNode's own engine (`h2n.asm`) is now the default. nghttp2 remains
+  available as `KVNODE_H2_ENGINE=nghttp2`, and everything below still
+  applies to it.
 - **Date:** 2026-09-26
 
 ## Context

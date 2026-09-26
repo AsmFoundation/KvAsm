@@ -60,6 +60,13 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - nghttp2 ~35% of user time.
   - Cuckoo lookup misses ~25% of user time.
   - malloc/free ~12% of user time.
+- **After the native HTTP/2 engine** (same load, 2026-09-26): ~620-650 ns
+  per request, 1.6M GET/s per core.
+  - Kernel (read + sendto over loopback, one each per 16 requests) ~75-79%.
+  - User ~140 ns: the store's two prefetch stages ~43% of it (DRAM
+    latency, already overlapped), SipHash ~6%, HTTP/2 ~11%.
+  - Next levers: fewer bytes per response, a huge-page record slab (§1),
+    io_uring where seccomp allows it (§6).
 
 ## 1. Memory: hide latency, fit the hierarchy
 
@@ -87,8 +94,21 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Huge pages for large tables**
   - *What:* `madvise(MADV_HUGEPAGE)` (transparent) or hugetlbfs, so TLB reach
     covers GBs.
-  - *KvNode:* ✅ the cuckoo table. 🔜 records live on malloc pages: a slab on
-    huge pages would cut TLB misses *and* memory per key.
+  - *Verify, don't assume:* read `AnonHugePages` in `/proc/PID/smaps` (not
+    `VmRSS` in `/proc/PID/status`, which the 5.15 WSL2 kernel updates
+    lazily per thread) and the `thp_*` counters in `/proc/vmstat`.
+  - *KvNode:* ✅ the cuckoo table — but only since it is prefaulted. With
+    `MADV_HUGEPAGE` alone a full 16 MiB table had **0 KiB** of huge pages:
+    its first touches were lookups (reads → huge zero page) and the inserts
+    that followed split them (`thp_split_pmd` +9). Writing one byte per
+    2 MiB region at creation gives 7 huge pages (14 MiB, the aligned
+    interior).
+  - 🔜 records live on glibc malloc pages, which got 0 KiB of huge pages in
+    every test here: main and thread arenas alike, even with
+    `GLIBC_TUNABLES=glibc.malloc.hugetlb=1`, because arenas grow in small
+    `mprotect` steps and no 2 MiB region is whole at fault time. A record
+    slab carved from prefaulted 2 MiB chunks would cut a page walk per GET
+    *and* memory per key.
   - *Measured (E1, 100-byte values, 116 raw bytes):* KvNode 178 B/key,
     Dragonfly 159, Redis 174.
   - *Measured (E6, 16 KiB values):* 19.5 KB/key, about 3 KB above the
@@ -97,8 +117,9 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Prefault what you will touch**
   - *What:* `MAP_POPULATE` or touch at startup, so first requests don't pay
     page faults.
-  - *KvNode:* 🔜 the table is `MAP_NORESERVE` (lazy). Pre-touching would
-    trade RSS for predictable first-minute latency.
+  - *KvNode:* ✅ the table: one write per whole 2 MiB region at creation,
+    mainly to get real huge pages (see above); the table is resident from
+    startup (16 MiB at the default capacity).
 - **Avoid pointer chasing**
   - *Evidence:* the bake-off (ADR 0001). A branchless binary trie was
     3.8–5.9× slower at 4M keys: one dependent miss per level.
@@ -202,7 +223,13 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     conclusive on a noisy host; kept because it is small, tested, and gives
     each worker full control of allocation locality.
 - **Slabs for fixed-size records:** lower overhead, no fragmentation, can
-  sit on huge pages. *KvNode:* 🔜 records (see §1).
+  sit on huge pages. *KvNode:* 🔜 records (see §1: glibc arenas never got
+  a huge page here).
+- **Borrow instead of copy:** a request body that arrives whole in one
+  frame can be used in place while the read buffer is still live.
+  *KvNode:* ✅ native engine (`ST_BORROWED`): no request buffer, no copy
+  for a unary call whose DATA frame carries END_STREAM — valid because
+  dispatch and the GET batch both finish before the next read.
 - **Request-scoped arenas:** bump-allocate everything one request needs and
   drop it in one step.
 - **Skip zeroing:** `calloc` zeroes every byte. Initialize fields explicitly
@@ -264,7 +291,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Share nothing where possible:** per-worker sessions, pools and loops.
   *KvNode:* ✅.
 
-## 8. Protocol and parsing (KvNode's largest remaining lever)
+## 8. Protocol and parsing (was KvNode's largest lever; now owned by h2n.asm)
 
 - **Zero-copy decode:** fields point into the receive buffer. *KvNode:* ✅
   protobuf keys and values.
@@ -274,24 +301,48 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     b16 (ADR 0006). Possibly still worth it for unpipelined clients, whose
     batches are 1.
 - **Precomputed responses:** static HPACK blocks and ready-made frame
-  headers for the fixed parts of a gRPC reply.
+  headers for the fixed parts of a gRPC reply. *KvNode:* ✅ native engine:
+  the first response on a connection inserts content-type and
+  grpc-status into the peer's table, then every response is `88 BF`
+  (HEADERS) + `BE` (trailers); a GET hit's value is copied from the store
+  record straight into its DATA frame.
 - **Own the HTTP/2 hot path**
-  - *What:* a gRPC-subset HTTP/2 engine would remove most of nghttp2's
-    ~35% share (the stream map, header validation callbacks, generic frame
-    queues).
+  - *What:* a gRPC-subset HTTP/2 engine removes nghttp2's generic
+    machinery (stream hash map, per-header rcbufs and callbacks, priority
+    and outbound queues, data providers, a full response encoder).
   - *Catch:* HPACK and flow-control state are per connection, so it must
     own whole connections: no mixing with nghttp2.
-  - *Cost:* a security-critical rewrite that needs fuzzing (AFL++/libFuzzer)
-    and h2spec before it can ship. It would revise ADR 0002.
-  - *Payoff:* the only path far past about 920k requests/s per core, the
-    measured protocol floor:
-    - E5: 1,086 ns of server CPU per no-op gRPC request, against 422 ns for
-      a Redis `PING`;
-    - it is why 1-core KvNode runs at 0.56× Redis.
+  - *Cost:* a security-critical rewrite. It needed h2spec (146/146), an
+    HPACK decoder differential-tested against nghttp2, a black-box fuzzer
+    and an independent client (grpc-dotnet) before shipping; ADR 0007.
+  - *KvNode:* ✅ `h2n.asm`, the default engine. Measured, paired (N1-N3,
+    `benchmarks/results/2026-09-26-native-final`): 1 core 1.51M GET/s,
+    2.03× nghttp2, **1.19× Redis, 1.22× Valkey** (6/6 blocks, weakest
+    1.10×); 2.07× nghttp2 at 4 cores (7.80M GET/s in the quieter
+    `-native-cache` session, 3.06×); the no-op floor went from 0.41× to
+    1.00× a Redis `PING`.
+    Profile: the HTTP/2 layer costs ~15-18 ns of user time per request;
+    ~75% of a request is now kernel (loopback TCP).
+- **Cache whole header blocks**
+  - *What:* gRPC clients send byte-identical header blocks for identical
+    calls once their HPACK table is warm. Key a cache on (block bytes,
+    table generation): equal bytes under an unchanged dynamic table decode
+    to the same fields, so replay the recorded effects.
+  - *Catch:* the generation must move on every insertion and size update,
+    and only blocks whose own decode left the table unchanged are
+    recorded.
+  - *KvNode:* ✅ per connection, one entry (up to 128 bytes). nghttp2-based
+    clients never index `:path`, so without it every request Huffman-
+    decoded its path (~23% of user time, ~113 ns); with it the whole
+    HTTP/2 layer fell from ~122 to ~18 ns per request.
+- **O(1) removal from linear probing:** count displaced entries; while
+  the count is 0 no entry can move back, so backward-shift deletion skips
+  its scan. *KvNode:* ✅ stream map (client ids are consecutive odd numbers
+  and land in their home slots).
 - **Cache lookups the library repeats**
-  - *KvNode:* 🧪 one-entry stream cache. Its effect is within noise
-    (paired median 0.99 at 1 core, 0.98 at 4): nghttp2's own internal
-    lookups dominate.
+  - *KvNode:* 🧪 one-entry stream cache (nghttp2 path only). Its effect is
+    within noise (paired median 0.99 at 1 core, 0.98 at 4): nghttp2's own
+    internal lookups dominate.
 - **Keyed hash choice**
   - SipHash-2-4 is the conservative HashDoS defense (*KvNode:* ✅, ~0.8% of
     time).

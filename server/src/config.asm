@@ -23,6 +23,7 @@
 ;   KVNODE_SNAPSHOT             path              optional snapshot to load
 ; Named choices (exact lowercase words; anything else refuses to start):
 ;   KVNODE_SCAN                 swar | sse2       default sse2 (docs/adr/0006)
+;   KVNODE_H2_ENGINE            native | nghttp2  default native (docs/adr/0007)
 ; =============================================================================
 
 default rel
@@ -87,6 +88,10 @@ n_scan:     db "KVNODE_SCAN", 0
 w_swar:     db "swar", 0
 w_sse2:     db "sse2", 0
 a_scan:     db "swar|sse2", 0
+n_engine:   db "KVNODE_H2_ENGINE", 0
+w_nghttp2:  db "nghttp2", 0
+w_native:   db "native", 0
+a_engine:   db "nghttp2|native", 0
 lvl_error:  db "ERROR", 0
 m_invalid:  db " msg=", 34, "invalid setting", 34, " name="
 m_invalid_len equ $ - m_invalid
@@ -119,13 +124,15 @@ settings_end:
 
 ; Word lists, in the order of the values they stand for.
 words_scan:     dq w_swar, w_sse2, 0            ; = KV_SCAN_SWAR, KV_SCAN_SSE2
+words_engine:   dq w_nghttp2, w_native, 0       ; = H2_NGHTTP2, H2_NATIVE
 choices:
     ; SSE2 by default: faster in the batched GET path at every working set
     ; from L2 to DRAM (bench_store, ADR 0006); SWAR stays selectable.
     dq n_scan,   Config.scan_mode, 1,          words_scan,   a_scan
-    ; KVNODE_H2_ENGINE joins this table together with the native engine
-    ; (h2n.asm): exposing it earlier would accept "native" and silently run
-    ; nghttp2. Until then Config.h2_engine stays H2_NGHTTP2 (zeroed Config).
+    ; HTTP/2 engine (ADR 0007): KvNode's own h2n.asm by default — h2spec
+    ; 146/146 and 1.8-2.7x nghttp2's throughput (benchmarks N1/N2) — with
+    ; nghttp2 one setting away.
+    dq n_engine, Config.h2_engine, H2_NATIVE,  words_engine, a_engine
 choices_end:
 
 section .text

@@ -13,9 +13,12 @@ A gRPC key-value server written in **x86-64 assembly**, shipped as a
 - **Exact keys, safe hashing.** Keys are compared byte for byte; SipHash
   under a per-process secret prevents hash flooding. Long keys are compacted
   client-side ([ADR 0004](docs/adr/0004-exact-keys-and-client-compaction.md)).
-- **Real HTTP/2.** nghttp2 1.70.0, statically linked; h2spec 138/146, with
-  every remaining failure traced to the library and pinned as a regression
-  baseline ([ADR 0002](docs/adr/0002-http2-library-nghttp2.md)).
+- **Its own HTTP/2, in assembly.** A server-side HTTP/2 engine with an HPACK
+  decoder, differential-tested against nghttp2 and fuzzed. It passes h2spec
+  **146/146** and doubles the requests a core can serve
+  ([ADR 0007](docs/adr/0007-native-http2-engine.md)). nghttp2 1.70
+  (h2spec 138/146, [ADR 0002](docs/adr/0002-http2-library-nghttp2.md))
+  stays selectable with `KVNODE_H2_ENGINE=nghttp2`.
 - **Two data sources:** clients write via gRPC, and a verified snapshot
   file loads at startup.
 - **Production behavior:** standard gRPC health service, graceful drain on
@@ -52,7 +55,25 @@ KvNode was compared with Redis, Valkey, Dragonfly, Garnet and Memcached,
 using one client, pinned versions, paired statistics, and host-noise
 monitoring ([benchmarks/](benchmarks/README.md)). GET throughput with 1M
 keys, 100-byte values and 1,024 requests in flight, medians of 6 runs
-(i9-13900K, Docker Desktop on WSL2, loopback):
+(i9-13900K, Docker Desktop on WSL2, loopback).
+
+**One core, with the native HTTP/2 engine** (N1, 6 paired blocks, all
+agreeing):
+
+| 1 core | KvNode | Redis | Valkey |
+|---|---|---|---|
+| GET/s | **1.51 M** | 1.27 M | 1.24 M |
+| KvNode ÷ X | — | **1.19×** | **1.22×** |
+| server CPU per GET | **665 ns** | 788 ns | 813 ns |
+
+The same image on nghttp2 does 744k: the native engine is 2.03× faster on
+1 core and 2–3× at 2 and 4 cores
+([results](benchmarks/results/2026-09-26-native-final/README.md)). That
+session ran on a busier host than the table below, which is why Redis's
+absolute numbers differ between the two.
+
+**Standard session** (all six servers; KvNode was still on nghttp2, before
+the native engine):
 
 | Server cores | KvNode | Redis | Valkey | Dragonfly | Garnet | Memcached |
 |---|---|---|---|---|---|---|
@@ -65,10 +86,11 @@ keys, 100-byte values and 1,024 requests in flight, medians of 6 runs
 - **Low latency under load:** at identical offered loads up to 1.72M
   requests/s, its p99 stays at or below 1.2 ms. Redis reaches 50 ms and
   Garnet 396 ms there.
-- **Costs:** gRPC over HTTP/2 takes 1.09 µs of server CPU per request, and
-  a Redis `PING` 0.42 µs. So one core tops out near 0.8–0.9M GETs/s, and
-  1-core Redis and Valkey are faster. Writes reach 1.72M SETs/s at 4 cores
-  (0.72× Redis) through the single writer lock.
+- **Costs:** with nghttp2, gRPC over HTTP/2 took 1.09 µs of server CPU per
+  request against 0.42 µs for a Redis `PING`, which is why 1-core Redis and
+  Valkey were faster above. The native engine brings a no-op round trip to
+  Redis's level (N3) and a GET below it (665 vs 788 ns). Writes reach
+  1.72M SETs/s at 4 cores (0.72× Redis) through the single writer lock.
 
 Store alone, single thread, 4M keys: 279 ns per dependent lookup, p99.9
 714 ns, including the SipHash of the key (ADR 0001).

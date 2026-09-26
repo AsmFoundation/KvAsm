@@ -11,6 +11,12 @@
 ; back-pressure: while output is pending the connection is watched for
 ; EPOLLOUT only (its input is not read), so a client that sends requests but
 ; never reads responses cannot make the server buffer unbounded replies.
+;
+; HTTP/2 comes from one of two engines, fixed per process by KVNODE_H2_ENGINE
+; (ADR 0007): nghttp2 (a session per connection) or the native engine
+; (h2n.asm, state embedded in Conn, CONN_NATIVE). Both use this loop, the
+; same output buffer, linger, drain and idle rules; the few places that talk
+; to an engine branch on CONN_NATIVE.
 ; Output is coalesced: every frame nghttp2 produces in one pass is copied into
 ; one buffer and sent with one sendto (measured: 3 syscalls/request -> ~1
 ; per batch).
@@ -72,8 +78,8 @@ bits 64
 %define LINGER_NS           2000000000  ; max time to wait for the peer's FIN
 %define ACCEPT_BURST        64          ; accepts per readiness event (fairness)
 %define EVENT_SIZE          12          ; struct epoll_event is packed on x86-64
-%define STREAM_WINDOW       1048576     ; per-stream receive window we grant
-%define MAX_WINDOW          0x7FFFFFFF
+; STREAM_WINDOW and MAX_WINDOW live in server.inc: the native engine
+; (h2n.asm) grants and enforces the very same windows.
 
 extern aligned_alloc
 extern malloc
@@ -114,6 +120,12 @@ extern nghttp2_session_terminate_session
 extern nghttp2_session_get_last_proc_stream_id
 extern nghttp2_submit_settings
 extern nghttp2_submit_goaway
+extern kv_h2n_open
+extern kv_h2n_close
+extern kv_h2n_read
+extern kv_h2n_pump
+extern kv_h2n_finished
+extern kv_h2n_goaway
 
 section .rodata
 lvl_warn:       db "WARN", 0
@@ -480,6 +492,8 @@ worker_free:
     mov     rdi, [rbx + Worker.read_buf]
     call    free wrt ..plt
     mov     rdi, [rbx + Worker.events]
+    call    free wrt ..plt
+    mov     rdi, [rbx + Worker.h2_scratch] ; NULL unless a native connection ran
     call    free wrt ..plt
     lea     rdi, [rbx + Worker.pool]    ; every session and stream is gone by now
     call    kv_pool_destroy wrt ..plt
@@ -893,6 +907,8 @@ conn_open:
     jz      .free_conn
     mov     [rbp + Conn.out_buf], rax
     mov     qword [rbp + Conn.out_cap], OUT_INITIAL
+    cmp     qword [r14 + Config.h2_engine], H2_NATIVE
+    je      .native
     lea     rdi, [rbp + Conn.session]
     mov     rsi, [rbx + Worker.callbacks]
     mov     rdx, rbp                    ; user_data = Conn*
@@ -927,7 +943,17 @@ conn_open:
     mov     esi, NGHTTP2_FLAG_NONE
     xor     edx, edx
     call    nghttp2_session_set_local_window_size wrt ..plt
+    jmp     .link
 
+.native:
+    ; Native engine: state lives in Conn; kv_h2n_open queues the same
+    ; server preface (SETTINGS + connection WINDOW_UPDATE) as above.
+    mov     rdi, rbp
+    call    kv_h2n_open wrt ..plt
+    test    eax, eax
+    jnz     .free_conn
+
+.link:
     mov     rax, [rbx + Worker.conns]   ; link into the worker's list
     mov     [rbp + Conn.next], rax
     test    rax, rax
@@ -955,6 +981,12 @@ conn_open:
     call    conn_destroy
     jmp     .out
 .free_conn:
+    test    qword [rbp + Conn.flags], CONN_NATIVE
+    jz      .nghttp2_cleanup
+    mov     rdi, rbp
+    call    kv_h2n_close wrt ..plt      ; copes with a half-done kv_h2n_open
+    jmp     .no_session
+.nghttp2_cleanup:
     mov     rdi, [rbp + Conn.session]
     test    rdi, rdi
     jz      .no_session
@@ -1002,6 +1034,8 @@ conn_event:
     jnz     .destroy
     jmp     .flush
 .readable:
+    test    qword [rbp + Conn.flags], CONN_NATIVE
+    jnz     .native_readable
     mov     rdi, [rbp + Conn.fd]
     mov     rsi, [rbx + Worker.read_buf]
     mov     edx, READ_CHUNK
@@ -1026,6 +1060,15 @@ conn_event:
     call    kv_grpc_run_batch wrt ..plt ; answer the GETs this read queued
     test    eax, eax
     js      .destroy                    ; nghttp2 refused a response (out of memory)
+    jmp     .flush
+.native_readable:
+    ; The native engine reads (it prepends a carried partial frame), parses,
+    ; runs the GET batch and tops up windows itself.
+    mov     rdi, rbx
+    mov     rsi, rbp
+    call    kv_h2n_read wrt ..plt
+    test    rax, rax
+    js      .destroy                    ; peer closed, socket error, out of memory
 .flush:
     mov     rdi, rbx
     mov     rsi, rbp
@@ -1106,6 +1149,8 @@ conn_flush:
     mov     [rbp + Conn.out_len], rax
     mov     [rbp + Conn.out_off], rax
 .fill:
+    test    qword [rbp + Conn.flags], CONN_NATIVE
+    jnz     .native_fill
     cmp     qword [rbp + Conn.out_len], OUT_HIGH_WATER
     jae     .send_pending
     mov     rdi, [rbp + Conn.session]
@@ -1157,6 +1202,26 @@ conn_flush:
     test    eax, eax
     jnz     .idle
     mov     eax, 1                      ; GOAWAY exchanged, no active streams
+    jmp     .out
+.native_fill:
+    ; Native engine: responses were framed straight into out_buf while the
+    ; input was processed; what remains are bodies waiting for window or
+    ; buffer room. Frame what is allowed now, send it, repeat.
+    mov     rdi, rbp
+    call    kv_h2n_pump wrt ..plt
+    test    eax, eax
+    js      .error
+    cmp     qword [rbp + Conn.out_len], 0
+    jne     .send_pending
+    mov     rdi, rbx
+    mov     rsi, rbp
+    xor     edx, edx
+    call    set_interest                ; nothing pending: read again
+    mov     rdi, rbp
+    call    kv_h2n_finished wrt ..plt
+    test    eax, eax
+    jz      .idle
+    mov     eax, 1                      ; GOAWAY exchanged, no stream left
     jmp     .out
 .would_block:
     mov     rdi, rbx
@@ -1219,9 +1284,16 @@ conn_linger:
     sub     rsp, 8
     mov     rbx, rdi
     mov     rbp, rsi
+    test    qword [rbp + Conn.flags], CONN_NATIVE
+    jnz     .native
     mov     rdi, [rbp + Conn.session]
     call    nghttp2_session_del wrt ..plt
     mov     qword [rbp + Conn.session], 0
+    jmp     .streams
+.native:
+    mov     rdi, rbp
+    call    kv_h2n_close wrt ..plt      ; idempotent: conn_destroy calls it again
+.streams:
     mov     rdi, rbp
     call    kv_grpc_free_streams wrt ..plt
     mov     rdi, [rbp + Conn.fd]
@@ -1253,6 +1325,12 @@ conn_destroy:
     sub     rsp, 8
     mov     rbx, rdi
     mov     rbp, rsi
+    test    qword [rbp + Conn.flags], CONN_NATIVE
+    jz      .nghttp2
+    mov     rdi, rbp
+    call    kv_h2n_close wrt ..plt      ; idempotent (a lingering one was closed)
+    jmp     .no_session
+.nghttp2:
     mov     rdi, [rbp + Conn.session]
     test    rdi, rdi
     jz      .no_session
@@ -1332,9 +1410,18 @@ housekeeping:
     jz      .advance
     cmp     r14, rax
     jb      .advance
+    test    qword [rbp + Conn.flags], CONN_NATIVE
+    jnz     .idle_native
     mov     rdi, [rbp + Conn.session]
     mov     esi, NGHTTP2_NO_ERROR
     call    nghttp2_session_terminate_session wrt ..plt
+    jmp     .idle_flush
+.idle_native:
+    mov     rdi, rbp
+    mov     esi, NGHTTP2_NO_ERROR       ; the same code in RFC 9113 (0)
+    mov     edx, 1                      ; terminate: close once it is sent
+    call    kv_h2n_goaway wrt ..plt     ; (out of memory: closed by the next error)
+.idle_flush:
     mov     rdi, rbx
     mov     rsi, rbp
     call    flush_or_close
@@ -1411,6 +1498,8 @@ begin_drain:
     mov     r12, [rbp + Conn.next]
     test    qword [rbp + Conn.flags], CONN_LINGER
     jnz     .advance
+    test    qword [rbp + Conn.flags], CONN_NATIVE
+    jnz     .drain_native
     mov     rdi, [rbp + Conn.session]
     call    nghttp2_session_get_last_proc_stream_id wrt ..plt
     mov     rdi, [rbp + Conn.session]
@@ -1420,6 +1509,15 @@ begin_drain:
     xor     r8d, r8d
     xor     r9d, r9d
     call    nghttp2_submit_goaway wrt ..plt
+    jmp     .drain_flush
+.drain_native:
+    ; GOAWAY(last stream id, NO_ERROR): accepted streams still complete,
+    ; new ones are ignored (RFC 9113 §6.8).
+    mov     rdi, rbp
+    mov     esi, NGHTTP2_NO_ERROR
+    xor     edx, edx                    ; graceful, not terminate
+    call    kv_h2n_goaway wrt ..plt
+.drain_flush:
     mov     rdi, rbx
     mov     rsi, rbp
     call    flush_or_close

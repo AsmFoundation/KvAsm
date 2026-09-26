@@ -267,6 +267,7 @@ kv_hpack_init:
     mov     [rbx + HpackDec.max], r13
     mov     [rbx + HpackDec.limit], r13
     mov     [rbx + HpackDec.pool], r12
+    mov     qword [rbx + HpackDec.gen], 0
     jmp     .out
 .nomem:
     mov     rax, -ENOMEM
@@ -487,6 +488,7 @@ kv_hpack_decode:
     jc      .corrupt
     cmp     rax, [rbx + HpackDec.limit]
     ja      .corrupt
+    inc     qword [rbx + HpackDec.gen]  ; the table may shrink: cached results expire
     mov     [rbx + HpackDec.max], rax
     mov     rsi, rax
     call    hp_evict_to
@@ -745,6 +747,8 @@ hp_insert:
     mov     r14, rcx
     mov     r15, r8
     mov     [rsp], r9
+    inc     qword [rbx + HpackDec.gen]  ; every insertion changes the table (even
+                                        ; an oversized one, which empties it)
     lea     rbp, [r13 + r15 + HPACK_ENTRY_OVERHEAD]   ; accounted size
     cmp     rbp, [rbx + HpackDec.max]
     jbe     .fits

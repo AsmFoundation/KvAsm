@@ -16,8 +16,17 @@
 #    all seven. Staying on <= 1.68.0 is not an option: CVE-2026-27135 (high,
 #    remote assertion-failure DoS via nghttp2_session_terminate_session,
 #    which kvnode calls for idle timeouts) is fixed in 1.68.1.
+#  * "half closed (remote): Sends a HEADERS frame" — the same removal, as a
+#    race: the second HEADERS raises STREAM_CLOSED only if it arrives in the
+#    same read as the request; if kvnode has already answered (stream
+#    closed), nghttp2 ignores it. Measured 1 failure in 8 runs, so run.sh
+#    may print it as "now passing" — expected, keep the line.
 #
-# Details and the decision record: docs/adr/0002-http2-library-nghttp2.md.
+# The native engine (KVNODE_H2_ENGINE=native, h2n.asm) has its own, empty
+# baseline: h2spec-known-failures-native.txt (146/146).
+#
+# Details and the decision records: docs/adr/0002-http2-library-nghttp2.md,
+# docs/adr/0007-native-http2-engine.md.
 http2/5.1 | closed: Sends a DATA frame after sending RST_STREAM frame
 http2/5.1 | closed: Sends a HEADERS frame after sending RST_STREAM frame
 http2/5.1 | closed: Sends a DATA frame
@@ -26,3 +35,4 @@ http2/5.1.1 | Sends stream identifier that is numerically smaller than previous
 http2/5.3.1 | Sends PRIORITY frame that depend on itself
 http2/6.3 | Sends a PRIORITY frame with 0x0 stream identifier
 http2/6.9.1 | Sends multiple WINDOW_UPDATE frames increasing the flow control window to above 2^31-1 on a stream
+http2/5.1 | half closed (remote): Sends a HEADERS frame

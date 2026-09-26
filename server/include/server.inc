@@ -13,11 +13,18 @@
 %ifndef SERVER_INC
 %define SERVER_INC
 
+%include "hpack.inc"                    ; HpackDec, embedded in the native engine's H2
+
 %define READ_CHUNK          65536       ; bytes per recv() into the worker buffer
 %define OUT_INITIAL         65536       ; initial per-connection output buffer
-%define OUT_HIGH_WATER      65536       ; stop pulling from nghttp2 above this
+%define OUT_HIGH_WATER      65536       ; stop producing output above this (both engines)
 %define MAX_EVENTS          256         ; epoll events per wait
 %define GRPC_PREFIX         5           ; compressed flag + 4-byte length
+; HTTP/2 flow control, identical for both engines: the per-stream receive
+; window we grant (large values need no WINDOW_UPDATE round trips) and the
+; protocol's window ceiling (RFC 9113 §6.9.1).
+%define STREAM_WINDOW       1048576
+%define MAX_WINDOW          0x7FFFFFFF
 
 ; ---- Config: validated settings (see config.asm for the environment names) ---
 struc Config
@@ -86,11 +93,68 @@ struc Worker
     .pool:              resb Pool_size  ; this worker's allocator (sessions, streams)
     .mem:               resq 5          ; nghttp2_mem {user_data, malloc, free, calloc, realloc}
     .hcache:            resq 1          ; private L1/L2 record cache (hcache.asm), or 0
+    ; Huffman output of the native engine's HPACK decoder (h2n.asm): decoding
+    ; is synchronous, so one buffer serves every connection of the worker.
+    ; malloc'd by the first native connection, freed with the worker.
+    .h2_scratch:        resq 1
+endstruc
+
+; ---- H2: the native HTTP/2 engine's per-connection state (h2n.asm, ADR 0007) ----
+; Embedded in Conn (no extra allocation or pointer chase on the hot path);
+; zero on nghttp2 connections, which never touch it.
+%define H2_RING             32          ; remembered ids per ring (power of two)
+%define H2_HC_MAX           128         ; largest request header block cached
+struc H2
+    .state:             resq 1          ; preface / first SETTINGS / open (h2n.asm)
+    .flags:             resq 1          ; H2F_*: closing, GOAWAY sent/received, ...
+    .last_id:           resq 1          ; highest client stream id opened or refused
+    .nstreams:          resq 1          ; streams in the map (count toward the limit)
+    .send_window:       resq 1          ; signed: connection window for our DATA
+    .recv_window:       resq 1          ; signed: what the peer may still send us
+    .conn_window:       resq 1          ; target connection receive window
+    .peer_window:       resq 1          ; peer's SETTINGS_INITIAL_WINDOW_SIZE
+    .peer_frame:        resq 1          ; peer's SETTINGS_MAX_FRAME_SIZE
+    .enc:               resq 1          ; response HPACK encoder state (H2E_*)
+    .cont_id:           resq 1          ; stream of the header block being continued
+    .cont_flags:        resq 1          ; END_STREAM / self-dependency of its HEADERS
+    .cont_count:        resq 1          ; CONTINUATION frames in that block
+    .hb_buf:            resq 1          ; header block assembly (pool block)
+    .hb_len:            resq 1
+    .hb_cap:            resq 1
+    .carry:             resq 1          ; partial frame kept for the next read (pool)
+    .carry_len:         resq 1
+    .carry_cap:         resq 1
+    .map:               resq 1          ; Stream*[map_mask + 1], open addressing by id
+    .map_mask:          resq 1
+    .pend_head:         resq 1          ; streams with response bytes waiting for
+    .pend_tail:         resq 1          ;   flow-control window or buffer room
+    .reset_tokens:      resq 1          ; rapid-reset budget (CVE-2023-44487)
+    .reset_stamp:       resq 1          ; Worker.now of the last refill
+    .rst_pos:           resq 1          ; next slot of rst_ring
+    .closed_pos:        resq 1          ; next slot of closed_ring
+    .rst_ring:          resd H2_RING    ; streams WE reset: their late frames are ignored
+    .closed_ring:       resd H2_RING    ; streams closed normally or by the peer
+    .hpack:             resb HpackDec_size ; this connection's HPACK decoder
+    .map_displaced:     resq 1          ; map entries outside their home slot
+    ; Request header-block cache (h2n.asm decode_fields): gRPC clients send
+    ; byte-identical blocks for identical calls once their HPACK table is
+    ; warm. A block equal to hc_bytes under the same table generation
+    ; decodes to the same fields, so its recorded effects are replayed
+    ; instead of decoding (one compare instead of HPACK + Huffman + checks).
+    .hc_len:            resq 1          ; cached block length, 0 = empty
+    .hc_gen:            resq 1          ; HpackDec.gen the entry is valid for
+    .hc_flags:          resq 1          ; Stream.flags bits the block set
+    .hc_method:         resq 1          ; Stream.method (route) it set
+    .hc_h2flags:        resq 1          ; Stream.h2flags bits it set (HEAD)
+    .hc_clen:           resq 1          ; Stream.clen it set (-1: none)
+    .hc_result:         resq 1          ; decode_fields result: 0 ok, 1 malformed
+    .hc_bytes:          resb H2_HC_MAX
 endstruc
 
 ; ---- Conn: one HTTP/2 connection ------------------------------------------------
 %define CONN_WANT_OUT       1           ; epoll interest is EPOLLOUT (output pending)
 %define CONN_LINGER         2           ; session done, write side shut, draining input
+%define CONN_NATIVE         4           ; HTTP/2 by h2n.asm (session = 0, h2 in use)
 struc Conn
     .fd:                resq 1
     .flags:             resq 1
@@ -113,6 +177,7 @@ struc Conn
     ; GETs parsed from the current read, answered after it (prefetch batch).
     .batch_head:        resq 1
     .batch_tail:        resq 1
+    .h2:                resb H2_size    ; native engine state (CONN_NATIVE only)
 endstruc
 
 ; ---- Stream: one gRPC call --------------------------------------------------------
@@ -128,6 +193,12 @@ endstruc
 %define ST_BATCHED          64
 ; The peer reset a batched stream: run_batch frees it instead of answering.
 %define ST_CLOSED           128
+; req_buf points into the worker's read buffer instead of a pool block (the
+; native engine's zero-copy path for a body that arrived whole in one DATA
+; frame): never freed, never counted in Conn.buffered, and valid only until
+; the read that carried it has been fully processed — which covers dispatch
+; and the GET batch answered right after it.
+%define ST_BORROWED         256
 %define M_UNKNOWN           0
 %define M_GET               1
 %define M_PUT               2
@@ -152,6 +223,13 @@ struc Stream
     .h1:                resq 1
     .h2:                resq 1
     .batch_next:        resq 1
+    ; Native engine only (h2n.asm); zero and unused on nghttp2 connections.
+    .send_window:       resq 1          ; signed: what the peer lets us send here
+    .recv_window:       resq 1          ; signed: what we still let the peer send
+    .h2flags:           resq 1          ; SN_* stream state bits (h2n.asm)
+    .clen:              resq 1          ; declared content-length, or -1
+    .data_len:          resq 1          ; DATA payload bytes received so far
+    .pend_next:         resq 1          ; H2.pend list link
 endstruc
 
 %endif

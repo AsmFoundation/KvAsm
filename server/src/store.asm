@@ -163,6 +163,28 @@ kv_store_create:
     mov     edx, MADV_HUGEPAGE
     mov     eax, SYS_madvise
     syscall                             ; failure only costs TLB efficiency
+    ; Fault the table in with WRITES, one per 2 MiB-aligned region, while no
+    ; reader exists. Measured on the WSL2 kernel (5.15): left to the lookups,
+    ; a region's first touch is a read, which maps the huge zero page, and
+    ; the insert that follows splits it into 4 KiB pages (thp_split_pmd +9,
+    ; AnonHugePages 0 for a fully written 16 MiB table). A write to an
+    ; untouched region allocates a real huge page instead, so every bucket
+    ; lookup hits the TLB (8 entries per 16 MiB) rather than walking 4 KiB
+    ; page tables. Without THP each write just faults in one 4 KiB page.
+    ; Memory already zero stays zero; the table becomes resident at startup
+    ; (16 MiB for the default capacity) instead of as keys arrive.
+    mov     rdi, [rbx + Table.buckets]
+    lea     rcx, [rdi + rbp]            ; end of the table
+    add     rdi, HUGE_PAGE - 1
+    and     rdi, -HUGE_PAGE             ; first aligned region
+.prefault:
+    lea     rax, [rdi + HUGE_PAGE]
+    cmp     rax, rcx
+    ja      .prefaulted                 ; only whole regions can be huge
+    mov     byte [rdi], 0
+    mov     rdi, rax
+    jmp     .prefault
+.prefaulted:
 
     ; QSBR reader slots, one cache line each (at least one, never read if 0)
     mov     rax, r13

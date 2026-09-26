@@ -9,7 +9,10 @@
 # Env: KVNODE_ITEST_PORT (default 50151) — the port every phase uses.
 #
 # Phases (each starts a fresh server; any failure prints the server log and
-# exits non-zero, which fails `make itest` and the Docker build):
+# exits non-zero, which fails `make itest` and the Docker build). Phases 1-3
+# and 6 run nghttp2 (KVNODE_H2_ENGINE=nghttp2), the n-phases the native
+# engine, so both engines are always covered; phase 4 runs the default and
+# asserts that it is native.
 #   1. protocol, limits, pipelining, cancellation, multi-connection atomicity
 #   2. graceful shutdown: an idle client must receive GOAWAY(NO_ERROR) and a
 #      clean close, and the server must exit 0 after SIGTERM
@@ -22,6 +25,15 @@
 #   6. HTTP/2 conformance: h2spec (when installed — the Docker toolchain
 #      always has it) must fail exactly the documented baseline in
 #      h2spec-known-failures.txt: any new failure or skip fails the run
+#  1n-6n. the native HTTP/2 engine (KVNODE_H2_ENGINE=native, h2n.asm):
+#      phase 1's suite, graceful shutdown, idle timeout, and h2spec against
+#      its own baseline (h2spec-known-failures-native.txt, empty: 146/146)
+#  7n. fuzzing the native engine (fuzz_h2: garbage, mutated requests, frame
+#      soup, random HPACK, truncation, split writes), liveness checked every
+#      50 connections and memory growth bounded; then the full suite on the
+#      same server, which must still exit 0
+# Env (from the Makefile): FUZZ_BIN, FUZZ_ITERATIONS (default 3000),
+# FUZZ_SEED (default 1; a failure prints the seed that reproduces it).
 # =============================================================================
 set -euo pipefail
 
@@ -102,12 +114,15 @@ refuse() {
   echo "  refused: $name (exit $rc)"
 }
 
-echo "itest: phase 1 — protocol, limits, pipelining, cancellation, concurrency"
-start_server main KVNODE_WORKERS=4 KVNODE_CAPACITY=200000 \
+echo "itest: phase 1 — protocol, limits, pipelining, cancellation, concurrency (nghttp2)"
+# Phases 1-3 and 6 pin nghttp2 and phases 1n-7n pin the native engine, so
+# both stay covered whichever one is the default (phase 4 asserts it).
+start_server main KVNODE_WORKERS=4 KVNODE_CAPACITY=200000 KVNODE_H2_ENGINE=nghttp2 \
   KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE
+grep -qF 'h2_engine=nghttp2' "$LOG" || fail "engine not logged"
 "$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" || fail "itest_grpc suite"
 
-echo "itest: phase 2 — graceful shutdown: idle client + in-flight request"
+echo "itest: phase 2 — graceful shutdown: idle client + in-flight request (nghttp2)"
 "$ITEST" --wait-goaway 127.0.0.1 "$PORT" 20 &
 HOLD=$!
 "$ITEST" --drain-check 127.0.0.1 "$PORT" 20 &
@@ -117,10 +132,10 @@ stop_server
 wait "$HOLD" || fail "idle client did not get GOAWAY(NO_ERROR) and a clean close"
 wait "$DRAIN" || fail "in-flight request was not completed (NOT_SERVING) during drain"
 
-echo "itest: phase 2b — the same suite through private L1/L2 caches and SWAR scans"
+echo "itest: phase 2b — the same suite through private L1/L2 caches and SWAR scans (nghttp2)"
 # Tiny caches (L1 256, L2 4096 entries) so entries conflict and are reused
 # while the suite's writers invalidate them; SWAR because SSE2 is the default.
-start_server cached KVNODE_WORKERS=4 KVNODE_CAPACITY=200000 \
+start_server cached KVNODE_WORKERS=4 KVNODE_CAPACITY=200000 KVNODE_H2_ENGINE=nghttp2 \
   KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE \
   KVNODE_CACHE_L1_BITS=8 KVNODE_CACHE_L2_BITS=12 KVNODE_SCAN=swar
 grep -qF 'scan=swar' "$LOG" || fail "scan mode not logged"
@@ -128,8 +143,8 @@ grep -qF 'cache_l1_bits=8 cache_l2_bits=12' "$LOG" || fail "cache settings not l
 "$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" || fail "itest_grpc suite with private caches"
 stop_server
 
-echo "itest: phase 3 — idle timeout"
-start_server idle KVNODE_WORKERS=1 KVNODE_IDLE_TIMEOUT_SEC=1
+echo "itest: phase 3 — idle timeout (nghttp2)"
+start_server idle KVNODE_WORKERS=1 KVNODE_IDLE_TIMEOUT_SEC=1 KVNODE_H2_ENGINE=nghttp2
 t0=$(date +%s%N)
 "$ITEST" --wait-goaway 127.0.0.1 "$PORT" 10 || fail "idle connection not closed with GOAWAY"
 ms=$((($(date +%s%N) - t0) / 1000000))
@@ -137,9 +152,10 @@ ms=$((($(date +%s%N) - t0) / 1000000))
 echo "  idle connection closed after ${ms} ms"
 stop_server
 
-echo "itest: phase 4 — snapshot as the data source"
+echo "itest: phase 4 — snapshot as the data source (default engine: native)"
 "$MKSNAP" "$WORK/snap.kvs" 20000
 start_server snapshot KVNODE_WORKERS=2 KVNODE_SNAPSHOT="$WORK/snap.kvs"
+grep -qF 'h2_engine=native' "$LOG" || fail "the default HTTP/2 engine is not native"
 grep -qF 'msg="snapshot loaded" records=20000' "$LOG" || fail "snapshot load not logged"
 "$ITEST" --expect-snapshot 127.0.0.1 "$PORT" 20000 || fail "snapshot records not served"
 
@@ -157,12 +173,20 @@ refuse "capacity overflow" 2 'name=KVNODE_CAPACITY' KVNODE_CAPACITY=999999999999
 refuse "unknown scan mode" 2 'name=KVNODE_SCAN value=avx9 allowed=swar|sse2' KVNODE_SCAN=avx9
 refuse "empty scan name" 2 'name=KVNODE_SCAN value= allowed=swar|sse2' KVNODE_SCAN=
 refuse "cache too large" 2 'name=KVNODE_CACHE_L1_BITS value=25' KVNODE_CACHE_L1_BITS=25
+refuse "unknown h2 engine" 2 'name=KVNODE_H2_ENGINE value=quic allowed=nghttp2|native' \
+  KVNODE_H2_ENGINE=quic
+refuse "h2 engine case" 2 'name=KVNODE_H2_ENGINE value=Native allowed=nghttp2|native' \
+  KVNODE_H2_ENGINE=Native
 
-echo "itest: phase 6 — HTTP/2 conformance (h2spec) against the known baseline"
-if command -v h2spec > /dev/null; then
-  start_server h2spec KVNODE_WORKERS=2
+# h2spec_check NAME BASELINE [VAR=VALUE...] — run h2spec against a fresh
+# server; the failures must be exactly BASELINE's (a new failure or skip
+# fails the run; a listed case that passes is only noted).
+h2spec_check() {
+  local name=$1 baseline=$2
+  shift 2
+  start_server "$name" KVNODE_WORKERS=2 "$@"
   # h2spec exits non-zero whenever anything fails; the baseline decides.
-  h2spec -h 127.0.0.1 -p "$PORT" -o 2 -j "$WORK/h2spec.xml" > "$WORK/h2spec.txt" 2>&1 || true
+  h2spec -h 127.0.0.1 -p "$PORT" -o 2 -j "$WORK/$name.xml" > "$WORK/$name.txt" 2>&1 || true
   stop_server
   # JUnit: <testcase package=".." classname="..">, then <error> (failed) or
   # <skipped> on the next line; a passing case closes on the same line.
@@ -172,17 +196,67 @@ if command -v h2spec > /dev/null; then
          w = 1; next }
        w && /<error>/   { print p " | " c; w = 0; next }
        w && /<skipped>/ { print "SKIPPED " p " | " c; w = 0; next }
-       { w = 0 }' "$WORK/h2spec.xml" | sort > "$WORK/h2spec.fail"
-  grep -v '^#' "$(dirname "$0")/h2spec-known-failures.txt" | grep . | sort > "$WORK/h2spec.known"
-  grep -q "tests," "$WORK/h2spec.txt" || fail "h2spec did not run" "$WORK/h2spec.txt"
-  unexpected=$(comm -23 "$WORK/h2spec.fail" "$WORK/h2spec.known")
-  fixed=$(comm -13 "$WORK/h2spec.fail" "$WORK/h2spec.known")
-  [[ -z "$unexpected" ]] || fail "h2spec regressions (not in the baseline):
-$unexpected" "$WORK/h2spec.txt"
-  [[ -z "$fixed" ]] || echo "  note: now passing, remove from the baseline: $fixed"
-  echo "  $(grep "tests," "$WORK/h2spec.txt") — all failures in the documented baseline"
+       { w = 0 }' "$WORK/$name.xml" | sort > "$WORK/$name.fail"
+  (grep -v '^#' "$(dirname "$0")/$baseline" | grep . || true) | sort > "$WORK/$name.known"
+  grep -q "tests," "$WORK/$name.txt" || fail "h2spec did not run" "$WORK/$name.txt"
+  local unexpected fixed
+  unexpected=$(comm -23 "$WORK/$name.fail" "$WORK/$name.known")
+  fixed=$(comm -13 "$WORK/$name.fail" "$WORK/$name.known")
+  [[ -z "$unexpected" ]] || fail "h2spec regressions (not in $baseline):
+$unexpected" "$WORK/$name.txt"
+  [[ -z "$fixed" ]] || echo "  note: now passing, remove from $baseline: $fixed"
+  echo "  $(grep "tests," "$WORK/$name.txt") — all failures in the documented baseline"
+}
+
+echo "itest: phase 6 — HTTP/2 conformance (h2spec) against the known baseline"
+if command -v h2spec > /dev/null; then
+  h2spec_check h2spec h2spec-known-failures.txt KVNODE_H2_ENGINE=nghttp2
 else
   echo "  skipped: h2spec not installed"
+fi
+
+echo "itest: phase 1n — the suite on the native HTTP/2 engine (h2n.asm)"
+start_server native KVNODE_WORKERS=4 KVNODE_CAPACITY=200000 KVNODE_H2_ENGINE=native \
+  KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE
+grep -qF 'h2_engine=native' "$LOG" || fail "engine not logged"
+"$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" || fail "itest_grpc suite on the native engine"
+
+echo "itest: phase 2n — graceful shutdown on the native engine"
+"$ITEST" --wait-goaway 127.0.0.1 "$PORT" 20 &
+HOLD=$!
+"$ITEST" --drain-check 127.0.0.1 "$PORT" 20 &
+DRAIN=$!
+sleep 0.3
+stop_server
+wait "$HOLD" || fail "native: idle client did not get GOAWAY(NO_ERROR) and a clean close"
+wait "$DRAIN" || fail "native: in-flight request was not completed (NOT_SERVING) during drain"
+
+echo "itest: phase 3n — idle timeout on the native engine"
+start_server idle-native KVNODE_WORKERS=1 KVNODE_IDLE_TIMEOUT_SEC=1 KVNODE_H2_ENGINE=native
+t0=$(date +%s%N)
+"$ITEST" --wait-goaway 127.0.0.1 "$PORT" 10 || fail "native: idle connection not closed with GOAWAY"
+ms=$((($(date +%s%N) - t0) / 1000000))
+((ms >= 900)) || fail "native: idle close after ${ms} ms, before the 1 s timeout"
+echo "  idle connection closed after ${ms} ms"
+stop_server
+
+echo "itest: phase 6n — h2spec on the native engine (baseline: none)"
+if command -v h2spec > /dev/null; then
+  h2spec_check h2spec-native h2spec-known-failures-native.txt KVNODE_H2_ENGINE=native
+else
+  echo "  skipped: h2spec not installed"
+fi
+
+echo "itest: phase 7n — fuzzing the native engine, then the suite on the same server"
+if [[ -n "${FUZZ_BIN:-}" ]]; then
+  start_server fuzz-native KVNODE_WORKERS=2 KVNODE_CAPACITY=200000 KVNODE_H2_ENGINE=native \
+    KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE
+  "$FUZZ_BIN" 127.0.0.1 "$PORT" "${FUZZ_ITERATIONS:-3000}" "${FUZZ_SEED:-1}" "$PID" \
+    || fail "fuzz_h2 found a failure"
+  "$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" || fail "suite after fuzzing"
+  stop_server                              # exit status 0 required
+else
+  echo "  skipped: FUZZ_BIN not set (run through make itest)"
 fi
 
 echo "itest: all phases passed"

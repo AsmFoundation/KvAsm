@@ -1,0 +1,8 @@
+# h2spec v2.6.0 cases that fail against kvnode with its native HTTP/2 engine
+# (KVNODE_H2_ENGINE=native, src/h2n.asm). Same format and rules as
+# h2spec-known-failures.txt (run.sh phase 6n).
+#
+# Intentionally empty: the native engine passes all 146 cases, including the
+# eight that nghttp2 >= 1.65 no longer enforces (closed-stream tracking,
+# PRIORITY validation, stream-level window overflow). Any line added here is
+# a regression to explain in docs/adr/0007-native-http2-engine.md.

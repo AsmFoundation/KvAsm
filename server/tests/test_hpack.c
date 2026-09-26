@@ -30,6 +30,7 @@ typedef struct {
   void *ents;
   uint64_t ring_mask, head, count, size, max, limit;
   void *pool;
+  uint64_t gen; /* table generation (hpack.inc) */
 } HpackDec;
 
 typedef int (*FieldHandler)(void *ctx, const uint8_t *name, size_t nlen, const uint8_t *value,
@@ -460,6 +461,34 @@ static void test_evicted_name(void) {
   kv_hpack_free(&d);
 }
 
+/**
+ * The table generation (HpackDec.gen) moves exactly when the table may
+ * change: callers cache a block's result by (bytes, generation), so a
+ * missed increment would replay stale fields and a spurious one only costs
+ * a cache miss.
+ */
+static void test_generation(void) {
+  HpackDec d;
+  CHECK(kv_hpack_init(&d, g_pool, 4096) == 0);
+  static Fields fs;
+  CHECK(d.gen == 0);
+  uint8_t blk[64];
+  size_t n = 0;
+  blk[n++] = 0x40;                                   /* insertion */
+  n += enc_raw(blk + n, "x-a", 3);
+  n += enc_raw(blk + n, "b", 1);
+  fs.n = 0;
+  CHECK(kv_hpack_decode(&d, blk, n, &fs, collect, g_scratch) == 0 && d.gen == 1);
+  /* static entry, the dynamic entry, a literal without indexing: no change */
+  uint8_t lit[5] = {0x82, 0xBE, 0x04, 0x01, '/'};
+  fs.n = 0;
+  CHECK(kv_hpack_decode(&d, lit, sizeof lit, &fs, collect, g_scratch) == 0 && fs.n == 3 && d.gen == 1);
+  uint8_t upd[2] = {0x3F, 0x00};                     /* size update to 31, nothing else */
+  CHECK(kv_hpack_decode(&d, upd, sizeof upd, &fs, collect, g_scratch) == 0 && d.gen == 2);
+  CHECK(d.count == 0);                               /* 31 < 36: the entry was evicted */
+  kv_hpack_free(&d);
+}
+
 /** Meanings of names and values. */
 static void test_classify(void) {
 #define CL(n, v) kv_hpack_classify(n, strlen(n), v, strlen(v))
@@ -591,6 +620,7 @@ int main(void) {
   test_errors();
   test_oversize();
   test_evicted_name();
+  test_generation();
   test_classify();
   test_differential();
   return test_finish("test_hpack");
