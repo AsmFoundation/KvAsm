@@ -28,9 +28,13 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 4. **Ablate honestly.**
    - Run variants **interleaved and in rotated order** (a Latin square), so
      drift and position effects cancel.
-   - Take ≥ 5 repetitions per variant and compare medians with their spread.
-   - Lesson paid for in this repo: a fixed A-B-C-D order made the stream
-     cache look 2–16% slower in every repetition.
+   - Take ≥ 6 repetitions per variant (the fewest at which a paired sign
+     test can reach p < 0.05) and compare *within* repetitions.
+   - Lesson paid for in this repo: with a fixed A-B-C-D order, the stream
+     cache looked 1–16% slower in all 5 repetitions at 4 cores. The rotated
+     re-run showed no consistent effect.
+   - Check the host first. Other programs competing for the cores were the
+     largest noise source measured here (below, §10).
 5. **Re-verify correctness** after every change: `make test itest`, which
    includes the torn-value detector, h2spec, and the reset-in-batch test.
 6. **Record the outcome** here: ✅ applied (with its measured effect),
@@ -68,8 +72,9 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     (pipelining, HTTP/2 multiplexing).
   - *KvNode:* ✅ `kv_store_prefetch` at parse time, then
     `kv_store_prefetch_records`, then execution in `kv_grpc_run_batch`.
-    **Paired median +28% at 4 cores (2.13M GET/s), +35% at 1 core, faster
-    in 8 of 8 rotated repetitions at both budgets** (ADR 0005).
+    **Paired median +28% at 4 cores, +35% at 1 core, faster in 8 of 8
+    rotated repetitions at both budgets** (ADR 0005). The standard benchmark
+    then measured 3.02M GET/s at 4 cores and 5.18M at 8.
 - **One cache line per probe**
   - *What:* size and align a hash bucket to 64 bytes. Keep its tags in one
     word next to the pointers.
@@ -83,8 +88,12 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *What:* `madvise(MADV_HUGEPAGE)` (transparent) or hugetlbfs, so TLB reach
     covers GBs.
   - *KvNode:* ✅ the cuckoo table. 🔜 records live on malloc pages: a slab on
-    huge pages would cut TLB misses *and* memory per key (230 B/key today;
-    Dragonfly 140, Redis 174).
+    huge pages would cut TLB misses *and* memory per key.
+  - *Measured (E1, 100-byte values, 116 raw bytes):* KvNode 178 B/key,
+    Dragonfly 159, Redis 174.
+  - *Measured (E6, 16 KiB values):* 19.5 KB/key, about 3 KB above the
+    payload plus headers, against Dragonfly's 16.7 KB. Worth investigating
+    first: glibc arenas with 4 writer threads are a suspect.
 - **Prefault what you will touch**
   - *What:* `MAP_POPULATE` or touch at startup, so first requests don't pay
     page faults.
@@ -255,8 +264,11 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     own whole connections: no mixing with nghttp2.
   - *Cost:* a security-critical rewrite that needs fuzzing (AFL++/libFuzzer)
     and h2spec before it can ship. It would revise ADR 0002.
-  - *Payoff:* the only path to ≫ 650k requests/s per core (the measured
-    protocol floor).
+  - *Payoff:* the only path far past about 920k requests/s per core, the
+    measured protocol floor:
+    - E5: 1,086 ns of server CPU per no-op gRPC request, against 422 ns for
+      a Redis `PING`;
+    - it is why 1-core KvNode runs at 0.56× Redis.
 - **Cache lookups the library repeats**
   - *KvNode:* 🧪 one-entry stream cache. Its effect is within noise
     (paired median 0.99 at 1 core, 0.98 at 4): nghttp2's own internal
@@ -284,11 +296,21 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *independent* operations measure throughput (see `bench_ds`).
 - **Validate the client:** a benchmark client must match the ecosystem's
   standard tools (E8), or it biases the comparison.
-- **Calibrate instruments:** on WSL2 the cgroup CPU clock reads ~6.5% fast.
-  Measure the factor and correct for it.
-- **Expect noise on hybrid CPUs under VMs:** P/E-core placement by the
-  hypervisor moves single runs by up to ±40%. Use medians over repetitions,
-  report CVs, and interleave and rotate variants.
+- **Calibrate instruments:** on WSL2 the cgroup CPU clock reads 6–11% fast,
+  more when the host is contended (a vCPU taken away by the hypervisor
+  still counts as busy). Measure the factor every session and correct for
+  it.
+- **Watch the whole machine, not just the containers:**
+  - Other programs on the host (an optimization job, an emulator, a game)
+    once took 14–23 of 32 logical CPUs. Identical runs then differed by up
+    to 3×, and throughput changed within single runs.
+  - The same benchmark on a quiet host: CV 1.1–1.7% over ten runs.
+  - cgroups cannot see that load. `benchmarks/run.py` samples it per run
+    (host busy CPU minus the VM process) and the analysis adjusts for it.
+- **Expect residual noise on hybrid CPUs under VMs** (P/E-core placement by
+  the hypervisor):
+  - pair variants within blocks, rotate their order, and report CVs;
+  - never trust a single run.
 - **Correctness under optimization:** torn-value detector, h2spec baseline,
   reset-in-batch test, full unit suite. Every optimization passes them
   before its numbers count.

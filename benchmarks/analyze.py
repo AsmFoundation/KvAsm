@@ -36,6 +36,17 @@ from collections import defaultdict
 
 ORDER = ["kvnode", "redis", "valkey", "dragonfly", "garnet", "memcached"]
 
+ADJUSTED_EXPERIMENTS = ("E1", "E2", "E3", "E5", "E6", "E7")
+"""Closed-loop throughput experiments that get the outside-load adjusted
+summary. E0 is tuning, E4's throughput is fixed by design, E8 compares
+tools on one server, and S1 compares a system with itself."""
+
+HOST_BUSY = 2.0
+"""Logical CPUs of load outside the container VM above which a run counts as
+taken on a busy host — the same value as run.HOST_BUSY_WARN (kept separate
+so this script stays importable without the runner). Busy runs are flagged
+and a quiet-only sensitivity check is shown; none are excluded."""
+
 
 # ---------------------------------------------------------------------------
 # Statistics
@@ -107,6 +118,27 @@ def samples(values: dict | list) -> list[float]:
         The observations as a list (block order is irrelevant here).
     """
     return list(values.values()) if isinstance(values, dict) else list(values)
+
+
+def spearman(xs: list[float], ys: list[float]) -> float | None:
+    """Spearman rank correlation (Pearson correlation of midranks).
+
+    Args:
+        xs: first variable.
+        ys: second variable, same length.
+
+    Returns:
+        rho in [-1, 1], or None with fewer than 3 points or a constant
+        variable (correlation undefined).
+    """
+    if len(xs) != len(ys) or len(xs) < 3:
+        return None
+    rx, ry = midranks(xs), midranks(ys)
+    mx, my = statistics.fmean(rx), statistics.fmean(ry)
+    sxy = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
+    sxx = sum((a - mx) ** 2 for a in rx)
+    syy = sum((b - my) ** 2 for b in ry)
+    return sxy / math.sqrt(sxx * syy) if sxx > 0 and syy > 0 else None
 
 
 def summary(values: dict | list) -> dict | None:
@@ -255,6 +287,9 @@ class Results:
             m["mem_total"] = after
         m["achieved"] = res["ops_per_sec"]
         m["stalls"] = res.get("stalls", 0)
+        hl = rec.get("host_load") or {}
+        if hl.get("mean") is not None:
+            m["host_external"] = hl["mean"]
         tl = [x for x in res.get("timeline_ops_per_sec", []) if x > 0]
         if len(tl) >= 3:
             mean = statistics.fmean(tl)
@@ -366,12 +401,36 @@ def cmp_text(c: dict | None) -> str:
     """
     if not c:
         return "—"
-    p = "n/a" if c["p"] is None else f"{c['p']:.3f}"
+    # "p<0.001" rather than a misleading "p=0.000" once many pairs agree.
+    p = "=n/a" if c["p"] is None else "<0.001" if c["p"] < 0.001 else f"={c['p']:.3f}"
     mark = {"better": "▲", "worse": "▼"}.get(c["verdict"], "≈")
     # The test name travels with the p-value: a paired range and a
     # conservative unpaired range answer different questions.
     test = "sign" if c.get("kind") == "paired" else "MW"
-    return f"{c['ratio']:.2f}× [{c['lo']:.2f}–{c['hi']:.2f}] {test} p={p} {mark}"
+    return f"{c['ratio']:.2f}× [{c['lo']:.2f}–{c['hi']:.2f}] {test} p{p} {mark}"
+
+
+def cell_label(experiment: str, cores: int, workload: dict) -> str:
+    """Short human label for one experiment cell, for summary tables.
+
+    Args:
+        experiment: experiment id.
+        cores: core budget of the cell.
+        workload: the record's workload dict (suite.Workload fields).
+
+    Returns:
+        e.g. "4 cores", "90% GET, Zipf", "256×1", "no-op", "1024 B values".
+    """
+    if experiment == "E1":
+        return f"{cores} core{'s' if cores > 1 else ''}"
+    if workload.get("ping"):
+        return "no-op"
+    if experiment in ("E3", "E7"):
+        return f"{workload['connections']}×{workload['depth']}"
+    if experiment == "E6":
+        return f"{workload['value_size']} B values"
+    mix = f"{round(workload['read_ratio'] * 100)}% GET" if workload["read_ratio"] > 0 else "100% SET"
+    return mix + (", Zipf" if workload.get("zipf") else "")
 
 
 def systems_in(values: dict[str, dict | list]) -> list[str]:
@@ -433,30 +492,36 @@ class Report:
         """
         self.lines.extend(lines)
 
-    def comparison_table(self, header: str, columns: list[tuple[str, dict[str, dict | list]]],
-                         fmt=fmt_ops, higher_is_better: bool = True) -> None:
+    def comparison_table(self, header: str, columns: list[tuple], fmt=fmt_ops,
+                         higher_is_better: bool = True) -> None:
         """A systems x columns table of medians, plus KvNode ratios per column.
 
         Args:
             header: first column label.
-            columns: (label, per-system values) per column; block-keyed dicts
-                from Results.values() give paired ratios, lists unpaired ones.
+            columns: (label, per-system values) or (label, per-system values,
+                higher_is_better) per column. Block-keyed dicts from
+                Results.values() give paired ratios, lists unpaired ones. The
+                third element overrides the table-wide orientation, and must
+                be given whenever a table mixes throughput with latency or
+                cost, or the ▲/▼ verdicts point the wrong way.
             fmt: number formatter.
-            higher_is_better: orientation for the verdicts.
+            higher_is_better: default orientation for columns without one.
         """
+        cols = [(c[0], c[1], c[2] if len(c) > 2 else higher_is_better) for c in columns]
         systems = []
-        for _, vals in columns:
+        for _, vals, _ in cols:
             systems += [s for s in systems_in(vals) if s not in systems]
-        self.w(f"| {header} | " + " | ".join(c for c, _ in columns) + " |",
-               "|---|" + "---|" * len(columns))
+        self.w(f"| {header} | " + " | ".join(c for c, _, _ in cols) + " |",
+               "|---|" + "---|" * len(cols))
         for s in systems:
-            self.w(f"| {self.title(s)} | " + " | ".join(cell_text(summary(v.get(s, {})), fmt) for _, v in columns) + " |")
-        if any("kvnode" in v for _, v in columns):
+            self.w(f"| {self.title(s)} | " + " | ".join(cell_text(summary(v.get(s, {})), fmt)
+                                                        for _, v, _ in cols) + " |")
+        if any("kvnode" in v for _, v, _ in cols):
             for s in systems:
                 if s == "kvnode":
                     continue
                 self.w(f"| *KvNode ÷ {self.title(s).split()[0]}* | " + " | ".join(
-                    cmp_text(compare(v.get("kvnode", {}), v.get(s, {}), higher_is_better)) for _, v in columns) + " |")
+                    cmp_text(compare(v.get("kvnode", {}), v.get(s, {}), hib)) for _, v, hib in cols) + " |")
         self.w("")
 
     def chart(self, name: str, xlabel: str, ylabel: str, series: dict[str, list[tuple[float, float]]],
@@ -536,6 +601,161 @@ class Report:
         if bad:
             self.w("Excluded runs:", "", *bad, "")
 
+    def interference(self) -> None:
+        """Load from programs outside the container VM: how much, whether it
+        cost throughput, and whether the headline ratios survive without it.
+
+        Why: cgroups cannot see other programs competing for the host's
+        cores, yet on a shared workstation they are the largest noise source
+        (METHODOLOGY.md §8). run.py samples them per run when it can.
+        """
+        runs = [r for r in self.res.records if "host_external" in r["m"]]
+        self.w("## Host interference", "")
+        if not runs:
+            self.w("Load from programs outside the container VM was **not monitored** in this "
+                   "session (run.py needs psutil and Docker Desktop's VM process, and sessions "
+                   "before 2026-09-26 09:44 predate the monitor). Such load competes for the same "
+                   "cores without appearing in any cgroup; see METHODOLOGY.md §8.", "")
+            return
+        cpus = self.res.env.get("host_logical_cpus") or "?"
+        idle = self.res.env.get("host_load_idle")
+        if idle:
+            self.w(f"Before the first run, programs outside the container VM used "
+                   f"**{idle['mean']:.1f} of {cpus} logical CPUs** (peak {idle['max']:.1f}).", "")
+        self.w(f"| Experiment | runs | median outside load (CPUs) | 90th percentile | max | "
+               f"runs above {HOST_BUSY:.0f} |", "|---|---|---|---|---|---|")
+        by_exp: dict[str, list[float]] = defaultdict(list)
+        for r in runs:
+            by_exp[r["experiment"]].append(r["m"]["host_external"])
+        for e in sorted(by_exp):
+            v = by_exp[e]
+            q90 = statistics.quantiles(v, n=10)[8] if len(v) >= 10 else max(v)
+            self.w(f"| {e} | {len(v)} | {statistics.median(v):.1f} | {q90:.1f} | {max(v):.1f} | "
+                   f"{sum(x > HOST_BUSY for x in v)} |")
+        self.w("")
+        # Effect on throughput: each run relative to its own cell's median,
+        # pooled over closed-loop cells. E4 is excluded because its
+        # throughput is the offered rate by design.
+        xs, ys = [], []
+        for exp in sorted({r["experiment"] for r in runs} - {"E4"}):
+            for recs in self.res.cells(exp).values():
+                pts = [(r["m"]["host_external"], r["m"]["ops"]) for r in recs
+                       if "host_external" in r["m"] and "ops" in r["m"]]
+                if len(pts) >= 3:
+                    med = statistics.median(o for _, o in pts)
+                    xs += [h for h, _ in pts]
+                    ys += [o / med for _, o in pts]
+        rho = spearman(xs, ys)
+        if rho is not None:
+            self.w(f"**Effect:** Spearman ρ = {rho:+.2f} between outside load and each run's throughput "
+                   f"relative to its cell's median ({len(xs)} runs). Negative means outside load cost "
+                   "throughput; near zero means it did not measurably matter.", "")
+        # Sensitivity of the comparisons to outside load, two ways:
+        #  * quiet-only: keep blocks where both runs had <= HOST_BUSY CPUs of
+        #    outside load (declared before the monitored run);
+        #  * adjusted: a covariance (ANCOVA-style) correction that keeps every
+        #    pair. Chosen after the monitored run's host showed a constant 3+
+        #    CPUs of outside load (so quiet-only is empty) and a synthetic
+        #    test showed a relative cut leaves 0-2 pairs per comparison, but
+        #    before any comparison of that run was examined. First applied to
+        #    E1 only; extended to every closed-loop throughput experiment once
+        #    E1 showed a strong load effect (rho = -0.64), before any
+        #    experiment after E1 had been looked at.
+        rows = []  # (label, slope, {system: (kv, other, kv load, other load)})
+        n_quiet = n_pairs = 0
+        for exp in ADJUSTED_EXPERIMENTS:
+            recs = [r for r in self.res.records if r["experiment"] == exp and "host_external" in r["m"]]
+            wl_of = {(r["cores"], r["workload_key"]): r["workload"] for r in recs}
+
+            def natural(cw: tuple) -> tuple:
+                """Cores, then requests in flight, then GET share (high
+                first), skew and value size: the order a reader expects,
+                unlike the workload-key strings ("c16d1" < "c1d1")."""
+                w = wl_of[cw]
+                return (cw[0], w["connections"] * w["depth"], -w["read_ratio"], w.get("zipf") or 0,
+                        w["value_size"])
+
+            cells = sorted(wl_of, key=natural)
+            comps, labelled = [], []
+            for c, wk in cells:
+                ops = self.res.values(exp, "ops", cores=c, workload_key=wk)
+                load = self.res.values(exp, "host_external", cores=c, workload_key=wk)
+                sample = next(r for r in recs if r["cores"] == c and r["workload_key"] == wk)
+                by_sys = {}
+                for s in systems_in(ops):
+                    if s == "kvnode":
+                        continue
+                    tup = (ops.get("kvnode", {}), ops.get(s, {}), load.get("kvnode", {}), load.get(s, {}))
+                    comps.append((c, s, *tup))
+                    by_sys[s] = tup
+                    shared = [k for k in tup[0] if k in tup[1] and k in tup[2] and k in tup[3]]
+                    n_pairs += len(shared)
+                    n_quiet += sum(tup[2][k] <= HOST_BUSY and tup[3][k] <= HOST_BUSY for k in shared)
+                labelled.append((f"{exp} · {cell_label(exp, c, sample['workload'])}", by_sys))
+            slope = self.load_slope(comps)
+            if slope is not None:
+                rows += [(label, slope, by_sys) for label, by_sys in labelled]
+        if not rows:
+            return
+        self.w(f"**Quiet-only check** (declared in advance): {n_quiet} of {n_pairs} KvNode-vs-other "
+               f"pairs had at most {HOST_BUSY:.0f} CPUs of outside load on both runs"
+               + (", too few to recompute anything." if n_quiet < 3 else "."), "")
+        systems = [s for s in ORDER if s != "kvnode" and any(s in b for _, _, b in rows)]
+        self.w("**Adjusted to equal outside load.** Each experiment's pairs are corrected with one "
+               "common slope of log(KvNode ÷ X) on the difference in outside load between the two "
+               "runs of a block, estimated within comparisons (analysis of covariance). The slope "
+               "column gives the change of the ratio per logical CPU of extra outside load on "
+               "KvNode's run. Raw, unadjusted results are the tables in each section below. Where the "
+               "two disagree, the difference is load, not the servers.", "",
+               "| Experiment · cell | slope | " + " | ".join(f"KvNode ÷ {self.title(s).split()[0]}"
+                                                          for s in systems) + " |",
+               "|---|---|" + "---|" * len(systems))
+        for label, slope, by_sys in rows:
+            cells_txt = []
+            for s in systems:
+                if s not in by_sys:
+                    cells_txt.append("—")
+                    continue
+                kv, other, kv_load, ot_load = by_sys[s]
+                shared = [k for k in kv if k in other and k in kv_load and k in ot_load]
+                adj = {k: kv[k] * math.exp(-slope * (kv_load[k] - ot_load[k])) for k in shared}
+                c = compare(adj, {k: other[k] for k in shared})
+                mark = {"better": "▲", "worse": "▼"}.get(c["verdict"], "≈") if c else ""
+                cells_txt.append(f"{c['ratio']:.2f}× [{c['lo']:.2f}–{c['hi']:.2f}] {mark}" if c else "—")
+            self.w(f"| {label} | {math.expm1(slope) * 100:+.1f}% | " + " | ".join(cells_txt) + " |")
+        self.w("")
+
+    @staticmethod
+    def load_slope(comps: list[tuple]) -> float | None:
+        """Common within-comparison slope of log(KvNode ÷ X) on the outside-
+        load difference between the two runs of a block.
+
+        Fixed-effects estimate: centre both variables within each comparison
+        (removing that comparison's own ratio level), then one least-squares
+        slope over all centred pairs. Assumes the load effect is similar
+        across systems and budgets — per-comparison slopes from 6 pairs
+        would be pure noise.
+
+        Args:
+            comps: (cores, system, kv values, other values, kv load, other
+                load) tuples, dicts keyed by block.
+
+        Returns:
+            Slope per logical CPU (log scale), or None without enough varying
+            data (no pair with load on both runs, or no load variation).
+        """
+        sxy = sxx = 0.0
+        for _, _, kv, other, kv_load, ot_load in comps:
+            shared = [k for k in kv if k in other and k in kv_load and k in ot_load]
+            if len(shared) < 2:
+                continue
+            xs = [kv_load[k] - ot_load[k] for k in shared]
+            ys = [math.log(kv[k] / other[k]) for k in shared]
+            mx, my = statistics.fmean(xs), statistics.fmean(ys)
+            sxy += sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+            sxx += sum((x - mx) ** 2 for x in xs)
+        return sxy / sxx if sxx > 0 else None
+
     def e0(self) -> None:
         """Thread-count tuning table."""
         cells = self.res.cells("E0")
@@ -576,7 +796,8 @@ class Report:
         self.comparison_table("ops per CPU-second", [(f"{c} core{'s' if c > 1 else ''}",
                                                       self.res.values("E1", "ops_per_cpu_s", cores=c))
                                                      for c in cores])
-        self.w("**Server CPU utilization** of its core budget (1.0 = all given cores busy):", "")
+        self.w("**Server CPU utilization** of its core budget (1.0 = all given cores busy; ▲ only "
+               "means KvNode kept more of its cores busy, which is neither good nor bad by itself):", "")
         self.comparison_table("utilization", [(f"{c} core{'s' if c > 1 else ''}",
                                                self.res.values("E1", "server_util", cores=c))
                                               for c in cores], fmt=lambda v: f"{v:.2f}")
@@ -608,9 +829,9 @@ class Report:
         if not recs:
             return
         self.w("## E3 — No pipelining (256 connections × 1 request in flight, 4 cores)", "")
-        self.comparison_table("metric", [("ops/s", self.res.values("E3", "ops")),
-                                         ("p50 µs", self.res.values("E3", "p50")),
-                                         ("p99 µs", self.res.values("E3", "p99"))],
+        self.comparison_table("metric", [("ops/s", self.res.values("E3", "ops"), True),
+                                         ("p50 µs", self.res.values("E3", "p50"), False),
+                                         ("p99 µs", self.res.values("E3", "p99"), False)],
                               fmt=lambda v: f"{v:,.0f}" if v > 1000 else f"{v:.1f}")
 
     def e4(self) -> None:
@@ -647,8 +868,8 @@ class Report:
         self.w("## E5 — Per-request floor (no-op round trip, 1 core)", "",
                "RESP `PING`, memcached meta `mn`, gRPC `grpc.health.v1.Health/Check`: the cost "
                "of protocol, framing and event loop without any data access.", "")
-        self.comparison_table("metric", [("ops/s", self.res.values("E5", "ops")),
-                                         ("server CPU ns/op", self.res.values("E5", "cpu_ns_per_op"))],
+        self.comparison_table("metric", [("ops/s", self.res.values("E5", "ops"), True),
+                                         ("server CPU ns/op", self.res.values("E5", "cpu_ns_per_op"), False)],
                               fmt=lambda v: fmt_ops(v) if v > 10000 else f"{v:.0f}")
 
     def e6(self) -> None:
@@ -714,7 +935,7 @@ class Report:
             worst = max(cvs)
             self.w(f"**Between runs** (fresh server each, E1 and S1 cells with ≥ 3 runs): median CV "
                    f"{statistics.median(c for c, _ in cvs) * 100:.1f}%, worst {worst[0] * 100:.1f}% "
-                   f"({worst[1][0]}, {worst[1][1]} cores).", "")
+                   f"({worst[1][0]}, {worst[1][1]} core{'s' if worst[1][1] > 1 else ''}).", "")
         if s1:
             self.w("| System | runs | median ops/s | between-run CV | median within-run CV | "
                    "worst 1-s sample ÷ mean | median trend per 10 s | S1 ÷ E1 (same cell, hours apart) |",
@@ -774,6 +995,7 @@ class Report:
             The report markdown.
         """
         self.header()
+        self.interference()
         self.e0()
         self.e1()
         self.by_workload("E2", "Read/write mixes (4 cores)",

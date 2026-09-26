@@ -86,16 +86,26 @@ baseline.
 
 ## What this run taught about the testbed
 
-- **Between-run noise is large:** CV 12–29% per cell in the rotated run,
-  2–16% in the fixed-order run an hour earlier. The host is WSL2 on a
-  hybrid P/E-core i9-13900K; Hyper-V may place the pinned vCPUs on either
-  kind of core.
-- **Levels drift between sessions:** the same s3 build had a median of
-  640k GET/s at 1 core in the first session and 459k in the second (−28%).
+- **Between-run noise is large:** CV 12–29% per cell in the rotated run
+  (02:55–03:10), 2–16% in the fixed-order run just before it
+  (02:45–02:54).
+- **Levels move within minutes:** the same s3 build had a median of 640k
+  GET/s at 1 core in the fixed-order run and 459k in the rotated run about
+  ten minutes later (−28%).
 - **Ratios within a repetition stay consistent** even so: the batching
   change was faster in every one of the 26 repetitions across both runs
   and both budgets.
+- **The cause, found later the same day:** other programs on the same
+  machine. The benchmark session that followed measured 14–23 of the 32
+  logical CPUs busy outside the container VM (an optimization job running
+  since 01:53, a downloader, an emulator, a game, a runaway process). Both
+  ablation runs happened under that load, which was not monitored at the
+  time. Its variation over time is the likely reason the two runs' noise
+  levels differ. The host is also WSL2 on a hybrid P/E-core i9-13900K,
+  where Hyper-V may place the pinned vCPUs on either kind of core.
 
-These three observations are why the benchmark suite uses blocked
-randomization with paired statistics ([METHODOLOGY.md](../../METHODOLOGY.md)
-§6–§8) instead of comparing medians of unpaired runs.
+These observations are why the benchmark suite uses blocked randomization
+with paired statistics and now monitors outside load
+([METHODOLOGY.md](../../METHODOLOGY.md) §6–§8), instead of comparing
+medians of unpaired runs. The absolute numbers above are therefore lower
+bounds for an idle machine. The paired ratios are the result.

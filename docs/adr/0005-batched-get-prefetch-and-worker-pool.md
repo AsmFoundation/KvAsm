@@ -7,9 +7,10 @@
 
 The goal was **2,000,000 GET/s at 4 cores** on the standard benchmark
 workload: 100% GET, 1,000,000 keys, 100-byte values, 64 connections × 16
-requests in flight. One core cannot reach it with nghttp2. The benchmark's
-no-op floor (E5, a gRPC health check) costs about 1.5 µs of server CPU per
-round trip, so a core peaks around 650k requests/s before touching any data.
+requests in flight. One core cannot reach it with nghttp2. For 0.1.0, the
+benchmark's no-op floor (E5, a gRPC health check) was about 1.5 µs of
+server CPU per round trip, so a core peaked around 650k requests/s before
+touching any data.
 
 KvNode 0.1.0 reached about 1.6–1.8M GET/s at 4 cores. A `perf` profile
 (cpu-clock, 1 core, the workload above) showed where the time went:
@@ -94,9 +95,22 @@ Medians of 8 runs. "Paired" is the median over repetitions of each build
   faster in 6 of 8 repetitions.
 - **The stream cache is neutral:** nghttp2's own internal lookups
   dominate.
-- These numbers come from a noisy host (WSL2 on a hybrid P/E-core CPU).
-  The between-run CV was 12–29%, which is why only paired ratios are
-  quoted. The comparison with other stores is in
+- **The standard benchmark confirms the target**
+  ([benchmarks/](../../benchmarks/README.md), 2026-09-26, 6 fresh-server
+  runs per cell, outside host load measured):
+  - 3.02M GET/s at 4 cores (range 2.80–3.23M) and 5.18M at 8 cores;
+  - S1, ten more runs at 4 cores at the end of the session: 2.93M.
+- **The no-op floor fell too:** from 1,516 ns (0.1.0, a single
+  quick-profile run) to 1,086 ns of server CPU per health check (median of
+  6), about 920k requests/s per core. A health check touches no store, so
+  batching cannot explain it. The pool is the likely cause, but this was
+  not isolated by a controlled test.
+- These numbers come from a shared, noisy host: WSL2 on a hybrid P/E-core
+  CPU, with other heavy programs running at the time. The benchmark
+  session right after measured 14–23 of its 32 logical CPUs busy outside
+  the container VM. The between-run CV was 12–29%, which is why only
+  paired ratios are quoted, and why the absolute numbers are lower bounds
+  for an idle machine. The comparison with other stores is in
   [benchmarks/](../../benchmarks/).
 
 ## Consequences
@@ -130,8 +144,8 @@ Medians of 8 runs. "Paired" is the median over repetitions of each build
   other connections' parsing. Deferred until a per-connection batch is
   shown to be too small.
 - **Replace nghttp2 with a purpose-built HTTP/2 engine.** It is the only
-  path well past about 650k requests/s per core, because the protocol
-  layer is the floor. But it is a security-critical rewrite that needs
+  path well past about 920k requests/s per core (the floor after this
+  change), because the protocol layer is the floor. But it is a security-critical rewrite that needs
   fuzzing and conformance work, and it would revise ADR 0002. Deferred.
 - **Slab records on huge pages, SipHash-1-3, SIMD tag matching.** Smaller
   expected gains; listed with their status in the performance cookbook

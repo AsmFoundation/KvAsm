@@ -148,9 +148,20 @@ says so.
     what an in-memory store actually holds. No self-reported statistics
     are used, because each system counts differently.
 - **Instrument calibration.** On this virtualized host the cgroup CPU clock
-  runs about 6–7% fast: a busy loop on 4 vCPUs reads 4.25 CPU-seconds per
-  second. `run.py` measures the factor at the start of every session, and
-  server CPU figures are divided by it.
+  runs fast: a busy loop on 4 vCPUs reads 4.25–4.43 CPU-seconds per second.
+  `run.py` measures the factor at the start of every session, and server
+  CPU figures are divided by it. The factor rose from 1.06 to 1.11 when
+  other programs loaded the host: the guest keeps counting a vCPU as busy
+  while the hypervisor has taken it away. CPU-efficiency figures therefore
+  carry a few percent of extra uncertainty on a shared host.
+- **Outside load.** Other programs on the host compete for the same
+  physical cores, and no container cgroup can see them. With psutil on a
+  Docker Desktop host, `run.py` samples once per second the host's busy
+  CPU minus the container VM's own (`vmmemWSL`/`vmmem`). Each run records
+  the result for its measured window (`host_load`) and for the whole run
+  (`host_load_run`). A 6-second baseline before the first run goes into
+  `environment.json`, and startup warns when more than 2 logical CPUs are
+  busy elsewhere.
 - **Client-bound check.** A run where the client was more than 85% busy
   while the server used less than 90% of its budget is flagged in the
   report.
@@ -179,30 +190,62 @@ precision the data does not have. The analysis therefore reports:
   6 blocks that means KvNode was ahead (or behind) in **every** block.
   With 3 repetitions no test can reach p < 0.05 (sign test ≥ 0.25,
   Mann–Whitney ≥ 0.1), so E0, E4, E6, E7 and E8 are read as estimates.
-- Why pairing: on this host the absolute level of every system drifts by
-  tens of percent over hours (§8). An unpaired test sees that drift as
+- Why pairing: on this host the absolute level of every system moves by
+  tens of percent within minutes to hours as outside load changes (§8).
+  An unpaired test sees that drift as
   noise and misses consistent differences. For example, a steady 5%
   advantage under a 30% level swing gives unpaired p = 0.22 but paired
   p = 0.031.
 - Invalid and failed runs are excluded from statistics but listed, with
   their reasons, in every report. A missing run drops only its block's
   pair.
+- **Outside load is measured, not excluded.** A hard cut would have
+  dropped nearly every run of the published session, whose host never had
+  fewer than about 3 logical CPUs busy elsewhere. The report shows instead:
+  - the distribution of outside load per experiment;
+  - the Spearman correlation between outside load and each run's
+    throughput relative to its cell's median;
+  - a quiet-only count: how many pairs had ≤ 2 CPUs of outside load on
+    both runs, recomputed if there are enough;
+  - every closed-loop throughput comparison (E1, E2, E3, E5, E6, E7)
+    **adjusted to equal outside load**. The adjustment is an analysis of
+    covariance: per experiment, one common slope of log(ratio) on the load
+    difference between a block's two runs, estimated within comparisons,
+    corrects every pair. On synthetic data with a built-in 5%-per-CPU
+    effect it recovered the true ratios exactly. The raw paired tables stay
+    primary; the adjusted table shows which conclusions depend on load.
+  - When each rule was set: the quiet-only rule before the published
+    session. The adjustment for E1 before any of that session's
+    comparisons were examined, once its load level made the quiet-only set
+    empty. The other experiments were added after E1 showed a strong load
+    effect (ρ = −0.64), but before any experiment after E1 was examined.
 
 ## 8. Threats to validity
 
-- **Virtualization.** WSL2's vCPUs are scheduled by Hyper-V onto hybrid P-
-  and E-cores. Pinning fixes vCPUs, not physical cores, so absolute numbers
-  carry noise that bare metal would not. **Measured:** in a KvNode
-  ablation with 8 rotated repetitions per cell, the between-run
-  coefficient of variation was 12–29% per cell, and the same build's
-  median differed by up to 28% between two sessions about an hour apart
-  (1 core: 640k vs 459k GET/s). Ratios within a repetition stayed
-  consistent (the batching change was faster in 8 of 8 at both core
-  budgets). Hence the blocked design and paired statistics (§6, §7), and
-  S1 to quantify the noise in every session. Treat absolute numbers as
-  indicative and within-block ratios as the result. Bare metal, or pinning
-  the VM to P-cores, would reduce the noise; neither was available for the
-  published run.
+- **A shared, virtualized host.** WSL2's vCPUs are scheduled by Hyper-V
+  onto hybrid P- and E-cores. Pinning fixes vCPUs, not physical cores. The
+  largest noise source turned out to be **other programs on the same
+  machine**:
+  - During the first full session (2026-09-26, 03:23–08:30), 14–23 of the
+    32 logical CPUs were busy outside the container VM: an optimization
+    job, a data downloader, an emulator, a game, and a runaway process.
+  - Identical runs then differed by up to 3×, and throughput changed
+    *within* single runs. A slow run burned as much cgroup CPU as a fast
+    one for a third of the work: the vCPUs were being taken away.
+  - That session's final experiment, S1, ran when the host had quietened.
+    There its ten runs per system varied by only 1.1–1.7% (CV), and every
+    system ran 1.26–1.87× faster than in the same E1 cell hours earlier.
+  - The earlier KvNode ablation (02:45–03:10) also ran under this load,
+    unmonitored. Its two runs, minutes apart, had between-run CVs of 2–16%
+    and 12–29%, and the same build's median moved by up to 28%.
+    Consistent with outside load varying over time.
+
+  Hence three defenses: the blocked design with paired statistics (§6,
+  §7), S1, and the outside-load monitor with its sensitivity analysis. The
+  published session had a steady 3–6 logical CPUs of outside load. Treat
+  absolute numbers as indicative and within-block ratios as the result. An
+  idle machine, bare metal, or pinning the VM to P-cores would all reduce
+  the noise.
 - **Order effects.** A first ablation ran the variants in the same order
   in every repetition, so any effect of position (a host warming up or
   settling down during a repetition) would have been credited to whichever

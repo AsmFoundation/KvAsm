@@ -48,13 +48,27 @@ docker run --rm -p 50051:50051 -v "$PWD/data:/data:ro" \
 
 ## Performance
 
-Indicative numbers: Docker Desktop on WSL2, loopback, 4 workers, `h2load`
-with 16 connections × 64 concurrent streams, 1 M requests each.
+KvNode was compared with Redis, Valkey, Dragonfly, Garnet and Memcached,
+using one client, pinned versions, paired statistics, and host-noise
+monitoring ([benchmarks/](benchmarks/README.md)). GET throughput with 1M
+keys, 100-byte values and 1,024 requests in flight, medians of 6 runs
+(i9-13900K, Docker Desktop on WSL2, loopback):
 
-| Operation | Throughput | Mean latency at 1024 in flight |
-|---|---|---|
-| Get (hit) | ~2.8 M req/s | 231 µs |
-| Put (same key, every write through the writer lock) | ~1.95 M req/s | 377 µs |
+| Server cores | KvNode | Redis | Valkey | Dragonfly | Garnet | Memcached |
+|---|---|---|---|---|---|---|
+| 1 | 813 k | 1.45 M | 1.44 M | 790 k | 872 k | 771 k |
+| 4 | **3.02 M** | 2.89 M | 3.29 M | 2.29 M | 3.80 M | 3.12 M |
+| 8 | **5.18 M** | 2.82 M | 2.40 M | 2.92 M | 7.91 M | 6.22 M |
+
+- **Scales:** 6.4× from 1 to 8 cores. At 8 cores it runs 1.8–2.2× Redis,
+  Valkey and Dragonfly, and behind Garnet and Memcached.
+- **Low latency under load:** at identical offered loads up to 1.72M
+  requests/s, its p99 stays at or below 1.2 ms. Redis reaches 50 ms and
+  Garnet 396 ms there.
+- **Costs:** gRPC over HTTP/2 takes 1.09 µs of server CPU per request, and
+  a Redis `PING` 0.42 µs. So one core tops out near 0.8–0.9M GETs/s, and
+  1-core Redis and Valkey are faster. Writes reach 1.72M SETs/s at 4 cores
+  (0.72× Redis) through the single writer lock.
 
 Store alone, single thread, 4M keys: 279 ns per dependent lookup, p99.9
 714 ns, including the SipHash of the key (ADR 0001).
@@ -66,6 +80,7 @@ Store alone, single thread, 4M keys: 279 ns per dependent lookup, p99.9
 | [`proto/kvnode/v1/kvnode.proto`](proto/kvnode/v1/kvnode.proto) | the gRPC contract |
 | [`server/`](server) | NASM sources, native unit tests, bake-off, end-to-end suite (`make all test itest bench`) |
 | [`client/dotnet/`](client/dotnet) | .NET 8/10 client and snapshot writer, with unit and container tests |
+| [`benchmarks/`](benchmarks/README.md) | comparison with other key-value stores: the kvbench client, the suite, methodology, committed results |
 | [`docs/`](docs) | [architecture](docs/ARCHITECTURE.md), [protocol and client contract](docs/PROTOCOL.md), [operations](docs/OPERATIONS.md), [decision records](docs/adr) |
 | [`Dockerfile`](Dockerfile) | toolchain (pinned and verified nghttp2 + h2spec) → build + all tests → scratch runtime |
 
