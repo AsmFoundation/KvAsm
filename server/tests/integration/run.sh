@@ -13,6 +13,8 @@
 #   1. protocol, limits, pipelining, cancellation, multi-connection atomicity
 #   2. graceful shutdown: an idle client must receive GOAWAY(NO_ERROR) and a
 #      clean close, and the server must exit 0 after SIGTERM
+#  2b. phase 1's suite again through per-worker private L1/L2 record caches
+#      (hcache.asm) with SWAR tag scans
 #   3. idle timeout: an idle connection is closed with GOAWAY after ~1 s
 #   4. snapshot source: 20k records load at startup and are served exactly
 #   5. startup refusals: corrupt/missing snapshot (exit 1), invalid settings
@@ -115,6 +117,17 @@ stop_server
 wait "$HOLD" || fail "idle client did not get GOAWAY(NO_ERROR) and a clean close"
 wait "$DRAIN" || fail "in-flight request was not completed (NOT_SERVING) during drain"
 
+echo "itest: phase 2b — the same suite through private L1/L2 caches and SWAR scans"
+# Tiny caches (L1 256, L2 4096 entries) so entries conflict and are reused
+# while the suite's writers invalidate them; SWAR because SSE2 is the default.
+start_server cached KVNODE_WORKERS=4 KVNODE_CAPACITY=200000 \
+  KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE \
+  KVNODE_CACHE_L1_BITS=8 KVNODE_CACHE_L2_BITS=12 KVNODE_SCAN=swar
+grep -qF 'scan=swar' "$LOG" || fail "scan mode not logged"
+grep -qF 'cache_l1_bits=8 cache_l2_bits=12' "$LOG" || fail "cache settings not logged"
+"$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" || fail "itest_grpc suite with private caches"
+stop_server
+
 echo "itest: phase 3 — idle timeout"
 start_server idle KVNODE_WORKERS=1 KVNODE_IDLE_TIMEOUT_SEC=1
 t0=$(date +%s%N)
@@ -141,6 +154,9 @@ refuse "non-numeric port" 2 'name=KVNODE_PORT value=http' KVNODE_PORT=http
 refuse "zero max streams" 2 'name=KVNODE_MAX_STREAMS value=0' KVNODE_MAX_STREAMS=0
 refuse "negative workers" 2 'name=KVNODE_WORKERS value=-1' KVNODE_WORKERS=-1
 refuse "capacity overflow" 2 'name=KVNODE_CAPACITY' KVNODE_CAPACITY=99999999999999999999
+refuse "unknown scan mode" 2 'name=KVNODE_SCAN value=avx9 allowed=swar|sse2' KVNODE_SCAN=avx9
+refuse "empty scan name" 2 'name=KVNODE_SCAN value= allowed=swar|sse2' KVNODE_SCAN=
+refuse "cache too large" 2 'name=KVNODE_CACHE_L1_BITS value=25' KVNODE_CACHE_L1_BITS=25
 
 echo "itest: phase 6 — HTTP/2 conformance (h2spec) against the known baseline"
 if command -v h2spec > /dev/null; then

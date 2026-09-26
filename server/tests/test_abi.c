@@ -25,6 +25,8 @@ int main(void) {
   CHECK_EQ_U64(L[12], 16); /* slots */
   CHECK(L[13] % 64 == 0);  /* Table is a whole number of cache lines */
   CHECK_EQ_U64(L[14], 64); /* one reader slot per cache line */
-  CHECK_EQ_U64(L[15], 0xABCDEF0123456789ull);
+  CHECK_EQ_U64(L[15], 32); /* HEntry: two per cache line, index * 32 in hcache.asm */
+  CHECK(L[16] % 64 == 0);  /* HCache: whole lines (private, but aligned_alloc'd) */
+  CHECK_EQ_U64(L[17], 0xABCDEF0123456789ull);
   return test_finish("test_abi");
 }

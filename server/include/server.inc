@@ -34,7 +34,16 @@ struc Config
     .conn_budget:       resq 1          ; buffered request bytes per connection
     .snapshot:          resq 1          ; char* path or 0
     .max_request:       resq 1          ; derived: largest acceptable gRPC message
+    ; appended fields (C tests read Config only through kv_config_abi offsets)
+    .scan_mode:         resq 1          ; KVNODE_SCAN: 0 = swar, 1 = sse2 (kv_set_scan_mode)
+    .h2_engine:         resq 1          ; KVNODE_H2_ENGINE: H2_NGHTTP2 or H2_NATIVE
+    .cache_l1_bits:     resq 1          ; KVNODE_CACHE_L1_BITS: 0 = no private L1
+    .cache_l2_bits:     resq 1          ; KVNODE_CACHE_L2_BITS: 0 = no private L2
 endstruc
+
+%define H2_NGHTTP2          0           ; HTTP/2 by nghttp2 (ADR 0002)
+%define H2_NATIVE           1           ; KvNode's own HTTP/2 engine (h2n.asm, ADR 0007)
+%define INVAL_BITS_DEFAULT  16          ; generation slots when private caches are on
 
 ; ---- Worker: one epoll event loop, pinned to nothing, owns its connections ----
 ; ---- per-worker allocator (pool.asm) ------------------------------------------
@@ -76,6 +85,7 @@ struc Worker
     .st_rejected:       resq 1          ; connections refused (limit or fds)
     .pool:              resb Pool_size  ; this worker's allocator (sessions, streams)
     .mem:               resq 5          ; nghttp2_mem {user_data, malloc, free, calloc, realloc}
+    .hcache:            resq 1          ; private L1/L2 record cache (hcache.asm), or 0
 endstruc
 
 ; ---- Conn: one HTTP/2 connection ------------------------------------------------

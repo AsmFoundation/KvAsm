@@ -41,6 +41,8 @@ extern calloc
 extern free
 extern clock_gettime
 extern kv_config_load
+extern kv_set_scan_mode
+extern kv_store_enable_inval
 extern kv_store_create
 extern kv_store_destroy
 extern kv_store_reclaim
@@ -93,6 +95,14 @@ k_maxmem:   db " max_memory_bytes="
 k_streams:  db " max_streams="
 k_snapshot: db " snapshot="
 k_none:     db "none", 0
+k_scan:     db " scan="
+k_engine:   db " h2_engine="
+k_l1:       db " cache_l1_bits="
+k_l2:       db " cache_l2_bits="
+v_swar:     db "swar", 0
+v_sse2:     db "sse2", 0
+v_nghttp2:  db "nghttp2", 0
+v_native:   db "native", 0
 m_listen:   db ' msg="listening" transport=h2c'
 L_listen    equ $ - m_listen
 m_loaded:   db ' msg="snapshot loaded" records='
@@ -201,6 +211,24 @@ main:
     LOGNUM  [r15 + Config.max_memory]
     LOGLIT  k_streams, 13
     LOGNUM  [r15 + Config.max_streams]
+    LOGLIT  k_scan, 6
+    lea     rdi, [rsp + F_LOG]
+    lea     rsi, [v_swar]
+    lea     rax, [v_sse2]
+    cmp     qword [r15 + Config.scan_mode], 0
+    cmovne  rsi, rax
+    call    kv_logb_cstr wrt ..plt
+    LOGLIT  k_engine, 11
+    lea     rdi, [rsp + F_LOG]
+    lea     rsi, [v_nghttp2]
+    lea     rax, [v_native]
+    cmp     qword [r15 + Config.h2_engine], H2_NGHTTP2
+    cmovne  rsi, rax
+    call    kv_logb_cstr wrt ..plt
+    LOGLIT  k_l1, 15
+    LOGNUM  [r15 + Config.cache_l1_bits]
+    LOGLIT  k_l2, 15
+    LOGNUM  [r15 + Config.cache_l2_bits]
     LOGLIT  k_snapshot, 10
     lea     rdi, [rsp + F_LOG]
     mov     rsi, [r15 + Config.snapshot]
@@ -261,6 +289,29 @@ main:
     jmp     .return
 .store_ok:
     mov     rbx, rax                    ; table
+    ; Readers' tag scan: both implementations return identical results; the
+    ; default comes from bench_store (ADR 0006). Set before any reader runs.
+    mov     rdi, [r15 + Config.scan_mode]
+    call    kv_set_scan_mode wrt ..plt
+    ; Private record caches (per worker, created with the workers) validate
+    ; entries against the table's invalidation generations: allocate them
+    ; now, while no writer runs (the snapshot load below writes).
+    mov     rax, [r15 + Config.cache_l1_bits]
+    or      rax, [r15 + Config.cache_l2_bits]
+    jz      .cache_ready
+    mov     rdi, rbx
+    mov     esi, INVAL_BITS_DEFAULT
+    call    kv_store_enable_inval wrt ..plt
+    test    rax, rax
+    jz      .cache_ready
+    LOGBEGIN lvl_error
+    LOGLIT  m_f_store, L_f_store
+    LOGEND
+    mov     rdi, rbx
+    call    kv_store_destroy wrt ..plt
+    mov     eax, 1
+    jmp     .return
+.cache_ready:
 
     mov     rsi, [r15 + Config.snapshot]
     test    rsi, rsi

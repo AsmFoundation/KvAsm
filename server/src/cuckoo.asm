@@ -42,6 +42,27 @@ bits 64
 
 extern kv_keyeq
 
+; -----------------------------------------------------------------------------
+; Scan mode: how readers match a key's tag against the candidate buckets.
+;   KV_SCAN_SWAR (0)  one 64-bit SWAR match per bucket (GPRs only); B2's line
+;                     is touched only when B1 has no match.
+;   KV_SCAN_SSE2 (1)  both buckets' tag words in one XMM register, one
+;                     PCMPEQB/PMOVMSKB for all 12 slots. SSE2 is part of the
+;                     x86-64 baseline, so this adds no CPU requirement.
+; Set once at startup (kv_set_scan_mode) before any reader runs; readers only
+; load it, so its line is never written while shared. Writers (upsert,
+; remove) always use SWAR: they are serialized and rare on the read path.
+; -----------------------------------------------------------------------------
+%define KV_SCAN_SWAR        0
+%define KV_SCAN_SSE2        1
+%define KV_SCAN_MAX         1
+
+section .data
+align 64
+global kv_scan_mode
+kv_scan_mode:   db KV_SCAN_SWAR
+                times 63 db 0           ; own cache line: nothing else shares it
+
 section .text
 
 global kv_cuckoo_get
@@ -49,6 +70,27 @@ global kv_cuckoo_upsert
 global kv_cuckoo_remove
 global kv_cuckoo_prefetch
 global kv_cuckoo_prefetch_records
+global kv_set_scan_mode
+
+; =============================================================================
+; kv_set_scan_mode — choose the readers' tag-scan implementation.
+;
+; @param  edi  KV_SCAN_SWAR (0) or KV_SCAN_SSE2 (1)
+; @returns eax = the previous mode, or -EINVAL (mode unchanged) for any other
+;          value.
+; @remarks Not synchronized: call it while no thread reads the store (startup,
+;          or between benchmark phases). Both modes return identical results;
+;          only speed differs, which is what bench_store measures.
+; =============================================================================
+kv_set_scan_mode:
+    cmp     edi, KV_SCAN_MAX
+    ja      .bad
+    movzx   eax, byte [rel kv_scan_mode]
+    mov     [rel kv_scan_mode], dil
+    ret
+.bad:
+    mov     eax, -EINVAL
+    ret
 
 ; -----------------------------------------------------------------------------
 ; LOCATE — derive tag and both bucket pointers for (h1, h2).
@@ -133,18 +175,22 @@ kv_cuckoo_prefetch:
 ; @param  rdi  Table*   @param rsi  h1   @param rdx  h2
 ; @returns nothing. Clobbers rax, rcx, rdx, rsi, rdi, r8 .. r11.
 ; @remarks Meant to run once the buckets arrived (after kv_cuckoo_prefetch
-;          and other work): scans both tag words with the exact SWAR match and
-;          prefetches the first two lines of each candidate record — the key
-;          compare and the value copy of the real lookup then hit the cache.
+;          and other work): scans both tag words with the exact SWAR match (or
+;          one SSE2 compare, per kv_scan_mode) and prefetches the first two
+;          lines of each candidate record — the key compare and the value copy
+;          of the real lookup then hit the cache.
 ;          Racing writers are harmless: tags and pointers are read with plain
 ;          aligned loads, and a prefetch of a stale or freed address is only
 ;          a wasted hint (prefetch never faults). No versions are checked —
-;          correctness stays with kv_cuckoo_get.
+;          correctness stays with kv_cuckoo_get. The SSE2 path also clobbers
+;          xmm0 and xmm1 (caller-saved in the System V ABI).
 ; =============================================================================
 kv_cuckoo_prefetch_records:
     BUCKETS_OF rdi, rsi, rdx
     mov     r11, 0x0101010101010101
     imul    r11, rcx                    ; tag in every byte
+    cmp     byte [rel kv_scan_mode], KV_SCAN_SWAR
+    jne     .sse2
     mov     rdi, r8
     call    .bucket                     ; B1 (a local call; .bucket makes none)
     mov     rdi, r10                    ; B2: fall through, .bucket's ret returns to our caller
@@ -173,6 +219,36 @@ kv_cuckoo_prefetch_records:
 .none:
     ret
 
+    ; SSE2: B1's tag word in the low half, B2's in the high half, one byte
+    ; compare for all 12 slots. Mask bits 0-5 are B1's slots, 8-13 B2's; the
+    ; two unused tag bytes of each word are masked off (and hold 0, which is
+    ; never a key's tag anyway).
+.sse2:
+    movq    xmm1, r11
+    punpcklqdq xmm1, xmm1               ; tag in all 16 bytes
+    movq    xmm0, [r8 + Bucket.tags]
+    movhps  xmm0, [r10 + Bucket.tags]
+    pcmpeqb xmm0, xmm1
+    pmovmskb eax, xmm0
+    and     eax, 0x3F3F
+    jz      .sse2_done
+.sse2_match:
+    bsf     ecx, eax
+    mov     rdx, r8
+    cmp     ecx, 8
+    jb      .sse2_slot
+    mov     rdx, r10                    ; bits 8..13: slot (bit - 8) of B2
+    sub     ecx, 8
+.sse2_slot:
+    mov     rsi, [rdx + Bucket.slot + rcx*8]
+    prefetcht0 [rsi]                    ; 0 (slot cleared meanwhile) is a harmless hint
+    prefetcht0 [rsi + 64]
+    lea     ecx, [rax - 1]
+    and     eax, ecx                    ; next match
+    jnz     .sse2_match
+.sse2_done:
+    ret
+
 ; =============================================================================
 ; kv_cuckoo_get — lock-free lookup, callable from any thread.
 ;
@@ -186,8 +262,12 @@ kv_cuckoo_prefetch_records:
 ;          using the returned record before its next quiescent/offline
 ;          announcement. Spins (PAUSE) while a writer holds a bucket odd;
 ;          writers keep that window to a handful of stores.
+;          Dispatches on kv_scan_mode (a perfectly predicted branch): the SSE2
+;          variant below is an exact replacement with the same contract.
 ; =============================================================================
 kv_cuckoo_get:
+    cmp     byte [rel kv_scan_mode], KV_SCAN_SWAR
+    jne     kv_cuckoo_get_sse2
     push    rbx
     push    rbp
     push    r12
@@ -217,6 +297,103 @@ kv_cuckoo_get:
     jnz     .out
     ; A miss is only trustworthy if neither bucket changed while we scanned:
     ; a concurrent relocation could have moved the key between the buckets.
+    mov     rcx, [r14 + Bucket.ver]
+    cmp     rcx, [rsp]
+    jne     .retry
+    mov     rcx, [r15 + Bucket.ver]
+    cmp     rcx, [rsp + 8]
+    jne     .retry
+    xor     eax, eax
+.out:
+    add     rsp, 24
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+.busy:
+    pause
+    jmp     .retry
+
+; =============================================================================
+; kv_cuckoo_get_sse2 — kv_cuckoo_get with one SSE2 tag compare over both
+; candidate buckets. Internal (reached through kv_cuckoo_get's dispatch).
+;
+; @param  rdi  Table*   @param rsi  key   @param rdx  len
+; @param  rcx  h1       @param r8   h2
+; @returns rax = Rec* whose key equals (key, len), or 0 if absent.
+; @remarks Same contract and concurrency protocol as the SWAR path: both
+;          versions are read (and must be even) before the tags, and a miss
+;          is reported only if neither version changed during the scan.
+;          Differences, which bench_store measures:
+;            * B1's and B2's tag words share one XMM register, so all 12
+;              slots are matched by PCMPEQB + PMOVMSKB without a per-bucket
+;              branch;
+;            * both tag lines are always loaded (the SWAR path skips B2 when
+;              B1 hits). Under the batched GET path both lines are prefetched
+;              anyway; a lone lookup pays for B2's line, in parallel with B1.
+;          Candidates are confirmed exactly as before (slot non-zero, same
+;          length, kv_keyeq), so a tag collision never returns a wrong record.
+;          Uses r9-r11 and xmm0/xmm7 as scratch: kv_keyeq clobbers only rax,
+;          rcx and r8, so the match mask survives in r11 across calls.
+; =============================================================================
+kv_cuckoo_get_sse2:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 24                     ; [rsp] = version of B1, [rsp+8] = of B2
+    mov     r12, rsi
+    mov     r13, rdx
+    LOCATE  rdi, rcx, r8
+    movq    xmm7, rbp
+    punpcklqdq xmm7, xmm7               ; tag in all 16 bytes
+.retry:
+    mov     rax, [r14 + Bucket.ver]
+    test    al, 1
+    jnz     .busy
+    mov     [rsp], rax
+    mov     rax, [r15 + Bucket.ver]
+    test    al, 1
+    jnz     .busy
+    mov     [rsp + 8], rax
+    movq    xmm0, [r14 + Bucket.tags]   ; loads stay after the version loads (TSO)
+    movhps  xmm0, [r15 + Bucket.tags]
+    pcmpeqb xmm0, xmm7
+    pmovmskb r11d, xmm0
+    and     r11d, 0x3F3F                ; bits 0-5: B1 slots, bits 8-13: B2 slots
+.next:
+    test    r11d, r11d
+    jz      .miss
+    bsf     ecx, r11d
+    lea     eax, [r11 - 1]
+    and     r11d, eax                   ; consume this candidate
+    mov     r10, r14
+    cmp     ecx, 8
+    jb      .slot
+    mov     r10, r15
+    sub     ecx, 8
+.slot:
+    mov     r9, [r10 + Bucket.slot + rcx*8]
+    test    r9, r9
+    jz      .next                       ; cleared concurrently: not a candidate
+    mov     edx, [r9 + Rec.key_len]
+    cmp     rdx, r13
+    jne     .next
+    lea     rdi, [r9 + Rec.data]
+    mov     rsi, r12
+    call    kv_keyeq wrt ..plt          ; clobbers rax, rcx, r8 only
+    test    eax, eax
+    jz      .next
+    mov     rax, r9
+    jmp     .out
+.miss:
+    ; As in the SWAR path: a relocation could have moved the key between the
+    ; buckets while we scanned, so a miss needs both versions unchanged.
     mov     rcx, [r14 + Bucket.ver]
     cmp     rcx, [rsp]
     jne     .retry

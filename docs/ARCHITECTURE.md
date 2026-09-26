@@ -68,9 +68,16 @@ needs no locks. Freed blocks are reused LIFO while still cached.
   `KVNODE_CAPACITY` at up to about 83% load and backed by `mmap`
   (`MAP_NORESERVE`, transparent huge pages when available).
 - **Lookup:** tag = the top byte of h2; bucket 1 comes from h1; bucket 2 =
-  bucket 1 XOR a hash of the tag. The six tags are compared in one SWAR
-  step, and the full key is compared exactly on a tag hit. At most two
-  cache lines are touched.
+  bucket 1 XOR a hash of the tag. By default one SSE2 compare matches the
+  tags of both buckets (12 slots); `KVNODE_SCAN=swar` compares one bucket's
+  six tags per 64-bit SWAR step instead. The full key is compared exactly
+  on a tag hit. At most two cache lines are touched (ADR 0006).
+- **Private caches (optional, off by default):** each worker can keep a
+  two-level, direct-mapped cache of record pointers
+  (`KVNODE_CACHE_L1_BITS`/`L2_BITS`). It is validated against per-key
+  invalidation generations that writers bump before retiring a record.
+  Measured slower than the CPU's own caches except for tiny hot sets
+  (ADR 0006).
 - **Insert:** use a free slot in either bucket, or else a bounded BFS (at
   most 256 nodes) finds a displacement path. Moves go backwards, copy first
   and clear second, with bucket versions odd, so a concurrent reader either
@@ -107,7 +114,8 @@ needs no locks. Freed blocks are reused LIFO while still cached.
 | `server/src/pool.asm` | per-worker size-class allocator (nghttp2_mem-compatible) |
 | `server/src/proto.asm` | protobuf decode (zero-copy, skips unknown fields) and varint encode |
 | `server/src/store.asm` | table lifecycle, Put/Delete, memory accounting, QSBR |
-| `server/src/cuckoo.asm` | lock-free lookup, insert with BFS displacement, remove, prefetch stages |
+| `server/src/cuckoo.asm` | lock-free lookup (SWAR or SSE2 tag scan), insert with BFS displacement, remove, prefetch stages |
+| `server/src/hcache.asm` | optional per-worker private L1/L2 record cache, generation-validated |
 | `server/src/siphash.asm`, `util.asm` | SipHash-2-4-128; exact key compare and SWAR tag match |
 | `server/src/wlock.asm` | futex writer mutex |
 | `server/src/snapshot.asm` | snapshot verification and loading |
@@ -121,6 +129,7 @@ needs no locks. Freed blocks are reused LIFO while still cached.
 |---|---|---|
 | unit (C over assembly) | ABI layouts, the nghttp2 mirror, SipHash vectors, key compare with guard pages, protobuf, store model and torture, snapshot parsing and every rejection reason | `make -C server test` |
 | bake-off | cuckoo vs chaining vs trie, every answer verified | `make -C server bench` |
+| store levels | lookup variants per memory level (SWAR/SSE2, private caches), every answer verified | `make -C server bench-store` |
 | end to end | real server over loopback: protocol and limits, pipelining, cancel, torn-value detection, drain with an in-flight request, idle timeout, snapshot source, startup refusals, h2spec baseline | `make -C server itest` |
 | client | 64 SipHash vectors, compaction, byte-exact snapshot vs the server tool, and the real container via Testcontainers | `dotnet test --solution client/dotnet/KvNode.Client.slnx` |
 

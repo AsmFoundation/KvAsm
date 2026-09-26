@@ -40,6 +40,10 @@
 %define MAP_NORESERVE       0x4000
 %define MADV_HUGEPAGE       14
 
+; ---- private-cache limits (hcache.asm / store.asm) ------------------------------
+%define INVAL_BITS_MAX      24          ; 16 Mi generations = 128 MiB at most
+%define HCACHE_BITS_MAX     24          ; per level: 16 Mi entries = 512 MiB at most
+
 ; ---- futex (process-private: never shared across processes) -----------------
 %define FUTEX_WAIT_PRIVATE  128
 %define FUTEX_WAKE_PRIVATE  129
@@ -129,7 +133,43 @@ struc Table
     .st_moves:      resq 1          ; records relocated along cuckoo paths
     .st_full:       resq 1          ; inserts refused (capacity or no path)
     .st_freed:      resq 1          ; records reclaimed after a grace period
-    .pad4:          resb 56         ; keep Table_size a multiple of 64 (448)
+    .pad4:          resb 56         ; lines 4-6 end here (448)
+    ; line 7: invalidation generations for readers' private caches (hcache.asm).
+    ; Set once by kv_store_enable_inval before any reader or writer runs, then
+    ; read-only; the array itself is bumped by writers under the mutex.
+    .inval:         resq 1          ; u64[inval_mask + 1], or 0 when disabled
+    .inval_mask:    resq 1
+    .pad7:          resb 48         ; keep Table_size a multiple of 64 (512)
+endstruc
+
+; ---- HEntry: one private-cache entry (hcache.asm), half a cache line ------------
+; tag = h2 of the key (0 = empty), h1 = its h1, rec = the record the table
+; returned, gen = the key's invalidation generation read BEFORE that lookup.
+; Both hashes must match before gen is compared: the generation slot is
+; derived from h1, so a lookup for another key that merely shares h2 would
+; otherwise validate against the wrong slot and could dereference a record
+; that was retired and freed.
+struc HEntry
+    .tag:       resq 1
+    .h1:        resq 1
+    .rec:       resq 1
+    .gen:       resq 1
+endstruc
+
+; ---- HCache: one reader thread's private two-level cache (hcache.asm) ----------
+; Owned by exactly one thread (a worker): entries are never shared, so they
+; need no synchronization. A level with mask -1 is disabled.
+struc HCache
+    .l1:            resq 1          ; HEntry[l1_mask + 1], 64-byte aligned, or 0
+    .l1_mask:       resq 1
+    .l2:            resq 1          ; HEntry[l2_mask + 1], or 0
+    .l2_mask:       resq 1
+    .table:         resq 1          ; Table* whose inval array validates entries
+    .st_l1_hits:    resq 1
+    .st_l2_hits:    resq 1
+    .st_misses:     resq 1          ; answered by the table
+    .st_stale:      resq 1          ; tag matched but a write invalidated it
+    .pad:           resb 56         ; 128 bytes: two whole lines
 endstruc
 
 ; ---- KvStats (C-facing snapshot of Table counters, see kv_store_stats) ----------

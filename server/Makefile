@@ -51,7 +51,7 @@ INCLUDES  := $(wildcard include/*.inc)
 # Modules shared by the server, the tests and the benchmarks.
 CORE_ASM  := src/siphash.asm src/util.asm src/cuckoo.asm src/wlock.asm \
              src/store.asm src/proto.asm src/log.asm src/snapshot.asm src/abi.asm \
-             src/pool.asm
+             src/pool.asm src/hcache.asm
 CORE_OBJ  := $(CORE_ASM:src/%.asm=$(BUILD)/obj/%.o)
 
 # Network server on top of the core (needs nghttp2).
@@ -70,12 +70,17 @@ BENCH_ASM := bench/ds/chain.asm bench/ds/trie.asm
 BENCH_OBJ := $(BENCH_ASM:bench/ds/%.asm=$(BUILD)/bench/%.o)
 BENCH_BIN := $(BUILD)/bench/bench_ds
 
+# Store-level lookup benchmark (docs/adr/0006): memory-hierarchy levels, SWAR
+# vs SSE2 tag scans, private L1/L2 caches. Runs in --quick mode in `test`,
+# where it verifies every variant's answers; `make bench-store` is the full run.
+BENCH_STORE_BIN := $(BUILD)/bench/bench_store
+
 # End-to-end tools: an nghttp2-based gRPC client and a snapshot writer.
 ITEST_BIN  := $(BUILD)/tests/itest_grpc
 MKSNAP_BIN := $(BUILD)/tests/mksnap
 ITEST_DEPS := tests/integration/snapgen.h tests/test_common.h
 
-.PHONY: all test itest bench clean
+.PHONY: all test itest bench bench-store clean
 
 all: $(SERVER_BIN)
 
@@ -90,9 +95,10 @@ $(SERVER_BIN): $(CORE_OBJ) $(SERVER_OBJ)
 
 # The bake-off runs in --quick mode as part of `test`: it verifies every
 # answer of every structure, which keeps the benchmark code honest.
-test: $(TEST_BINS) $(BENCH_BIN) $(SERVER_BIN)
+test: $(TEST_BINS) $(BENCH_BIN) $(BENCH_STORE_BIN) $(SERVER_BIN)
 	@set -e; for t in $(TEST_BINS); do $$t; done
 	@$(BENCH_BIN) --quick > /dev/null && echo "bench_ds --quick: all checks passed"
+	@$(BENCH_STORE_BIN) --quick > /dev/null && echo "bench_store --quick: all checks passed"
 
 # bash explicitly: the script may lack its exec bit on a Windows checkout.
 itest: $(SERVER_BIN) $(ITEST_BIN) $(MKSNAP_BIN)
@@ -100,6 +106,12 @@ itest: $(SERVER_BIN) $(ITEST_BIN) $(MKSNAP_BIN)
 
 bench: $(BENCH_BIN)
 	$(BENCH_BIN)
+
+bench-store: $(BENCH_STORE_BIN)
+	$(BENCH_STORE_BIN)
+
+$(BENCH_STORE_BIN): bench/bench_store.c $(CORE_OBJ) tests/test_common.h tests/kvnode_abi.h | $(BUILD)/bench
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(CORE_OBJ) $(LDLIBS) -lm
 
 $(BUILD)/obj/%.o: src/%.asm $(INCLUDES) | $(BUILD)/obj
 	$(NASM) $(NASMFLAGS) -o $@ $<

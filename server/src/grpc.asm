@@ -55,6 +55,7 @@ extern kv_store_put
 extern kv_store_delete
 extern kv_store_prefetch
 extern kv_store_prefetch_records
+extern kv_hcache_get
 extern kv_pb_decode_kv
 extern kv_pb_varint_len
 extern kv_pb_write_varint
@@ -1141,12 +1142,21 @@ get_execute:
     mov     r12, rsi                    ; Conn*
     mov     rbx, rdx                    ; Stream*
     mov     rax, [r12 + Conn.worker]
-    mov     rdi, [rax + Worker.table]
     mov     rsi, [rbx + Stream.key]
     mov     rdx, [rbx + Stream.key_len]
     mov     rcx, [rbx + Stream.h1]
     mov     r8, [rbx + Stream.h2]
+    ; Through the worker's private L1/L2 cache when one is configured (same
+    ; contract, table on a miss), else straight to the shared table.
+    mov     rdi, [rax + Worker.hcache]
+    test    rdi, rdi
+    jz      .table
+    call    kv_hcache_get wrt ..plt
+    jmp     .looked_up
+.table:
+    mov     rdi, [rax + Worker.table]
     call    kv_store_get wrt ..plt
+.looked_up:
     test    rax, rax
     jz      .missing
     mov     r15, rax                    ; Rec* (valid while this worker is online)

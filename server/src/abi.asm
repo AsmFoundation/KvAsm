@@ -21,6 +21,7 @@ kv_abi_layout:
     dq KvStats_size, KvStats.count, KvStats.freed
     dq Bucket_size, Bucket.ver, Bucket.tags, Bucket.slot
     dq Table_size, QsbrSlot_size
+    dq HEntry_size, HCache_size     ; private cache (hcache.asm): 32 B, 2 lines
     dq 0xABCDEF0123456789           ; sentinel: catches a short array
 
 ; nghttp2.inc values, checked against <nghttp2/nghttp2.h> by test_nghttp2_abi.c

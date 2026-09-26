@@ -113,6 +113,17 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - `prefetcht0` (all levels), `prefetchnta` (streaming), `prefetchw`
     (write intent; needs PRFCHW).
   - A prefetch never faults: stale or freed pointers are safe hints.
+- **Software caches in front of a shared structure** (per-thread L1/L2 of
+  hot entries)
+  - *Catch:* the hardware caches already keep hot lines close. A software
+    level adds a probe, a validation load and fills. It wins only when the
+    whole hot set fits in L1d.
+  - *KvNode:* ✗ as a default. `hcache.asm`, generation-validated, measured
+    7–46% slower from the L2 working set up (`bench_store`, ADR 0006). It
+    stays available and off.
+- **Batch depth:** beyond about 16 independent misses, deeper batches buy
+  nothing. The fill buffers are already busy.
+  - *KvNode:* ✗ measured: b64 ≈ b16 at every working set (ADR 0006).
 
 ## 2. Branches and control flow
 
@@ -167,8 +178,14 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 ## 4. SIMD (optional, never required: KvNode's rule is "no SIMD requirement")
 
 - **SSE2 is part of baseline x86-64.** `pcmpeqb` + `pmovmskb` compare 16
-  bytes at once without raising the requirement. Consider it where 16-byte
-  keys dominate.
+  bytes at once without raising the requirement.
+  - *KvNode:* ✅ both buckets' tag words in one XMM register: one compare
+    for 12 slots. That is 2–5% faster per lookup in the batched pipeline
+    from L2 to DRAM, but 4–10% slower for lone unprefetched lookups (it
+    always reads both lines). Default via `KVNODE_SCAN=sse2`; SWAR stays
+    selectable (ADR 0006).
+  - Measure the pattern that matters: the winner flips between batched and
+    lone lookups.
 - **AVX2/AVX-512** only behind CPUID dispatch (a function pointer set at
   startup), with `vzeroupper` before calling non-AVX code.
 - **Copies:** `rep movsb` is fast with ERMS/FSRM for medium copies; small
@@ -252,8 +269,10 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Zero-copy decode:** fields point into the receive buffer. *KvNode:* ✅
   protobuf keys and values.
 - **Deferred, batched execution:** parse everything first, then execute (it
-  enables §1). *KvNode:* ✅ per read. 🔜 across all readable connections
-  (bigger batches for unpipelined clients).
+  enables §1). *KvNode:* ✅ per read.
+  - Across all readable connections: ✗ for pipelined clients, since b64 ≈
+    b16 (ADR 0006). Possibly still worth it for unpipelined clients, whose
+    batches are 1.
 - **Precomputed responses:** static HPACK blocks and ready-made frame
   headers for the fixed parts of a gRPC reply.
 - **Own the HTTP/2 hot path**

@@ -60,6 +60,22 @@ const KvRec *kv_cuckoo_get(KvTable *t, const void *key, size_t len, uint64_t h1,
 int64_t kv_cuckoo_upsert(KvTable *t, KvRec *rec, uint64_t h1, uint64_t h2); /* old ptr / 0 / -ENOSPC */
 KvRec *kv_cuckoo_remove(KvTable *t, const void *key, size_t len, uint64_t h1, uint64_t h2);
 
+/* cuckoo.asm — readers' tag-scan implementation (set before readers start) */
+enum { KV_SCAN_SWAR = 0, KV_SCAN_SSE2 = 1 };
+int kv_set_scan_mode(int mode); /* previous mode, or -EINVAL */
+
+/* store.asm — prefetch stages of the batched GET path and cache invalidation */
+void kv_store_prefetch(KvTable *t, uint64_t h1, uint64_t h2);
+void kv_store_prefetch_records(KvTable *t, uint64_t h1, uint64_t h2);
+int64_t kv_store_enable_inval(KvTable *t, uint32_t bits); /* 0, -EINVAL, -ENOMEM */
+
+/* hcache.asm — one reader thread's private L1/L2 record cache */
+typedef struct KvHCache KvHCache; /* opaque */
+KvHCache *kv_hcache_create(KvTable *t, uint32_t l1_bits, uint32_t l2_bits);
+void kv_hcache_destroy(KvHCache *c);
+const KvRec *kv_hcache_get(KvHCache *c, const void *key, size_t len, uint64_t h1, uint64_t h2);
+void kv_hcache_stats(const KvHCache *c, uint64_t out[4]); /* l1 hits, l2 hits, table, stale */
+
 /* abi.asm — layout facts exported by the assembler for test_abi.c */
 extern const uint64_t kv_abi_layout[];
 

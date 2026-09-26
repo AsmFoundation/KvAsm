@@ -75,6 +75,7 @@ global kv_qsbr_offline
 global kv_qsbr_quiescent
 global kv_store_prefetch
 global kv_store_prefetch_records
+global kv_store_enable_inval
 
 ; =============================================================================
 ; kv_store_create — allocate an empty store.
@@ -273,6 +274,8 @@ kv_store_destroy:
     mov     r12, r13
     jmp     .limbo_next
 .scratch:
+    mov     rdi, [rbx + Table.inval]
+    call    free wrt ..plt              ; 0 when caching was never enabled
     mov     rdi, [rbx + Table.readers]
     call    free wrt ..plt              ; free(NULL) is a no-op
     mov     rdi, [rbx + Table.bfs]
@@ -427,8 +430,16 @@ kv_store_put:
     test    rax, rax
     js      .refused                    ; -ENOSPC
     jz      .created
+    ; Replaced. Order matters (see hcache.asm): the new pointer is already
+    ; published, the key's generation is bumped next, and only then is the
+    ; old record retired — so no private cache can validate a copy of the
+    ; old record once it may be freed. r12 (key pointer) is free for reuse.
+    mov     r12, rax
     mov     rdi, rbx
-    mov     rsi, rax
+    mov     rsi, rbp                    ; h1
+    call    inval_bump
+    mov     rdi, rbx
+    mov     rsi, r12
     call    store_retire                ; replaced: old record -> limbo
     mov     qword [rsp + 24], 0
     jmp     .reclaim
@@ -505,8 +516,12 @@ kv_store_delete:
     xor     ebp, ebp
     test    rax, rax
     jz      .reclaim
+    mov     r12, rax                    ; unlinked record (key pointer no longer needed)
     mov     rdi, rbx
-    mov     rsi, rax
+    mov     rsi, r14                    ; h1: bump before retiring, as in kv_store_put
+    call    inval_bump
+    mov     rdi, rbx
+    mov     rsi, r12
     call    store_retire
     mov     ebp, 1
 .reclaim:
@@ -643,6 +658,88 @@ kv_qsbr_offline:
     ret
 
 ; =============================================================================
+; kv_store_enable_inval — allocate the invalidation generations that let
+; readers keep private caches of records (hcache.asm).
+;
+; @param  rdi  Table*
+; @param  esi  bits: 2^bits generation counters (1 .. INVAL_BITS_MAX)
+; @returns rax = 0, -EINVAL (bits out of range, or already enabled), or
+;          -ENOMEM.
+; @remarks Call once before any reader or writer runs (it is not
+;          synchronized). Every replace or delete then bumps the counter of
+;          the key's slot, (h1 >> 32) & mask, before retiring the old record.
+;          Keys share slots, so a write also invalidates cached entries of
+;          unrelated keys in the same slot: harmless (a miss), and rare with
+;          enough bits. Costs one store per write; nothing when disabled.
+; =============================================================================
+kv_store_enable_inval:
+    push    rbx
+    push    r12
+    push    r13                         ; 3 pushes: rsp 16-aligned for calls
+    mov     rbx, rdi
+    mov     rax, -EINVAL
+    cmp     qword [rbx + Table.inval], 0
+    jne     .out
+    test    esi, esi
+    jz      .out
+    cmp     esi, INVAL_BITS_MAX
+    ja      .out
+    mov     ecx, esi
+    mov     r12d, 1
+    shl     r12, cl                     ; counters
+    lea     r13, [r12 * 8]              ; bytes
+    cmp     r13, 64
+    jae     .size_ok
+    mov     r13d, 64                    ; aligned_alloc wants a multiple of 64
+.size_ok:
+    mov     edi, 64
+    mov     rsi, r13
+    call    aligned_alloc wrt ..plt
+    test    rax, rax
+    jz      .nomem
+    mov     [rbx + Table.inval], rax
+    lea     rcx, [r12 - 1]
+    mov     [rbx + Table.inval_mask], rcx
+    mov     rdi, rax
+    xor     esi, esi
+    mov     rdx, r13
+    call    memset wrt ..plt            ; every key starts at generation 0
+    xor     eax, eax
+    jmp     .out
+.nomem:
+    mov     rax, -ENOMEM
+.out:
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
+; inval_bump — advance the invalidation generation of a key's slot.
+; Internal; the caller holds the writer mutex.
+;
+; @param  rdi  Table*   @param rsi  h1 of the key just replaced or deleted
+; @returns nothing. Clobbers rax, rcx.
+; @remarks A plain increment suffices: writers are serialized, readers only
+;          load the counter, and aligned 8-byte stores are atomic on x86-64.
+;          Must run after the index update and before store_retire; under
+;          x86-TSO a reader that sees the new generation therefore also sees
+;          the new index state, and one that saw the old generation cannot
+;          outlive the grace period that protects the old record (proof in
+;          hcache.asm).
+; =============================================================================
+inval_bump:
+    mov     rax, [rdi + Table.inval]
+    test    rax, rax
+    jz      .off                        ; caching disabled: nothing to do
+    mov     rcx, rsi
+    shr     rcx, 32
+    and     rcx, [rdi + Table.inval_mask]
+    inc     qword [rax + rcx*8]
+.off:
+    ret
+
+; =============================================================================
 ; store_retire — move an unlinked record to the limbo list. Internal; the
 ; caller holds the writer mutex.
 ;
@@ -693,11 +790,15 @@ store_reclaim_step:
     mov     rax, [rbx + Table.limbo_head]
     test    rax, rax
     jz      .done
+    ; Forced calls always rescan. Skipping the scan whenever the cached bound
+    ; covers the head (the rate-limited shortcut below) would free only up to
+    ; that stale bound and leave records retired after the last scan in limbo
+    ; even with every reader offline — the documented contract is "always".
+    test    r12d, r12d
+    jnz     .scan
     mov     rcx, [rax + Rec.aux]
     cmp     rcx, [rbx + Table.min_epoch]
     jb      .free_batch                 ; the cached bound already covers the head
-    test    r12d, r12d
-    jnz     .scan
     cmp     qword [rbx + Table.limbo_count], SCAN_LIMBO_FORCE
     jae     .scan
     cmp     qword [rbx + Table.scan_budget], 0

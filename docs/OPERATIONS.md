@@ -2,10 +2,12 @@
 
 ## Configuration
 
-Every setting is an environment variable. Values are strict decimal
-integers: no sign, no spaces, no units. Out-of-range or malformed values
-stop startup with exit code **2** and a log line naming the variable, the
-value and the allowed range. A typo never silently falls back to a default.
+Every setting is an environment variable. Numeric values are strict decimal
+integers: no sign, no spaces, no units. Named choices (`KVNODE_SCAN`)
+must be one of the listed lowercase words exactly.
+Out-of-range, malformed or unknown values stop startup with exit code **2**
+and a log line naming the variable, the value and what is allowed. A typo
+never silently falls back to a default.
 
 | Variable | Range | Default | Meaning |
 |---|---|---|---|
@@ -21,6 +23,9 @@ value and the allowed range. A typo never silently falls back to a default.
 | `KVNODE_SHUTDOWN_GRACE_SEC` | 0–3600 | 10 | time in-flight requests get after SIGTERM |
 | `KVNODE_CONN_BUFFER_MB` | 1–4096 | 64 | request bytes one connection may buffer; the excess stream is reset with `ENHANCE_YOUR_CALM` |
 | `KVNODE_SNAPSHOT` | path | unset | snapshot to load at startup (see Snapshots) |
+| `KVNODE_SCAN` | `swar` \| `sse2` | `sse2` | how lookups match tags. `sse2` matches both candidate buckets in one compare: 2–6% faster per batched lookup, and SSE2 is part of every x86-64 CPU. `swar` is the scalar path. Results are identical ([ADR 0006](adr/0006-store-memory-levels-simd-and-private-caches.md)) |
+| `KVNODE_CACHE_L1_BITS` | 0–24 | 0 | per-worker private L1 record cache of 2^bits entries (32 bytes each); 0 = off. Measured slower than the CPU's own caches except for tiny hot sets, so off by default (ADR 0006) |
+| `KVNODE_CACHE_L2_BITS` | 0–24 | 0 | the same for a second, larger private level |
 
 ## Exit codes and signals
 

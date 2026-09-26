@@ -103,6 +103,8 @@ extern kv_pool_free
 extern kv_pool_calloc
 extern kv_pool_realloc
 extern kv_pool_destroy
+extern kv_hcache_create
+extern kv_hcache_destroy
 extern nghttp2_session_mem_recv2
 extern nghttp2_session_mem_send2
 extern nghttp2_session_want_read
@@ -272,6 +274,21 @@ kv_worker_create:
     mov     [rbx + Worker.events], rax
     test    rax, rax
     jz      .fail_alloc
+
+    ; Private L1/L2 record cache (KVNODE_CACHE_L1_BITS/L2_BITS; off by
+    ; default, see ADR 0006). Main enabled the table's invalidation
+    ; generations before any worker was created.
+    mov     rax, [r14 + Config.cache_l1_bits]
+    or      rax, [r14 + Config.cache_l2_bits]
+    jz      .no_cache
+    mov     rdi, r13
+    mov     rsi, [r14 + Config.cache_l1_bits]
+    mov     rdx, [r14 + Config.cache_l2_bits]
+    call    kv_hcache_create wrt ..plt
+    mov     [rbx + Worker.hcache], rax
+    test    rax, rax
+    jz      .fail_alloc
+.no_cache:
 
     mov     edi, EPOLL_CLOEXEC
     mov     eax, SYS_epoll_create1
@@ -466,6 +483,8 @@ worker_free:
     call    free wrt ..plt
     lea     rdi, [rbx + Worker.pool]    ; every session and stream is gone by now
     call    kv_pool_destroy wrt ..plt
+    mov     rdi, [rbx + Worker.hcache]  ; NULL when caching is off
+    call    kv_hcache_destroy wrt ..plt
     mov     rdi, rbx
     call    free wrt ..plt
     pop     rbx

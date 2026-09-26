@@ -17,6 +17,14 @@
  * A second phase uses 16 hot keys to maximize version retries and
  * reclamation churn. At the end, with all readers offline, reclamation must
  * drain limbo and the memory accounting must equal the live records exactly.
+ *
+ * Cached phases repeat the workloads with readers looking up through private
+ * L1/L2 caches (hcache.asm, deliberately tiny so entries conflict and are
+ * reused) and with the SSE2 tag scan. They add a freshness check that a
+ * stale cache would fail: writers publish (version, present) per id after
+ * each write returns; a reader that loaded the published state before its
+ * lookup must then see at least that version, and never a version at or
+ * below one whose delete had already completed.
  */
 #include <pthread.h>
 #include <stdatomic.h>
@@ -29,8 +37,11 @@ enum { MAX_THREADS = 32 };
 typedef struct {
   KvTable *t;
   uint32_t nids, nstable, nwriters, seconds;
+  uint32_t l1_bits, l2_bits;   /* reader caches; both 0 = readers use kv_store_get */
+  _Atomic uint64_t *state;     /* per id: (version << 1) | present, after the write returned */
   atomic_int stop;
-  atomic_ullong errors, reads, hits, writes, deletes, full, missing_stable;
+  atomic_ullong errors, reads, hits, writes, deletes, full, missing_stable, stale;
+  atomic_ullong cache_hits;
 } Shared;
 
 typedef struct {
@@ -87,12 +98,17 @@ static void *writer_main(void *p) {
     kv_store_hash(sh->t, key, 16, h);
     if (id >= sh->nstable && rng_next(&s) % 100 < 15) {
       kv_store_delete(sh->t, key, 16, h[0], h[1]);
+      /* Published only after the delete returned: from here on, no reader
+       * may see a version <= ver[id] (the next put uses ver[id] + 1). */
+      atomic_store_explicit(&sh->state[id], ver[id] << 1, memory_order_release);
       atomic_fetch_add_explicit(&sh->deletes, 1, memory_order_relaxed);
     } else {
       size_t n = value_of(id, ++ver[id], val);
       int64_t rc = kv_store_put(sh->t, key, 16, val, n, h[0], h[1]);
       if (rc == -ENOSPC) atomic_fetch_add_explicit(&sh->full, 1, memory_order_relaxed);
       else if (rc < 0) atomic_fetch_add_explicit(&sh->errors, 1, memory_order_relaxed);
+      else /* the put completed: readers that see this must see >= ver[id] */
+        atomic_store_explicit(&sh->state[id], (ver[id] << 1) | 1, memory_order_release);
       atomic_fetch_add_explicit(&sh->writes, 1, memory_order_relaxed);
     }
   }
@@ -105,8 +121,15 @@ static void *reader_main(void *p) {
   ThreadArg *a = p;
   Shared *sh = a->sh;
   uint64_t s = 0x12345 + a->idx, *seen = calloc(sh->nids, sizeof(uint64_t));
-  uint64_t errors = 0, reads = 0, hits = 0, missing = 0;
+  uint64_t errors = 0, reads = 0, hits = 0, missing = 0, stale = 0;
   uint8_t key[16];
+  /* Odd readers keep a private cache in cached phases, even ones read the
+   * table directly, so cached and uncached readers race on the same keys. */
+  KvHCache *cache = NULL;
+  if ((sh->l1_bits | sh->l2_bits) && (a->idx & 1)) {
+    cache = kv_hcache_create(sh->t, sh->l1_bits, sh->l2_bits);
+    CHECK(cache != NULL);
+  }
   kv_qsbr_online(sh->t, a->idx);
   while (!atomic_load_explicit(&sh->stop, memory_order_relaxed)) {
     for (int i = 0; i < 64; i++) {
@@ -114,7 +137,10 @@ static void *reader_main(void *p) {
       key_of(id, key);
       uint64_t h[2];
       kv_store_hash(sh->t, key, 16, h);
-      const KvRec *r = kv_store_get(sh->t, key, 16, h[0], h[1]);
+      /* Loaded before the lookup: every write it describes has returned. */
+      uint64_t done = atomic_load_explicit(&sh->state[id], memory_order_acquire);
+      const KvRec *r = cache ? kv_hcache_get(cache, key, 16, h[0], h[1])
+                             : kv_store_get(sh->t, key, 16, h[0], h[1]);
       reads++;
       if (!r) {
         if (id < sh->nstable) missing++;
@@ -129,6 +155,8 @@ static void *reader_main(void *p) {
       }
       if (v < seen[id]) errors++; /* time went backwards for this key */
       seen[id] = v;
+      /* Freshness: at least the last completed put; above a completed delete. */
+      if ((done & 1) ? v < (done >> 1) : (done && v <= (done >> 1))) stale++;
     }
     kv_qsbr_quiescent(sh->t, a->idx); /* drop references between batches */
     if ((rng_next(&s) & 255) == 0) {  /* occasionally idle, like epoll_wait */
@@ -137,10 +165,17 @@ static void *reader_main(void *p) {
     }
   }
   kv_qsbr_offline(sh->t, a->idx);
+  if (cache) {
+    uint64_t st[4];
+    kv_hcache_stats(cache, st);
+    atomic_fetch_add(&sh->cache_hits, st[0] + st[1]);
+    kv_hcache_destroy(cache);
+  }
   atomic_fetch_add(&sh->errors, errors);
   atomic_fetch_add(&sh->reads, reads);
   atomic_fetch_add(&sh->hits, hits);
   atomic_fetch_add(&sh->missing_stable, missing);
+  atomic_fetch_add(&sh->stale, stale);
   free(seen);
   return NULL;
 }
@@ -150,15 +185,26 @@ static void *reader_main(void *p) {
  * @param name label. @param capacity store capacity. @param nids key space.
  * @param nstable never-deleted ids. @param nw writers. @param nr readers.
  * @param seconds duration.
+ * @param l1_bits,l2_bits private cache sizes of the odd readers (0,0 = none).
+ * @param scan KV_SCAN_SWAR or KV_SCAN_SSE2, set while no thread runs.
  */
 static void run_phase(const char *name, uint64_t capacity, uint32_t nids, uint32_t nstable,
-                      uint32_t nw, uint32_t nr, uint32_t seconds) {
+                      uint32_t nw, uint32_t nr, uint32_t seconds, uint32_t l1_bits,
+                      uint32_t l2_bits, int scan) {
   uint8_t seed[16];
   uint64_t s = 99;
   rng_fill(&s, seed, 16);
-  Shared sh = {.nids = nids, .nstable = nstable, .nwriters = nw, .seconds = seconds};
+  Shared sh = {.nids = nids, .nstable = nstable, .nwriters = nw, .seconds = seconds,
+               .l1_bits = l1_bits, .l2_bits = l2_bits};
+  sh.state = calloc(nids, sizeof *sh.state);
+  CHECK(sh.state != NULL);
+  CHECK(kv_set_scan_mode(scan) >= 0);
   sh.t = kv_store_create(capacity, nr, seed, 0);
   CHECK(sh.t != NULL);
+  /* Few generation slots on purpose: unrelated keys share them, which must
+   * only cost misses. Enabled for every phase (writers bump either way). */
+  CHECK(kv_store_enable_inval(sh.t, 10) == 0);
+  CHECK(kv_store_enable_inval(sh.t, 10) == -EINVAL); /* once only */
   uint8_t key[16], val[128];
   for (uint32_t id = 0; id < nstable; id++) {
     key_of(id, key);
@@ -207,20 +253,29 @@ static void run_phase(const char *name, uint64_t capacity, uint32_t nids, uint32
   CHECK_EQ_U64(st.mem_used, live_bytes);
   CHECK_EQ_U64(atomic_load(&sh.errors), 0);
   CHECK_EQ_U64(atomic_load(&sh.missing_stable), 0);
-  printf("  %-10s %2u readers %2u writers %us: %llu reads (%llu hits), %llu writes, %llu deletes,"
-         " %llu full; live %llu (load %.0f%%), bfs %llu, moves %llu, freed %llu\n",
+  CHECK_EQ_U64(atomic_load(&sh.stale), 0);
+  if (l1_bits | l2_bits) CHECK(atomic_load(&sh.cache_hits) > 0); /* the cache was exercised */
+  printf("  %-12s %2u readers %2u writers %us: %llu reads (%llu hits, %llu from caches), %llu writes,"
+         " %llu deletes, %llu full; live %llu (load %.0f%%), bfs %llu, moves %llu, freed %llu\n",
          name, nr, nw, seconds, (unsigned long long)atomic_load(&sh.reads),
-         (unsigned long long)atomic_load(&sh.hits), (unsigned long long)atomic_load(&sh.writes),
-         (unsigned long long)atomic_load(&sh.deletes), (unsigned long long)atomic_load(&sh.full),
-         (unsigned long long)live, 100.0 * (double)live / (double)(st.nbuckets * 6),
-         (unsigned long long)st.bfs, (unsigned long long)st.moves, (unsigned long long)st.freed);
+         (unsigned long long)atomic_load(&sh.hits), (unsigned long long)atomic_load(&sh.cache_hits),
+         (unsigned long long)atomic_load(&sh.writes), (unsigned long long)atomic_load(&sh.deletes),
+         (unsigned long long)atomic_load(&sh.full), (unsigned long long)live,
+         100.0 * (double)live / (double)(st.nbuckets * 6), (unsigned long long)st.bfs,
+         (unsigned long long)st.moves, (unsigned long long)st.freed);
   kv_store_destroy(sh.t);
+  free(sh.state);
+  kv_set_scan_mode(KV_SCAN_SWAR);
 }
 
 /** Entry point. @return 0 when no invariant was violated. */
 int main(void) {
   /* capacity = 5 * 32768 => up to 83% index load; ids > capacity => ENOSPC churn */
-  run_phase("near-full", 163840, 180000, 20000, 4, 8, 4);
-  run_phase("hot-keys", 1024, 16, 4, 4, 8, 2);
+  run_phase("near-full", 163840, 180000, 20000, 4, 8, 4, 0, 0, KV_SCAN_SWAR);
+  run_phase("hot-keys", 1024, 16, 4, 4, 8, 2, 0, 0, KV_SCAN_SWAR);
+  /* Same workloads through private caches (L1 256, L2 4096 entries) and SSE2. */
+  run_phase("near-full/c", 163840, 180000, 20000, 4, 8, 3, 8, 12, KV_SCAN_SSE2);
+  run_phase("hot-keys/c", 1024, 16, 4, 4, 8, 2, 8, 12, KV_SCAN_SSE2);
+  run_phase("hot-keys/l2", 1024, 16, 4, 4, 8, 1, 0, 6, KV_SCAN_SWAR); /* L2 only */
   return test_finish("test_store_mt");
 }
