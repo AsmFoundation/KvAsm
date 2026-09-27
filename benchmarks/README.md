@@ -5,6 +5,65 @@ Valkey, Dragonfly, Garnet and Memcached), using one client, one placement
 and one statistical method for all of them. The rules, and the reasons
 behind each, are in [METHODOLOGY.md](METHODOLOGY.md).
 
+## Full suite on the current server (2026-09-27)
+
+This is the first full session since the native HTTP/2 engine, the
+two-phase event loop and allocation-free small replies. Revision `a0264f7`,
+747 runs, all valid
+([README](results/2026-09-27-standard/README.md),
+[REPORT.md](results/2026-09-27-standard/REPORT.md)).
+
+**Host.**
+
+- E0 and E1 ran while another project's backtests kept 13–25 of 32 CPUs
+  busy; the user chose to run rather than wait.
+- Everything after ran at 3.6–6.4 CPUs, the level of the 2026-09-26
+  session.
+- An in-VM watcher found no interference from other sessions: 745 of 747
+  run windows clean, and 2 single-interval blips.
+
+**4 cores, quiet host** (S1, 10 paired blocks; KvNode was ahead in every
+block against every server, p = 0.002):
+
+| 4 cores | KvNode | Redis | Valkey | Dragonfly | Garnet | Memcached |
+|---|---|---|---|---|---|---|
+| GET/s | **8.84 M** | 2.88 M | 3.20 M | 2.40 M | 3.86 M | 3.01 M |
+| KvNode ÷ X | — | **3.07×** | **2.76×** | **3.68×** | **2.29×** | **2.94×** |
+
+- **1 core (N1, 6/6 blocks):**
+  - 1.76M GET/s against Redis's 1.40M (1.26×) and Valkey's 1.42M (1.24×);
+  - 576 ns of server CPU per GET, against 722 and 710;
+  - the no-op floor ties Redis's `PING` (472 against 479 ns).
+- **Ahead of every server:**
+  - reads (E2 90% GET: 7.66M, 1.9–3.2×);
+  - no pipelining (E3: 815k, 1.3–2.1×);
+  - 1 KiB values (E6: 5.59M, 1.8–3.7×);
+  - 64 or more requests in flight (E7: 9.11M at 1,024).
+- **Level:** tied with Garnet at 50% GET. At fixed offered load (E4) its
+  p99 is second only to Valkey's.
+- **Behind:**
+  - writes: 2.23M SET/s, 0.87× Redis, 0.90× Dragonfly and 0.60× Garnet;
+  - 16 KiB values: 481k, 0.50× Garnet and 0.48× Memcached. Here KvNode is
+    **30% below the old nghttp2 build**, while the other servers lost
+    5–8%: a regression to bisect.
+- **Against the nghttp2 build** (2026-09-26, with the other servers
+  unchanged):
+  - 3.0× at 4 cores (S1: 2.93M → 8.84M);
+  - 2.8× on 90% GET;
+  - 1.3× on writes;
+  - no-op 1,086 → 472 ns.
+- **The client is now the ceiling.** kvbench's gRPC client tops out near
+  9.3M requests/s on its 16 vCPUs. KvNode's 8-core cells therefore measure
+  the client (KvNode used 0.52–0.70 of its 8 cores), and S1's 8.84M is a
+  floor.
+- **E1 (1–8 cores) ran under the load.**
+  - KvNode was ahead of every server at every budget in every block, except
+    Garnet at 8 cores (1.21×, 5 of 6 blocks).
+  - Absolute numbers are depressed: S1 ran 1.16–1.78× faster than the same
+    E1 cell.
+  - The load shrank KvNode's lead over Garnet, Memcached and Valkey rather
+    than inflating it.
+
 ## Second pass: exact instruction counts (2026-09-27)
 
 Another project kept 25–30 of 32 CPUs busy, so this pass measured what
@@ -130,7 +189,10 @@ sessions record the engine's first version and the header-block cache.
 The standard session below predates the native engine: its KvNode is the
 nghttp2 build (at the time, the only engine).
 
-## Results (2026-09-26)
+## Results (2026-09-26, nghttp2 build)
+
+Superseded for KvNode by the 2026-09-27 full session at the top. The other
+servers measured within about ±10% of their numbers here, cell by cell.
 
 **Setup.** Intel i9-13900K under Docker Desktop / WSL2, revision `8cb0fef`,
 711 runs, all valid. Full tables, charts and statistics:
@@ -248,11 +310,21 @@ Yes, on both sides, and it is configurable:
   memcached.
 - **Other levels:** `--threads`, `--connections` and `--depth` set any
   level from 1 up. E3 runs 256 × 1. E7 sweeps 1, 16, 64, 256 and 1,024 in
-  flight. KvNode then goes from 33k to 2.77M GET/s at 4 cores.
+  flight. KvNode then goes from 33k to 2.77M GET/s at 4 cores with nghttp2
+  (2026-09-26), and from 35k to 9.11M with the native engine (2026-09-27).
 
 ### Did KvNode reach 2,000,000 GET/s?
 
 Yes, reading the goal as 2M GET/s at 4 cores on the standard workload:
+
+- **Today (2026-09-27, native engine):**
+  - **8.84M GET/s at 4 cores** on a quiet host (S1, ten runs, CV 4.2%);
+  - 1.76M on one core with the standard blocking client (N1), so 2M per
+    core with co-located sleeping clients is not reached yet;
+  - 3.71M with a busy-polling client
+    ([store-lookup](results/2026-09-27-store-lookup/README.md)).
+
+When the goal was first met (nghttp2 build, 2026-09-26):
 
 - **4 cores:** **3.02M GET/s** (6 runs, 2.80–3.23M), and 2.93M in S1's
   ten runs.

@@ -162,6 +162,17 @@ says so.
   (`host_load_run`). A 6-second baseline before the first run goes into
   `environment.json`, and startup warns when more than 2 logical CPUs are
   busy elsewhere.
+- **Load inside the VM.** Work inside the container VM also competes for
+  the same vCPUs: another session's build or benchmark in a shared dev
+  container, a helper container, a WSL distro. The outside-load sampler
+  cannot see it, because it hides inside `vmmemWSL`, which the sampler
+  subtracts as the benchmark's own. `run.py` does not measure it.
+  - The 2026-09-27 session ran a separate watcher on a vCPU the suite never
+    uses (`results/2026-09-27-standard/vmwatch.sh`). Every 5 s it logged
+    per-vCPU busy time and every container's CPU.
+  - Afterwards `vmwatch_report.py` checked each run's measured window for
+    CPU in the dev container or BuildKit, for containers beyond the suite's
+    own two, and for sustained load on the unused vCPUs.
 - **Client-bound check.** A run where the client was more than 85% busy
   while the server used less than 90% of its budget is flagged in the
   report.
@@ -259,6 +270,20 @@ precision the data does not have. The analysis therefore reports:
   cost of real networks. Protocol overhead weighs relatively more than it
   would across a network, which penalizes heavier protocols (gRPC over
   HTTP/2) the most. E5 measures that overhead directly.
+- **The load generator's ceiling.** kvbench's gRPC client reaches about
+  9.3M requests/s on its 16 vCPUs (E8, 2026-09-27: 9.30M on one key, where
+  h2load reached 5.89M).
+  - Since the native HTTP/2 engine, KvNode's 8-core cells run into that
+    limit: its cores were 0.52–0.70 busy, and runs are flagged
+    client-bound.
+  - Its 4-core cell comes close: the client was 80% busy in S1.
+  - Where the client is the limit, KvNode's result is a floor, not its
+    capacity. This host cannot give the client more CPUs next to an
+    8-core server; clients on a second machine could.
+- **E4's loads follow E1.** The offered loads are fractions of the slowest
+  system's E1 median at 4 cores, so an E1 depressed by outside load lowers
+  them. On 2026-09-27 they were 418k–1.25M requests/s, against 574k–1.72M
+  the day before. Compare E4 across sessions only at equal rates.
 - **Protocol is part of the system.** KvNode's gRPC framing costs more
   bytes and CPU per request than RESP, on both server and client. That
   cost is real for users and is not factored out.

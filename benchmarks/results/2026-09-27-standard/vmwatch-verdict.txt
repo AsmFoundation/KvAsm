@@ -1,0 +1,15 @@
+747 runs; 745 clean, 2 flagged, 0 without monitor coverage
+  E0: side-vCPU busy per run window (interior mean), median 0.028, max 0.514 vCPU
+  E1: side-vCPU busy per run window (interior mean), median 0.033, max 0.324 vCPU
+  E2: side-vCPU busy per run window (interior mean), median 0.024, max 0.176 vCPU
+  E3: side-vCPU busy per run window (interior mean), median 0.033, max 0.126 vCPU
+  E4: side-vCPU busy per run window (interior mean), median 0.029, max 0.206 vCPU
+  E5: side-vCPU busy per run window (interior mean), median 0.012, max 0.106 vCPU
+  E6: side-vCPU busy per run window (interior mean), median 0.023, max 0.088 vCPU
+  E7: side-vCPU busy per run window (interior mean), median 0.025, max 0.188 vCPU
+  E8: side-vCPU busy per run window (interior mean), median 0.048, max 0.158 vCPU
+  N1: side-vCPU busy per run window (interior mean), median 0.017, max 0.120 vCPU
+  N3: side-vCPU busy per run window (interior mean), median 0.015, max 0.112 vCPU
+  S1: side-vCPU busy per run window (interior mean), median 0.029, max 0.118 vCPU
+  FLAG E0/kvnode/c8/t8/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): side vCPUs 0.51 busy (window mean)
+  FLAG E1/kvnode/c1/t1/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): side vCPUs 0.32 busy (window mean)
