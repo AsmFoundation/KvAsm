@@ -5,6 +5,27 @@ Valkey, Dragonfly, Garnet and Memcached), using one client, one placement
 and one statistical method for all of them. The rules, and the reasons
 behind each, are in [METHODOLOGY.md](METHODOLOGY.md).
 
+## Why 8 cores does not double on this host (2026-09-28)
+
+E1 went from 4.98M GET/s at 4 cores to 5.99M at 8. A paired A/B gave the
+same 8-worker server a bigger client
+([README](results/2026-09-28-client-ceiling/README.md)):
+
+- **The standard client is saturated.** On 16 vCPUs, KvNode did 9.72M
+  GET/s with the client 97% busy and its own cores 69% busy.
+- **A bigger client is slower.** On 24 vCPUs it did 8.60M (0.877×, 6/6
+  blocks, p = 0.031):
+  - KvNode's CPU per GET rose 43% (568 → 810 ns);
+  - the client's CPU per request rose 18%.
+- **Why:** the i9-13900K has 24 physical cores behind its 32 logical CPUs,
+  and 8 server plus 16 client vCPUs already keep all 24 busy. The spare
+  vCPUs are hyperthread siblings. From 4 to 8 server vCPUs, KvNode's CPU per
+  GET also rose, from 435 to 568 ns (unpaired, across sessions).
+- **So:** from 4 to 8 cores on the quiet host, KvNode went from 8.84M to
+  9.72M. Its 8-core figures are floors (about 14M GET/s if 8 cores were
+  fully busy at the same cost per GET), and measuring 8 cores needs the
+  client on a second machine.
+
 ## Full suite on the current server (2026-09-27)
 
 This is the first full session since the native HTTP/2 engine, the
@@ -55,7 +76,8 @@ block against every server, p = 0.002):
 - **The client is now the ceiling.** kvbench's gRPC client tops out near
   9.3M requests/s on its 16 vCPUs. KvNode's 8-core cells therefore measure
   the client (KvNode used 0.52–0.70 of its 8 cores), and S1's 8.84M is a
-  floor.
+  floor. A bigger client on this host is slower, as the section above
+  shows.
 - **E1 (1–8 cores) ran under the load.**
   - KvNode was ahead of every server at every budget in every block, except
     Garnet at 8 cores (1.21×, 5 of 6 blocks).

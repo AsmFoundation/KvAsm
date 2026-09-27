@@ -260,11 +260,21 @@ kvbench's gRPC client reaches about **9.3M requests/s** on its 16 vCPUs:
 - S1, 4 cores: the client was 80% busy with KvNode's server at 0.96.
 
 KvNode's 8-core cell (and E7's 1,024-in-flight cell) therefore measures the
-load generator. Its 4-core S1 is a floor, not a ceiling. Measuring KvNode
-at 8 cores needs more client CPU than this 32-thread host can spare beside
-an 8-core server, or clients on another machine. E8 also shows that kvbench
-never handicaps a system: it matches or beats redis-benchmark (1.03–1.06×)
-and memtier_benchmark (1.05×) against Redis.
+load generator. Its 4-core S1 is a floor, not a ceiling. E8 also shows that
+kvbench never handicaps a system: it matches or beats redis-benchmark
+(1.03–1.06×) and memtier_benchmark (1.05×) against Redis.
+
+Measuring KvNode at 8 cores needs clients on another machine. This host
+cannot supply more client CPU, as a follow-up A/B measured
+([2026-09-28-client-ceiling](../2026-09-28-client-ceiling/README.md)):
+
+- **The client is saturated:** with the standard client (16 vCPUs), 8
+  workers did 9.72M GET/s, with the client 97% busy and KvNode's cores 69%
+  busy.
+- **A bigger client is slower:** on 24 vCPUs (8–31) it was 12% slower in
+  6 of 6 blocks. KvNode's CPU per GET rose 43% and the client's 18%.
+- **Why:** the i9-13900K's 24 physical cores are already taken by 8 server
+  and 16 client vCPUs. The spare vCPUs are hyperthread siblings.
 
 ## In-VM interference watcher
 

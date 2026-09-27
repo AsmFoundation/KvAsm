@@ -278,8 +278,12 @@ precision the data does not have. The analysis therefore reports:
     client-bound.
   - Its 4-core cell comes close: the client was 80% busy in S1.
   - Where the client is the limit, KvNode's result is a floor, not its
-    capacity. This host cannot give the client more CPUs next to an
-    8-core server; clients on a second machine could.
+    capacity. This host cannot give the client more CPU next to an 8-core
+    server. Its 24 physical cores (8 hyperthreaded P-cores and 16 E-cores)
+    are already busy with 8 server and 16 client vCPUs. A client that also
+    used the 8 spare vCPUs, all hyperthread siblings, made the run 12%
+    slower (2026-09-28, `results/2026-09-28-client-ceiling`). Clients on a
+    second machine could.
 - **E4's loads follow E1.** The offered loads are fractions of the slowest
   system's E1 median at 4 cores, so an E1 depressed by outside load lowers
   them. On 2026-09-27 they were 418k–1.25M requests/s, against 574k–1.72M

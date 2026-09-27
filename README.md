@@ -97,6 +97,11 @@ every server in all ten paired blocks):
 - **At 8 cores the benchmark client is the limit:** kvbench's gRPC client
   tops out near 9.3M requests/s, so KvNode's 8-core numbers measure the
   client.
+  - A bigger client on this machine was 12% slower, because its physical
+    cores are all in use.
+  - So 8 cores cannot double 4 cores here: 8.84M → 9.72M GET/s on a quiet
+    host. Measuring 8 cores properly needs the client on a second machine
+    ([why](benchmarks/results/2026-09-28-client-ceiling/README.md)).
 - **Caveat:** the 1-to-8-core scaling experiment ran while another program
   kept half the host busy. KvNode still led every server at every core
   budget there, except that it was not clearly ahead of Garnet at 8 cores.

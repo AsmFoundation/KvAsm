@@ -1,0 +1,19 @@
+revision 18adf1358257, image sha256:3728b25dfe86, cpu clock factor 1.0671, 6 blocks
+r0 A:  9.89M/s  server 0.70 busy  568 ns/op  client 0.97 busy  1571 ns/op  outside 5.8
+r0 B:  8.69M/s  server 0.87 busy  796 ns/op  client 0.68 busy  1884 ns/op  outside 6.0
+r1 B:  8.52M/s  server 0.85 busy  800 ns/op  client 0.67 busy  1897 ns/op  outside 5.7
+r1 A:  9.87M/s  server 0.69 busy  562 ns/op  client 0.98 busy  1595 ns/op  outside 5.4
+r2 A:  9.74M/s  server 0.69 busy  568 ns/op  client 0.97 busy  1595 ns/op  outside 5.6
+r2 B:  8.53M/s  server 0.85 busy  798 ns/op  client 0.66 busy  1865 ns/op  outside 6.3
+r3 B:  8.70M/s  server 0.89 busy  820 ns/op  client 0.69 busy  1892 ns/op  outside 6.8
+r3 A:  9.67M/s  server 0.69 busy  568 ns/op  client 0.97 busy  1601 ns/op  outside 5.4
+r4 A:  9.67M/s  server 0.69 busy  569 ns/op  client 0.98 busy  1622 ns/op  outside 5.5
+r4 B:  8.68M/s  server 0.91 busy  837 ns/op  client 0.68 busy  1880 ns/op  outside 6.0
+r5 B:  8.19M/s  server 0.84 busy  821 ns/op  client 0.66 busy  1925 ns/op  outside 6.3
+r5 A:  9.70M/s  server 0.71 busy  582 ns/op  client 0.97 busy  1597 ns/op  outside 5.4
+
+medians (runs):
+  A standard client, 16 vCPUs    9.72M/s  server 0.69 busy  568 ns/op  client 0.97 busy  1596 ns/op  outside 5.5  (n=6)
+  B bigger client, 24 vCPUs      8.60M/s  server 0.86 busy  810 ns/op  client 0.68 busy  1888 ns/op  outside 6.1  (n=6)
+B/A throughput: median 0.877x [0.845-0.900], B higher in 0/6 blocks, sign p = 0.031
+B/A KvNode core utilization: median 1.232x [1.192-1.320], B higher in 6/6 blocks, sign p = 0.031
