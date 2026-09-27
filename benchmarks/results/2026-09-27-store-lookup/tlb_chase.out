@@ -1,0 +1,7 @@
+$ /tmp/tlb_chase 2      (quiet host)
+region    4K pages   2M pages   (ns per dependent step, one line per 4 KiB page)
+    4 MiB       4.2        4.1
+   16 MiB      13.9        9.3
+   64 MiB      18.2       11.9
+  256 MiB     119.7       31.1
+ 1024 MiB     178.8      126.1

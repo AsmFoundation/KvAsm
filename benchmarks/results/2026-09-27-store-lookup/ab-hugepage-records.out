@@ -1,0 +1,9 @@
+block 1 busy:100:6       A    3,180,251  B    3,401,226  B/A 1.069  (slot0=A)
+block 2 busy:100:6       A    3,264,302  B    3,389,771  B/A 1.038  (slot0=B)
+block 3 busy:100:6       A    3,025,861  B    3,267,386  B/A 1.080  (slot0=A)
+block 4 busy:100:6       A    3,188,124  B    3,311,387  B/A 1.039  (slot0=B)
+block 5 busy:100:6       A    3,002,193  B    3,181,810  B/A 1.060  (slot0=A)
+block 6 busy:100:6       A    2,885,990  B    3,092,320  B/A 1.071  (slot0=B)
+
+busy:100:6       A    3,103,056  B    3,289,386  B/A median 1.065 geomean 1.059 [1.038-1.080]  6/6 blocks B faster, sign p=0.031
+exit=0

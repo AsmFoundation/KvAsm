@@ -1,0 +1,24 @@
+$ /tmp/lookup_decomp 2 11      (quiet host: ~4 busy logical CPUs outside the VM)
+n=8192 keys: slab mapping AnonHugePages 10240 KiB (records ~1280 KiB)
+  4k hash        21.1 ns/lookup   vs 4k hash: 1.000 (faster in 0/11)
+  4k prehash      9.0 ns/lookup   vs 4k hash: 0.427 (faster in 11/11)
+  thp hash       21.1 ns/lookup   vs 4k hash: 1.000 (faster in 4/11)
+  thp prehash     9.0 ns/lookup   vs 4k hash: 0.429 (faster in 11/11)
+  wrong answers: 0
+  4k hash + bench_store's version[i] read: 21.2 ns/lookup
+
+n=1048576 keys: slab mapping AnonHugePages 188416 KiB (records ~163840 KiB)
+  4k hash        43.5 ns/lookup   vs 4k hash: 1.000 (faster in 0/11)
+  4k prehash     32.5 ns/lookup   vs 4k hash: 0.757 (faster in 11/11)
+  thp hash       40.3 ns/lookup   vs 4k hash: 0.924 (faster in 11/11)
+  thp prehash    30.5 ns/lookup   vs 4k hash: 0.696 (faster in 11/11)
+  wrong answers: 0
+  4k hash + bench_store's version[i] read: 46.9 ns/lookup
+
+$ build/bench/bench_store --cpu 2 --reps 3      (same quiet host, minutes later; b16 row per size)
+  pattern b16 | swar | sse2 | swar+L1 | swar+L1L2 | sse2+L1L2
+  L1d   (256 keys) | 30.9 | 29.8 | 30.7 | 30.5 | 30.1
+  L2    (8 Ki)     | 32.2 | 31.5 | 37.0 | 37.1 | 36.2
+  L3    (128 Ki)   | 41.8 | 40.8 | 47.6 | 55.8 | 54.5
+  DRAM  (1 Mi)     | 81.3 | 78.6 | 100.3 | 99.1 | 94.1
+  DRAM4 (4 Mi)     | 98.4 | 97.2 | 115.8 | 119.2 | 118.5

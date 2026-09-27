@@ -1,0 +1,3 @@
+$ bash /tmp/thp_check.sh      (committed server, 1 worker, 1M keys x 100 B preloaded)
+default: Rss: 173792 kB AnonHugePages: 14336 kB
+thp: Rss: 176920 kB AnonHugePages: 174080 kB

@@ -1,0 +1,67 @@
+throughput 3,711,703 req/s on 1 core -> 269 ns of server-core time per request
+/proc split: user 51.6% (139 ns), kernel 48.4% (130 ns)
+sampled CPU time attributed (system-wide on the server's CPU): 99.9% of samples
+
+hotspot                                                   share  ns/req
+KvNode: store lookup (hash, buckets, record)              25.5%      69
+kernel: TCP/IP loopback stack                             24.1%      65
+KvNode: HTTP/2 framing (h2n.asm)                          14.1%      38
+kernel: other                                              8.6%      23
+KvNode: gRPC dispatch + protobuf                           5.5%      15
+kernel: syscall entry/exit, VFS                            4.9%      13
+kernel: user<->kernel copies                               4.2%      11
+kernel: scheduler, IRQ, timers, idle                       3.9%      10
+kernel: memory allocation (slab, pages, memcg)             2.9%       8
+KvNode: event loop (worker.asm)                            2.3%       6
+glibc (memcpy/memset/syscall stubs)                        1.9%       5
+KvNode: pool allocator                                     1.8%       5
+kernel: epoll                                              0.3%       1
+vDSO clock_gettime                                         0.0%       0
+KvNode: other (update_now)                                 0.0%       0
+
+top symbols:
+    9.12%  [.] kv_cuckoo_prefetch_records.sse2_slot     KvNode: store lookup (hash, buckets, record)
+    6.49%  [.] kv_cuckoo_prefetch                       KvNode: store lookup (hash, buckets, record)
+    3.46%  [.] kv_siphash128.final                      KvNode: store lookup (hash, buckets, record)
+    3.13%  [k] copy_user_enhanced_fast_string           kernel: user<->kernel copies
+    2.86%  [k] __wake_up_common_lock                    kernel: scheduler, IRQ, timers, idle
+    2.73%  [k] tcp_sendmsg_locked                       kernel: TCP/IP loopback stack
+    1.69%  [k] __inet_lookup_established                kernel: other
+    1.29%  [.] kv_cuckoo_get_sse2.slot                  KvNode: store lookup (hash, buckets, record)
+    1.19%  [.] kv_cuckoo_get_sse2.retry                 KvNode: store lookup (hash, buckets, record)
+    1.15%  [k] __skb_datagram_iter                      kernel: TCP/IP loopback stack
+    1.06%  [.] kv_siphash128.block                      KvNode: store lookup (hash, buckets, record)
+    1.02%  [k] __fget_files                             kernel: syscall entry/exit, VFS
+    1.01%  [k] read_tsc                                 kernel: other
+    0.97%  [.] reply_fast                               KvNode: HTTP/2 framing (h2n.asm)
+    0.95%  [.] __memmove_avx_unaligned_erms             glibc (memcpy/memset/syscall stubs)
+    0.95%  [k] syscall_enter_from_user_mode             kernel: syscall entry/exit, VFS
+    0.94%  [k] tcp_ack                                  kernel: TCP/IP loopback stack
+    0.94%  [k] tcp_recvmsg_locked                       kernel: TCP/IP loopback stack
+    0.94%  [k] sock_poll                                kernel: TCP/IP loopback stack
+    0.93%  [.] kv_h2n_read.read                         KvNode: HTTP/2 framing (h2n.asm)
+    0.91%  [.] header_block                             KvNode: HTTP/2 framing (h2n.asm)
+    0.91%  [k] process_backlog                          kernel: TCP/IP loopback stack
+    0.90%  [.] conn_flush.send_pending                  KvNode: event loop (worker.asm)
+    0.89%  [.] kv_pool_malloc                           KvNode: pool allocator
+    0.84%  [.] kv_grpc_dispatch                         KvNode: gRPC dispatch + protobuf
+    0.82%  [k] tcp_rcv_established                      kernel: TCP/IP loopback stack
+    0.76%  [.] __memset_avx2_unaligned_erms             glibc (memcpy/memset/syscall stubs)
+    0.76%  [.] kv_grpc_run_batch.answer                 KvNode: gRPC dispatch + protobuf
+    0.73%  [.] put_hdr                                  KvNode: HTTP/2 framing (h2n.asm)
+    0.73%  [.] decode_fields                            KvNode: HTTP/2 framing (h2n.asm)
+    0.72%  [k] __slab_free.constprop.0                  kernel: memory allocation (slab, pages, memcg)
+    0.71%  [k] tcp_check_space                          kernel: TCP/IP loopback stack
+    0.68%  [.] map_find.probe                           KvNode: HTTP/2 framing (h2n.asm)
+    0.67%  [k] __tcp_transmit_skb                       kernel: TCP/IP loopback stack
+    0.66%  [.] h2_process.frame                         KvNode: HTTP/2 framing (h2n.asm)
+    0.65%  [k] __check_object_size                      kernel: user<->kernel copies
+    0.64%  [.] conn_event                               KvNode: event loop (worker.asm)
+    0.64%  [k] __raw_callee_save___pv_queued_spin_unlock kernel: other
+    0.64%  [k] tcp_v4_rcv                               kernel: TCP/IP loopback stack
+    0.59%  [.] kv_cuckoo_get_sse2                       KvNode: store lookup (hash, buckets, record)
+    0.57%  [k] kfree                                    kernel: memory allocation (slab, pages, memcg)
+    0.57%  [k] _raw_spin_lock_bh                        kernel: other
+    0.56%  [k] skb_release_data                         kernel: TCP/IP loopback stack
+    0.55%  [k] enqueue_to_backlog                       kernel: scheduler, IRQ, timers, idle
+    0.55%  [k] ip_finish_output2                        kernel: TCP/IP loopback stack

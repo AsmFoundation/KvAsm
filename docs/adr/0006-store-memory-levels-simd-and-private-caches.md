@@ -110,6 +110,18 @@ the server's batched GET pipeline.
 - In absolute terms, a batched GET lookup costs about 89 ns at 1 Mi keys,
   including the SipHash. That is the store's share of a request on one
   core, and the budget the HTTP/2 engine works around (ADR 0007).
+  - **Corrected 2026-09-27** (`benchmarks/results/2026-09-27-store-lookup`):
+    that absolute figure includes `bench_store`'s own bookkeeping:
+    - byte-wise key formatting that defeats store forwarding;
+    - a verification read of a random slot in an 8 MB array;
+    - a store already mutated by earlier `zmix` runs.
+    
+    The same pipeline without them costs **43.5 ns** at 1 Mi keys (SipHash
+    ~12 ns of it). Inside the server, where kernel and protocol work
+    evicts cached lines and page-table entries between batches, a profile
+    on a quiet host puts it at **69 ns**. Huge-page records bring that to
+    62 ns, and GET throughput rises 1.059× (paired, 6/6 blocks). The
+    ratios in this ADR are unaffected.
 
 ## Consequences
 

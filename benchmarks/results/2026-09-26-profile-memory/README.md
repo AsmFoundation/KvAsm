@@ -1,5 +1,13 @@
 # One KvNode core, profiled — and its memory (2026-09-26)
 
+> **Update 2026-09-27:** the absolute times below were measured while ~20
+> of the host's 32 logical CPUs were busy outside the VM, which made every
+> DRAM miss dearer. On a quiet host the same server with a busy-polling
+> client does **3.71M GET/s on one core (269 ns per GET)**, with the store
+> lookup at **69 ns**, not 93. The store alone costs 43.5 ns, and
+> huge-page records are worth +6% (paired, p = 0.031). The shares and the
+> conclusions below still hold. See `../2026-09-27-store-lookup`.
+
 These are the answers to three questions, measured on the revision that
 removed nghttp2 from the server
 ([ADR 0008](../../../docs/adr/0008-remove-nghttp2-from-the-server.md)):
