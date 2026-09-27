@@ -80,6 +80,15 @@ absolute numbers differ between the two.
 - **Most of it is the kernel.** Over loopback, about half of a loaded core
   is the server's `sendto` waking the co-located client, a cross-vCPU IPI
   under WSL2.
+- **The server now wakes clients less.** It reads a whole epoll batch
+  first, then flushes every connection together
+  ([ADR 0009](docs/adr/0009-flush-once-per-event-batch.md)). A client
+  thread with several connections then wakes once per batch. Measured:
+  +12% GET/s with 4 connections per client thread, +26% with 8, with lower
+  latency in every case
+  ([results](benchmarks/results/2026-09-27-two-phase/README.md)).
+- **Event-driven, never spinning:** an idle worker sleeps in `epoll_wait`.
+  4 workers holding 1,000 idle connections used 10 ms of CPU in 10 s.
 - **With a busy-polling client** that cost disappears, and one core served
   **2.62M GET/s** (382 ns per GET): 177 ns kernel, 205 ns KvNode. The store
   lookup is the biggest part of that, mostly memory stalls.

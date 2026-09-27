@@ -65,13 +65,25 @@ flowchart LR
    - A GET the peer resets within the same read is freed, not answered.
 5. **Respond.** HEADERS, then DATA (the message, within the peer's
    flow-control windows), then trailer HEADERS (`grpc-status: 0`). Errors
-   are a single Trailers-Only HEADERS frame. All output produced by one
-   input batch is coalesced into one `sendto`.
+   are a single Trailers-Only HEADERS frame.
    - Responses are framed straight into the output buffer, with
      precomputed header blocks: after a connection's first response,
      HEADERS carry 2 bytes and the trailers 1 byte. A GET hit is copied
      from the store record into its DATA frame, with no response buffer and
      no allocation.
+   - **Nothing is sent until the whole epoll batch has been read**
+     (ADR 0009). The worker processes every ready connection first, then
+     flushes them all back to back, one `sendto` each. A client thread with
+     several connections is woken once per batch instead of once per
+     connection. Measured on one core: +26% GET/s with 8 connections per
+     client thread, +12% with 4, +4% with 1, and lower p50 and p99 in every
+     case.
+
+The loop is event-driven and never spins. A connection is a state machine
+resumed by epoll readiness (what C# async/await compiles to, without heap
+continuations or thread hand-offs), and an idle worker sleeps in
+`epoll_wait`. Measured: 4 workers holding 1,000 idle connections used 10 ms
+of CPU in 10 s.
 
 Allocation on this path goes through the worker's own pool (`pool.asm`):
 streams, stream maps, HPACK rings and entries, and every request buffer. A

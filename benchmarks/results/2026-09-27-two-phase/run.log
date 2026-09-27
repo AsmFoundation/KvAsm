@@ -1,0 +1,44 @@
+host load outside the container VM: 11.1 of 32 logical CPUs
+  WARNING: other programs are using 11.1 logical CPUs; they compete with the servers and the client, and results will carry that noise. Close them for a publishable run.
+recording environment and calibrating the CPU clock ...
+  cpu clock factor 1.0886
+== N1 One core: KvNode vs Redis and Valkey: 18 runs, ~8 min
+[N1 1/18] redis     c1 t1 get100-v100-k1000000-uni-c64d16                                  1,211,187/s  eta 6m
+[N1 2/18] valkey    c1 t1 get100-v100-k1000000-uni-c64d16                                  1,309,382/s  eta 5m
+[N1 3/18] kvnode    c1 t1 get100-v100-k1000000-uni-c64d16                                  1,655,660/s  eta 5m
+[N1 4/18] valkey    c1 t1 get100-v100-k1000000-uni-c64d16                                  1,404,953/s  eta 5m
+[N1 5/18] kvnode    c1 t1 get100-v100-k1000000-uni-c64d16                                  1,653,897/s  eta 4m
+[N1 6/18] redis     c1 t1 get100-v100-k1000000-uni-c64d16                                  1,142,495/s  eta 4m
+[N1 7/18] redis     c1 t1 get100-v100-k1000000-uni-c64d16                                  1,302,300/s  eta 4m
+[N1 8/18] valkey    c1 t1 get100-v100-k1000000-uni-c64d16                                  1,398,669/s  eta 3m
+[N1 9/18] kvnode    c1 t1 get100-v100-k1000000-uni-c64d16                                  1,724,493/s  eta 3m
+[N1 10/18] valkey    c1 t1 get100-v100-k1000000-uni-c64d16                                  1,379,626/s  eta 3m
+[N1 11/18] redis     c1 t1 get100-v100-k1000000-uni-c64d16                                  1,434,928/s  eta 2m
+[N1 12/18] kvnode    c1 t1 get100-v100-k1000000-uni-c64d16                                  1,183,201/s  eta 2m
+[N1 13/18] valkey    c1 t1 get100-v100-k1000000-uni-c64d16                                  1,151,541/s  eta 2m
+[N1 14/18] kvnode    c1 t1 get100-v100-k1000000-uni-c64d16                                  1,533,842/s  eta 1m
+[N1 15/18] redis     c1 t1 get100-v100-k1000000-uni-c64d16                                    974,950/s  eta 1m
+[N1 16/18] kvnode    c1 t1 get100-v100-k1000000-uni-c64d16                                  1,727,859/s  eta 1m
+[N1 17/18] valkey    c1 t1 get100-v100-k1000000-uni-c64d16                                  1,198,501/s  eta 0m
+[N1 18/18] redis     c1 t1 get100-v100-k1000000-uni-c64d16                                  1,330,197/s  eta 0m
+== N3 One core: per-request floor: 18 runs, ~8 min
+[N3 1/18] valkey    c1 t1 ping-v100-k1000000-uni-c64d16                                    1,955,894/s  eta 6m
+[N3 2/18] redis     c1 t1 ping-v100-k1000000-uni-c64d16                                    2,084,977/s  eta 5m
+[N3 3/18] kvnode    c1 t1 ping-v100-k1000000-uni-c64d16                                    2,023,234/s  eta 5m
+[N3 4/18] kvnode    c1 t1 ping-v100-k1000000-uni-c64d16                                    2,026,276/s  eta 5m
+[N3 5/18] valkey    c1 t1 ping-v100-k1000000-uni-c64d16                                    1,904,986/s  eta 4m
+[N3 6/18] redis     c1 t1 ping-v100-k1000000-uni-c64d16                                    2,045,564/s  eta 4m
+[N3 7/18] valkey    c1 t1 ping-v100-k1000000-uni-c64d16                                    1,974,043/s  eta 4m
+[N3 8/18] redis     c1 t1 ping-v100-k1000000-uni-c64d16                                    2,139,780/s  eta 3m
+[N3 9/18] kvnode    c1 t1 ping-v100-k1000000-uni-c64d16                                    2,125,003/s  eta 3m
+[N3 10/18] kvnode    c1 t1 ping-v100-k1000000-uni-c64d16                                    2,163,183/s  eta 3m
+[N3 11/18] redis     c1 t1 ping-v100-k1000000-uni-c64d16                                    2,137,733/s  eta 2m
+[N3 12/18] valkey    c1 t1 ping-v100-k1000000-uni-c64d16                                    1,970,690/s  eta 2m
+[N3 13/18] redis     c1 t1 ping-v100-k1000000-uni-c64d16                                    2,091,634/s  eta 2m
+[N3 14/18] kvnode    c1 t1 ping-v100-k1000000-uni-c64d16                                    2,008,550/s  eta 1m
+[N3 15/18] valkey    c1 t1 ping-v100-k1000000-uni-c64d16                                    1,934,586/s  eta 1m
+[N3 16/18] kvnode    c1 t1 ping-v100-k1000000-uni-c64d16                                    2,024,625/s  eta 1m
+[N3 17/18] redis     c1 t1 ping-v100-k1000000-uni-c64d16                                    2,134,999/s  eta 0m
+[N3 18/18] valkey    c1 t1 ping-v100-k1000000-uni-c64d16                                    1,950,680/s  eta 0m
+results: benchmarks\results\2026-09-27-two-phase\raw.jsonl
+exit=0

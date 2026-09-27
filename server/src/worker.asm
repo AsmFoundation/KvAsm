@@ -15,8 +15,20 @@
 ;
 ; HTTP/2 is KvNode's own engine (h2n.asm, ADR 0007): it reads, parses and
 ; frames responses straight into the connection's output buffer. Output is
-; coalesced: everything one input batch produced leaves in one sendto
-; (measured: ~1 syscall per 16 requests instead of 3 per request).
+; coalesced twice: everything one read produced leaves in one sendto
+; (measured: ~1 syscall per 16 requests instead of 3 per request), and every
+; connection of an epoll batch is flushed together, after the whole batch's
+; input (worker_main's two phases, ADR 0009): a client thread owning several
+; connections is then woken once per batch instead of once per connection —
+; measured on one core: +26% GET/s with 8 connections per client thread,
+; +12% with 4, +4% with 1, and lower p50/p99 in every case.
+;
+; Event-driven, never spinning: a connection is a state machine (h2n.asm's
+; state in Conn, the gRPC streams) resumed by epoll readiness — what C#
+; async/await compiles to, without its heap-allocated continuations or a
+; thread hand-off. With nothing ready the worker sleeps in epoll_wait
+; (measured: 4 workers holding 1,000 idle connections used 10 ms of CPU in
+; 10 s, waking only for the 1 s housekeeping tick).
 ;
 ; QSBR: the worker is an online reader while it processes events, announces a
 ; quiescent state at the top of every loop pass, and goes offline only while
@@ -559,15 +571,36 @@ cstr_append:
 ; worker_main — the event loop (thread entry point).
 ; @param  rdi  Worker*
 ; @returns rax = 0 (thread exit value, unused).
+; @remarks Each pass handles one epoll batch in two phases:
+;            1. input: every ready connection is read and processed; the
+;               answers are framed into its output buffer, nothing is sent;
+;            2. output: every connection still alive is flushed, back to
+;               back (flush_or_close), then the loop sleeps in epoll_wait.
+;          Why (measured, ADR 0009): on one machine the sender's sendto also
+;          runs the receiver's TCP input and wakes the receiver's thread if
+;          it sleeps; under a hypervisor that wakeup is a VM-exiting IPI, and
+;          with one flush per connection it cost ~48% of a loaded core. A
+;          client thread owning several connections got woken once per
+;          connection, because it fell asleep again between our spaced-out
+;          sends. Sending the whole batch's output in one burst lets it wake
+;          once and find the rest already there. Redis does the same (its
+;          replies are written in beforeSleep). Cost: a response waits until
+;          the batch's input is processed (bounded by MAX_EVENTS events of at
+;          most READ_CHUNK bytes each), which is also when it would have
+;          been queued behind the others anyway on a saturated core.
+;          A drain request (the eventfd) is only noted during phase 1 and
+;          started after phase 2: begin_drain may destroy connections, and a
+;          destroyed connection whose event is still ahead in the batch
+;          would be used after being freed.
 ; =============================================================================
 worker_main:
     push    rbx
-    push    rbp
+    push    rbp                         ; ebp: 1 = drain requested this batch
     push    r12
     push    r13
     push    r14
     push    r15
-    sub     rsp, 8
+    sub     rsp, 8                      ; [0] eventfd counter; 6 pushes + 8: aligned
     mov     rbx, rdi
     mov     r12, [rbx + Worker.table]
     mov     r13, [rbx + Worker.id]
@@ -623,10 +656,12 @@ worker_main:
     call    log_epoll_failure
     jmp     .exit
 .dispatch:
+    ; ---- phase 1: input. Read and process every ready connection. ----
+    xor     ebp, ebp                    ; no drain requested yet
     xor     r15d, r15d
 .next_event:
     cmp     r15, r14
-    jae     .after_events
+    jae     .output
     lea     rax, [r15 + r15*2]
     shl     rax, 2                      ; *12
     add     rax, [rbx + Worker.events]
@@ -638,10 +673,19 @@ worker_main:
     je      .ev_doorbell
     mov     rdi, rbx
     call    conn_event
+    test    eax, eax
+    jz      .ev_done
+    ; The connection was destroyed (freed): clear its event so phase 2
+    ; skips it. epoll reports an fd at most once per batch, and processing
+    ; one connection never touches another, so no other entry can dangle.
+    lea     rax, [r15 + r15*2]
+    shl     rax, 2
+    add     rax, [rbx + Worker.events]
+    mov     qword [rax + 4], 0          ; packed struct: unaligned store, fine on x86
     jmp     .ev_done
 .ev_listen:
     mov     rdi, rbx
-    call    accept_all
+    call    accept_all                  ; new connections send their preface at once
     jmp     .ev_done
 .ev_doorbell:
     mov     rdi, [rbx + Worker.event_fd]
@@ -649,13 +693,37 @@ worker_main:
     mov     edx, 8
     xor     eax, eax                    ; SYS_read: consume the counter
     syscall
-    cmp     qword [rbx + Worker.draining], 0
-    jne     .ev_done
-    mov     rdi, rbx
-    call    begin_drain
+    mov     ebp, 1                      ; begin_drain after phase 2 (see @remarks)
 .ev_done:
     inc     r15
     jmp     .next_event
+
+.output:
+    ; ---- phase 2: output. Flush every surviving connection back to back. ----
+    xor     r15d, r15d
+.next_flush:
+    cmp     r15, r14
+    jae     .batch_done
+    lea     rax, [r15 + r15*2]
+    shl     rax, 2
+    add     rax, [rbx + Worker.events]
+    mov     rsi, [rax + 4]              ; Conn*, 0 (destroyed) or a tag
+    cmp     rsi, EVENT_TAG
+    jbe     .flush_done                 ; 0, LISTEN_TAG (1), EVENT_TAG (2)
+    test    qword [rsi + Conn.flags], CONN_LINGER
+    jnz     .flush_done                 ; output already sent; only reading to FIN
+    mov     rdi, rbx
+    call    flush_or_close              ; may linger or destroy this one only
+.flush_done:
+    inc     r15
+    jmp     .next_flush
+.batch_done:
+    test    ebp, ebp
+    jz      .after_events
+    cmp     qword [rbx + Worker.draining], 0
+    jne     .after_events               ; a second doorbell: already draining
+    mov     rdi, rbx
+    call    begin_drain
 
 .after_events:
     mov     rax, [rbx + Worker.now]
@@ -925,16 +993,18 @@ conn_open:
     ret
 
 ; =============================================================================
-; conn_event — handle readiness of one connection. Internal.
+; conn_event — phase 1 for one connection: take its input. Internal.
 ; @param  rdi  Worker*   @param esi  epoll events   @param rdx  Conn*
-; @returns nothing; the connection may be destroyed (freed) on return, so the
-;          caller must not touch the Conn afterwards.
+; @returns eax = 0 (still open: worker_main flushes it in phase 2), or 1 (it
+;          was destroyed and freed here: the caller must forget the pointer).
 ; @remarks Reads at most one chunk per event (level-triggered epoll re-reports
 ;          remaining data), which keeps one busy connection from starving the
-;          others on the same worker. A readable connection is fully served in
-;          this call: kv_h2n_read parses the chunk and frames the answers into
-;          out_buf, and conn_flush sends them, so a request batch costs one
-;          read and (usually) one sendto.
+;          others on the same worker. kv_h2n_read parses the chunk and frames
+;          the answers into out_buf; nothing is sent here — worker_main sends
+;          every connection's output together once the batch's input is done
+;          (see its @remarks for why), so a request batch still costs one
+;          read and (usually) one sendto. An EPOLLOUT-only event needs no
+;          input work: phase 2's flush is all it needs.
 ; =============================================================================
 conn_event:
     push    rbx
@@ -949,27 +1019,19 @@ conn_event:
     jnz     .readable
     test    r12d, EPOLLERR | EPOLLHUP
     jnz     .destroy
-    jmp     .flush
+    jmp     .alive                      ; writable: phase 2 flushes it
 .readable:
     ; kv_h2n_read does the read itself (after a partial frame carried from
     ; the previous one), updates Conn.last_active, parses, runs the GET
     ; batch the frames queued and tops up the flow-control windows.
-    ; EAGAIN/EINTR come back as 0, so they fall through to the flush.
+    ; EAGAIN/EINTR come back as 0: nothing new, the connection lives on.
     mov     rdi, rbx
     mov     rsi, rbp
     call    kv_h2n_read wrt ..plt
     test    rax, rax
     js      .destroy                    ; peer closed, socket error, out of memory
-.flush:
-    mov     rdi, rbx
-    mov     rsi, rbp
-    call    conn_flush
-    test    rax, rax
-    js      .destroy
-    jz      .out
-    mov     rdi, rbx                    ; session finished gracefully
-    mov     rsi, rbp
-    call    conn_linger
+.alive:
+    xor     eax, eax
     jmp     .out
 .linger:
     ; Discard whatever the peer still sends until its FIN arrives.
@@ -979,13 +1041,14 @@ conn_event:
     xor     eax, eax
     syscall
     test    rax, rax
-    jg      .out                        ; more may follow; wait for next event
+    jg      .alive                      ; more may follow; wait for next event
     cmp     rax, -EAGAIN
-    je      .out
+    je      .alive
 .destroy:
     mov     rdi, rbx
     mov     rsi, rbp
     call    conn_destroy
+    mov     eax, 1                      ; freed: the caller must not flush it
 .out:
     pop     r12
     pop     rbp
@@ -1259,6 +1322,13 @@ housekeeping:
 ; =============================================================================
 ; flush_or_close — flush a connection and apply the result. Internal.
 ; @param  rdi  Worker*   @param rsi  Conn*
+; @returns nothing. The Conn may be lingering (session finished: FIN sent,
+;          reading to the peer's FIN) or destroyed and freed (send error) on
+;          return, so a caller walking a list must have saved Conn.next.
+; @remarks The one place output is sent from the event loop: worker_main's
+;          phase 2 calls it for every connection of the batch, and
+;          housekeeping (idle GOAWAY) and begin_drain (drain GOAWAY) for the
+;          connections they queued a frame on.
 ; =============================================================================
 flush_or_close:
     push    rbx

@@ -1,0 +1,13 @@
+idle 10 s, 4 workers, 1000 open connections: CPU 10 ms (0.080% of one core); context switches voluntary 40, involuntary 0
+strace -c -f over 5 s of silence:
+strace: Process 16911 attached with 5 threads
+strace: Process 16913 detached
+strace: Process 16914 detached
+strace: Process 16915 detached
+strace: Process 16912 detached
+strace: Process 16911 detached
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+  0.00    0.000000           0        36           epoll_wait
+------ ----------- ----------- --------- --------- ----------------
+100.00    0.000000           0        36           total

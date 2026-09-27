@@ -1,0 +1,38 @@
+block 1 blocking:100:8:64    A  1,928,942/s p50    481 p99   1106  431 ns  28.6 wk | B  2,422,617/s p50    362 p99    897  343 ns  19.5 wk | B/A 1.256 (slot0=A, load 2s, total 18s)
+block 1 blocking:100:64:64   A    693,296/s p50    676 p99  20840  788 ns  62.5 wk | B  1,438,949/s p50    659 p99   1434  760 ns  62.5 wk | B/A 2.076 (slot0=A, load 3s, total 16s)
+block 1 busy:100:6:64        A  2,435,098/s p50    281 p99    782  242 ns   0.0 wk | B  3,545,826/s p50    243 p99    586  237 ns   0.0 wk | B/A 1.456 (slot0=A, load 3s, total 18s)
+block 2 blocking:100:8:64    A  1,945,553/s p50    473 p99   1122  563 ns  36.7 wk | B  2,437,336/s p50    362 p99    930  449 ns  24.3 wk | B/A 1.253 (slot0=B, load 2s, total 15s)
+block 2 blocking:100:64:64   A  1,371,199/s p50    692 p99   1466  608 ns  48.6 wk | B  1,408,887/s p50    676 p99   1417  591 ns  48.6 wk | B/A 1.027 (slot0=B, load 2s, total 18s)
+block 2 busy:100:6:64        A  3,595,243/s p50    268 p99    602  308 ns   0.0 wk | B  3,572,854/s p50    243 p99    586  310 ns   0.0 wk | B/A 0.994 (slot0=B, load 2s, total 15s)
+block 3 blocking:100:8:64    A  1,882,592/s p50    489 p99   1122  441 ns  28.8 wk | B  2,404,292/s p50    362 p99    897  344 ns  19.0 wk | B/A 1.277 (slot0=A, load 2s, total 18s)
+block 3 blocking:100:64:64   A  1,353,883/s p50    692 p99   1548  810 ns  62.5 wk | B  1,399,854/s p50    668 p99   1548  783 ns  62.5 wk | B/A 1.034 (slot0=A, load 2s, total 15s)
+block 3 busy:100:6:64        A  3,374,971/s p50    285 p99    635  248 ns   0.0 wk | B  3,509,088/s p50    245 p99    602  238 ns   0.0 wk | B/A 1.040 (slot0=A, load 2s, total 18s)
+block 4 blocking:100:8:64    A  1,894,116/s p50    494 p99   1106  576 ns  38.7 wk | B  2,410,390/s p50    362 p99    881  453 ns  25.3 wk | B/A 1.273 (slot0=B, load 2s, total 15s)
+block 4 blocking:100:64:64   A  1,390,311/s p50    684 p99   1450  606 ns  48.8 wk | B  1,412,905/s p50    668 p99   1417  598 ns  48.8 wk | B/A 1.016 (slot0=B, load 2s, total 18s)
+block 4 busy:100:6:64        A  3,459,903/s p50    276 p99    618  317 ns   0.0 wk | B  3,469,320/s p50    251 p99    594  316 ns   0.0 wk | B/A 1.003 (slot0=B, load 2s, total 15s)
+block 5 blocking:100:8:64    A  1,860,435/s p50    502 p99   1106  448 ns  30.2 wk | B  2,375,130/s p50    367 p99    897  351 ns  20.0 wk | B/A 1.277 (slot0=A, load 2s, total 18s)
+block 5 blocking:100:64:64   A  1,407,756/s p50    668 p99   1434  782 ns  62.6 wk | B  1,458,429/s p50    651 p99   1368  754 ns  62.7 wk | B/A 1.036 (slot0=A, load 2s, total 15s)
+block 5 busy:100:6:64        A  3,299,719/s p50    285 p99    668  253 ns   0.0 wk | B  3,479,585/s p50    251 p99    586  240 ns   0.0 wk | B/A 1.055 (slot0=A, load 2s, total 18s)
+block 6 blocking:100:8:64    A  1,933,262/s p50    481 p99   1090  563 ns  38.2 wk | B  2,407,967/s p50    367 p99    881  452 ns  25.8 wk | B/A 1.246 (slot0=B, load 2s, total 15s)
+block 6 blocking:100:64:64   A  1,403,310/s p50    676 p99   1434  599 ns  48.6 wk | B  1,428,497/s p50    668 p99   1401  589 ns  48.6 wk | B/A 1.018 (slot0=B, load 2s, total 18s)
+block 6 busy:100:6:64        A  3,436,074/s p50    276 p99    618  322 ns   0.0 wk | B  3,555,480/s p50    243 p99    586  311 ns   0.0 wk | B/A 1.035 (slot0=B, load 2s, total 15s)
+
+== blocking:100:8:64
+   ops/s                      A  1,911,529.0  B  2,409,178.5  B/A geomean 1.263 [1.246-1.277]  B better in 6/6, sign p=0.031
+   p50 us                     A        485.4  B        362.5  B/A geomean 0.748 [0.731-0.766]  B better in 6/6, sign p=0.031
+   p99 us                     A      1,105.9  B        897.0  B/A geomean 0.809 [0.796-0.828]  B better in 6/6, sign p=0.031
+   server CPU ns/req          A        505.3  B        400.1  B/A geomean 0.791 [0.781-0.803]  B better in 6/6, sign p=0.031
+   client wakeups per 1k req  A         33.4  B         22.2  B/A geomean 0.666 [0.653-0.682]  B better in 6/6, sign p=0.031
+== blocking:100:64:64
+   ops/s                      A  1,380,755.0  B  1,420,701.0  B/A geomean 1.154 [1.016-2.076]  B better in 6/6, sign p=0.031
+   p50 us                     A        679.9  B        667.6  B/A geomean 0.976 [0.965-0.988]  B better in 6/6, sign p=0.031
+   p99 us                     A      1,458.2  B      1,417.2  B/A geomean 0.627 [0.069-1.000]  B better in 5/6, sign p=0.219
+   server CPU ns/req          A        694.6  B        675.8  B/A geomean 0.973 [0.964-0.985]  B better in 6/6, sign p=0.031
+   client wakeups per 1k req  A         55.6  B         55.6  B/A geomean 1.000 [0.998-1.001]  B better in 2/6, sign p=0.688
+== busy:100:6:64
+   ops/s                      A  3,405,522.5  B  3,527,457.0  B/A geomean 1.087 [0.994-1.456]  B better in 5/6, sign p=0.219
+   p50 us                     A        278.5  B        243.7  B/A geomean 0.882 [0.860-0.907]  B better in 6/6, sign p=0.031
+   p99 us                     A        626.7  B        585.7  B/A geomean 0.905 [0.749-0.973]  B better in 6/6, sign p=0.031
+   server CPU ns/req          A        280.4  B        275.0  B/A geomean 0.977 [0.948-1.007]  B better in 5/6, sign p=0.219
+   client wakeups per 1k req  A          0.0  B          0.0  B/A geomean 0.920 [0.687-1.006]  B better in 5/6, sign p=0.219
+exit=0

@@ -83,6 +83,11 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - Next levers: the co-located wakeup (a topology artifact; for same-host
     deployments see §6 busy polling), store address translation (a
     huge-page record slab, §1), SipHash (§8, §4).
+- **After flushing once per batch** (ADR 0009, concurrent A/B, idle VM):
+  2.24M GET/s on one core with 8 connections per blocking client thread,
+  493 ns of server CPU per GET (610 before). The remaining gap to the
+  busy-polling client (~280 ns/GET) is the unavoidable wakeup per sleeping
+  client thread per burst.
 
 ## 1. Memory: hide latency, fit the hierarchy
 
@@ -316,6 +321,30 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *What:* one `send` per connection per loop pass (coalesced frames), big
     `recv` chunks.
   - *KvNode:* ✅ output coalescing; 64 KiB reads.
+- **Flush once per event-loop pass, after all of its input** (Redis's
+  `beforeSleep` writes)
+  - *What:* phase 1 reads and processes every ready connection and frames
+    the answers into buffers; phase 2 sends all of them back to back.
+  - *Why:* whoever sends wakes the receiver if it sleeps. On one machine
+    that wakeup runs on the sender's CPU (a VM-exiting IPI under a
+    hypervisor). A client thread with several connections, served one
+    connection at a time, falls asleep between spaced-out sends and is
+    woken once per connection. Sent in one burst, it wakes once.
+  - *Catch:* a response waits for its batch's input to be processed
+    (bounded by the epoll batch size). Destroyed connections must be
+    dropped from the batch before phase 2, and anything that can destroy
+    *other* connections (a drain) must wait until after phase 2.
+  - *KvNode:* ✅ `worker_main` (ADR 0009). Concurrent paired A/B, idle
+    VM, 6/6 blocks each. **The gain scales with the connections a client
+    thread owns:**
+    - 8 per thread: **+25.7% GET/s** [1.217–1.338]; p50 −20%, p99 −21%;
+      server CPU/request −20%; client wakeups/request −36%;
+    - 4 per thread (the harness's kvbench): +11.8%;
+    - 1 per thread: +4.1%, wakeups identical;
+    - busy-polling clients: +2.6%, p99 −14%.
+    
+    A first run (possibly overlapping another session's benchmarks) gave
+    the same 8-per-thread result: +26.3%.
 - **Gather instead of copy**
   - *What:* `writev`/`sendmsg` over the library's frame buffers instead of
     `memcpy` into one buffer.
@@ -338,9 +367,15 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     (`__wake_up_common_lock` ← `sock_def_readable`, call graph verified),
     ~280 of 582 ns per GET. A busy-polling client (`kvbench --busy-poll`)
     removes it: 1.72M → **2.62M GET/s on one core**.
-  - *KvNode:* 🔜 server-side busy-poll as an opt-in for latency SLOs. It
-    would remove the server's own wakeups, which the clients pay on their
-    CPUs here.
+  - *KvNode:* ✅ partly removed at the source. Flushing once per batch
+    (§6 above, ADR 0009) cut client wakeups by up to a third: +12–26% GET/s
+    by client shape. What remains (~22 wakeups per 1k requests with 8
+    connections per thread, 125–210 ns/request against a busy-polling
+    client) is one wakeup per sleeping client thread per burst. That is
+    inherent to co-located sleeping clients; remote clients never cost the
+    server this.
+  - 🔜 server-side busy-poll as an opt-in for latency SLOs. It would remove
+    the server's own wakeups, which the clients pay on their CPUs here.
 - **Timekeeping and CPU id:** vDSO `clock_gettime`, coarse clocks, `rdpid`
   for the CPU id. Never a syscall per request. *KvNode:* ✅ once per loop
   pass.

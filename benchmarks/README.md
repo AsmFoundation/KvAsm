@@ -5,6 +5,33 @@ Valkey, Dragonfly, Garnet and Memcached), using one client, one placement
 and one statistical method for all of them. The rules, and the reasons
 behind each, are in [METHODOLOGY.md](METHODOLOGY.md).
 
+## The two-phase event loop: fewer client wakeups (2026-09-27)
+
+The profile below found half of a loaded core waking the co-located
+client. [ADR 0009](../docs/adr/0009-flush-once-per-event-batch.md) cut
+that at the source. A worker now reads and processes a whole epoll batch
+first, then flushes every connection back to back. A client thread owning
+several connections wakes once per batch instead of once per connection.
+Evidence: [README](results/2026-09-27-two-phase/README.md).
+
+- **Concurrent paired A/B, 6/6 blocks each.** The GET/s gain scales with
+  the connections per client thread:
+  - 8 per thread: **+25.7%**;
+  - 4 per thread (this harness's kvbench): **+11.8%**;
+  - 1 per thread: +4.1%, with wakeups unchanged as predicted.
+  
+  p50 and p99 dropped in every configuration. With 8 per thread, client
+  wakeups per request fell 36% and server CPU per request 20%.
+- **Profiled before and after:** the wakeup path went from ~233 to ~184
+  ns per GET, and server time per GET from 506 to 427 ns (1.98M → 2.34M
+  GET/s on one core). What remains is one wakeup per sleeping client
+  thread per burst, which only co-located, sleeping clients cause.
+- **Still event-driven, still no spinning:** 4 workers holding 1,000 idle
+  connections used 10 ms of CPU in 10 s, making only `epoll_wait` calls.
+- **N1/N3 re-run** (noisy host): N1 1.65M GET/s vs Redis 1.26M (1.32×)
+  and Valkey 1.34M (1.23×), 5/6 blocks; p50 0.75× both, 6/6. N3 ties
+  Redis's `PING` (0.96×).
+
 ## One core, profiled: where the time and the memory go (2026-09-26)
 
 Since [ADR 0008](../docs/adr/0008-remove-nghttp2-from-the-server.md)

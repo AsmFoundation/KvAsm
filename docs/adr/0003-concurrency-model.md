@@ -3,7 +3,11 @@
 - **Status:** accepted. The "nghttp2 session" below became the native
   engine's per-connection state (`h2n.asm`, embedded in `Conn`; ADR 0007,
   ADR 0008). It has the same single-thread ownership, so nothing else
-  changes.
+  changes. Amended by [ADR 0009](0009-flush-once-per-event-batch.md):
+  output is now flushed once per epoll batch, after all of the batch's
+  input, rather than per connection. That cuts co-located clients'
+  wakeups: +4% to +26% GET/s on one core, depending on how many
+  connections each client thread owns.
 - **Date:** 2026-09-26
 
 ## Context
