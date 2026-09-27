@@ -49,7 +49,6 @@ bits 64
 ; block exactly (a GetRequest is 23 bytes; a Put of a 100-byte value ~130).
 %define MIN_REQ_CAP             240
 
-extern kv_pool_malloc
 extern kv_pool_free
 extern kv_pool_realloc
 extern memcpy
@@ -64,7 +63,6 @@ extern kv_hcache_get
 extern kv_pb_decode_kv
 extern kv_pb_write_varint
 extern kv_h2n_reply_parts
-extern kv_h2n_reply_buf
 extern kv_h2n_reply_static
 extern kv_h2n_reply_headers
 
@@ -129,7 +127,6 @@ CSTR s_m_value,     "value too large"
 CSTR s_m_toolarge,  "request message too large"
 CSTR s_m_full,      "store is at capacity"
 CSTR s_m_memory,    "store memory limit reached"
-CSTR s_m_oom,       "server out of memory"
 CSTR s_m_noservice, "unknown service"
 
 CSTR v_post,        "POST"
@@ -172,7 +169,6 @@ TRAILERS_ONLY nv_e_value,     s_c3,  s_m_value
 TRAILERS_ONLY nv_e_toolarge,  s_c8,  s_m_toolarge
 TRAILERS_ONLY nv_e_full,      s_c8,  s_m_full
 TRAILERS_ONLY nv_e_memory,    s_c8,  s_m_memory
-TRAILERS_ONLY nv_e_oom,       s_c13, s_m_oom
 TRAILERS_ONLY nv_e_noservice, s_c5,  s_m_noservice
 
 section .text
@@ -225,7 +221,11 @@ kv_grpc_free_streams:
 ; @returns nothing.
 ; @remarks Buffers the Stream does not own are left alone: a borrowed request
 ;          body (ST_BORROWED, h2n's zero-copy path) and a static response
-;          body (ST_STATIC_RESP, .rodata).
+;          body (ST_STATIC_RESP, .rodata). Absent buffers are skipped here
+;          rather than handed to kv_pool_free (which would ignore NULL):
+;          on the fast paths — a unary call whose body arrived in one frame,
+;          answered straight into the output buffer — neither buffer exists,
+;          so this is two calls saved on every request.
 ; =============================================================================
 stream_free:
     push    rbx
@@ -238,12 +238,16 @@ stream_free:
     test    qword [rbx + Stream.flags], ST_BORROWED
     jnz     .borrowed                   ; points into the read buffer: not ours
     mov     rdi, [rbx + Stream.req_buf]
+    test    rdi, rdi
+    jz      .borrowed                   ; no body buffer was ever allocated
     mov     rsi, r12
     call    kv_pool_free
 .borrowed:
     test    qword [rbx + Stream.flags], ST_STATIC_RESP
     jnz     .static_resp                ; .rodata text: freeing it would crash
     mov     rdi, [rbx + Stream.resp_buf]
+    test    rdi, rdi
+    jz      .static_resp                ; answered without a response buffer
     mov     rsi, r12
     call    kv_pool_free
 .static_resp:
@@ -576,33 +580,32 @@ kv_grpc_dispatch:
     ; rdi = value of field 1 as a one-byte varint (0..127): 0 => the empty
     ; message (proto3 default: false / not found / UNKNOWN), else 08 <value>.
     ; Serves bool replies (found/created/deleted) and the health status enum.
+    ; The whole message (5 or 7 bytes) is built on the stack, in the PbKv
+    ; area, which is dead by now (the store call consumed the key and value,
+    ; the health check its service name), and framed by kv_h2n_reply_parts
+    ; exactly like a GET miss: no response buffer, so no pool allocation now
+    ; and no free when the stream closes. h2n copies the bytes (into the
+    ; DATA frame, or into its own buffer when the windows are short), so the
+    ; stack copy only needs to live for the call.
 .bool_reply:
-    mov     r13, rdi
-    mov     edi, GRPC_PREFIX + 2
-    mov     rax, [r12 + Conn.worker]
-    lea     rsi, [rax + Worker.pool]
-    call    kv_pool_malloc
-    test    rax, rax
-    jz      .e_oom
-    mov     [rbx + Stream.resp_buf], rax
-    xor     esi, esi
+    mov     r13, rdi                    ; (Config* is not needed any more)
+    xor     esi, esi                    ; protobuf payload length
     test    r13, r13
-    jz      .bool_len
+    jz      .bool_head
+    mov     byte [rsp + GRPC_PREFIX], 0x08      ; field 1, wire type varint
+    mov     [rsp + GRPC_PREFIX + 1], r13b       ; < 128: a single varint byte
     mov     esi, 2
-    mov     byte [rax + GRPC_PREFIX], 0x08      ; field 1, wire type varint
-    mov     [rax + GRPC_PREFIX + 1], r13b       ; < 128: a single varint byte
-.bool_len:
-    lea     rcx, [rsi + GRPC_PREFIX]
-    mov     [rbx + Stream.resp_len], rcx
-    mov     rdi, rax
-    call    write_prefix
-
-    ; resp_buf / resp_len hold the message: h2n frames HEADERS + DATA +
-    ; trailers (all at once when the windows allow, else from its pend list)
-    ; and frees the buffer with the stream.
+.bool_head:
+    lea     r13, [rsi + GRPC_PREFIX]    ; whole message length
+    mov     rdi, rsp
+    call    write_prefix                ; bytes 0..4; the payload is behind them
     mov     rdi, r12
     mov     rsi, rbx
-    call    kv_h2n_reply_buf wrt ..plt
+    mov     rdx, rsp
+    mov     rcx, r13
+    xor     r8d, r8d                    ; no body: the head is the message
+    xor     r9d, r9d
+    call    kv_h2n_reply_parts wrt ..plt
     jmp     .submitted
 
 .http_405:
@@ -663,9 +666,6 @@ kv_grpc_dispatch:
     jmp     .trailers_only
 .e_noservice:
     lea     rdx, [nv_e_noservice]
-    jmp     .trailers_only
-.e_oom:
-    lea     rdx, [nv_e_oom]
 .trailers_only:
     mov     ecx, 4                      ; :status, content-type, grpc-status, grpc-message
 .trailers_n:

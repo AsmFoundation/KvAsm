@@ -37,7 +37,14 @@ tests pin every rule below.
 | `NOT_FOUND` (5) | health check for an unknown service |
 | `RESOURCE_EXHAUSTED` (8) | store at `KVNODE_CAPACITY` keys or at `KVNODE_MAX_MEMORY_MB`; request message larger than key + value limits allow |
 | `UNIMPLEMENTED` (12) | unknown method or service; unsupported compression codec |
-| `INTERNAL` (13) | framing violations (no message, two messages, bad length prefix, compressed flag without codec); server out of memory |
+| `INTERNAL` (13) | framing violations (no message, two messages, bad length prefix, compressed flag without codec) |
+
+**Out of memory while answering.** Replies are framed straight into the
+connection's output buffer. If the server cannot grow it, or cannot buffer
+a reply that must wait for flow-control window, it closes the connection,
+and the client sees `UNAVAILABLE`. The call itself may already have been
+applied: a Put or Delete completes in the store before its reply is
+framed.
 
 **Retries.** Get and health checks are safe to retry on `UNAVAILABLE`. A
 retried Put or Delete is *applied* correctly, but its flag can be wrong. For

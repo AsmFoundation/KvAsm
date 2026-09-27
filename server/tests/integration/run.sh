@@ -99,6 +99,19 @@ stop_server() {
   grep -q 'msg="stopped"' "$LOG" || fail "no 'stopped' log line"
 }
 
+# await_ready FILE LINE PID — wait until the client PID has written LINE into
+# FILE (its "ready" handshake: the server answered a PING sent after the
+# client's connection and streams were set up). Fails, showing the client's
+# output and the server log, if the client exits first or 20 s pass.
+await_ready() {
+  local deadline=$((SECONDS + 20))
+  while ! grep -qF -- "$2" "$1" 2> /dev/null; do
+    alive "$3" || { cat "$1" >&2; fail "client exited before it was ready: $2"; }
+    ((SECONDS < deadline)) || { cat "$1" >&2; fail "client not ready after 20 s: $2"; }
+    sleep 0.02
+  done
+}
+
 # refuse NAME EXPECTED_STATUS LOG_PATTERN [VAR=VALUE...] — run kvnode in the
 # foreground; it must exit by itself with EXPECTED_STATUS and log the pattern.
 # Uses its own log file: LOG keeps pointing at a server that may still be
@@ -118,14 +131,20 @@ start_server main KVNODE_WORKERS=4 KVNODE_CAPACITY=200000 \
 "$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" || fail "itest_grpc suite"
 
 echo "itest: phase 2 — graceful shutdown: idle client + in-flight request"
-"$ITEST" --wait-goaway 127.0.0.1 "$PORT" 20 &
+# Both clients print "ready" once the server has answered a PING sent after
+# their connection (and, for the drain check, its stream) was set up; only
+# then is SIGTERM sent. A fixed sleep here lost the race on a busy host: the
+# stream arrived after the GOAWAY and was never accepted.
+"$ITEST" --wait-goaway 127.0.0.1 "$PORT" 20 > "$WORK/hold.out" &
 HOLD=$!
-"$ITEST" --drain-check 127.0.0.1 "$PORT" 20 &
+"$ITEST" --drain-check 127.0.0.1 "$PORT" 20 > "$WORK/drain.out" &
 DRAIN=$!
-sleep 0.3                                  # let both connect and open their streams
+await_ready "$WORK/hold.out" "wait-goaway: ready" "$HOLD"
+await_ready "$WORK/drain.out" "drain-check: ready" "$DRAIN"
 stop_server
-wait "$HOLD" || fail "idle client did not get GOAWAY(NO_ERROR) and a clean close"
-wait "$DRAIN" || fail "in-flight request was not completed (NOT_SERVING) during drain"
+wait "$HOLD" || { cat "$WORK/hold.out" >&2; fail "idle client did not get GOAWAY(NO_ERROR) and a clean close"; }
+wait "$DRAIN" || { cat "$WORK/drain.out" >&2; fail "in-flight request was not completed (NOT_SERVING) during drain"; }
+cat "$WORK/hold.out" "$WORK/drain.out"
 
 echo "itest: phase 2b — the same suite through private L1/L2 caches and SWAR scans"
 # Tiny caches (L1 256, L2 4096 entries) so entries conflict and are reused

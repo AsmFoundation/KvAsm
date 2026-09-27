@@ -201,6 +201,7 @@ typedef struct {
   int goaway;               /**< a GOAWAY frame was received */
   uint32_t goaway_error;
   int32_t goaway_last_stream;
+  int ping_acks;            /**< PING ACKs received (readiness handshake) */
 } Client;
 
 /**
@@ -301,7 +302,8 @@ static int on_close(nghttp2_session *s, int32_t stream_id, uint32_t error_code, 
 }
 
 /**
- * nghttp2 on_frame_recv callback: records GOAWAY for the shutdown tests.
+ * nghttp2 on_frame_recv callback: records GOAWAY for the shutdown tests and
+ * counts PING ACKs for the readiness handshake (await_ping_ack).
  * @returns 0
  */
 static int on_frame(nghttp2_session *s, const nghttp2_frame *frame, void *ud) {
@@ -311,6 +313,8 @@ static int on_frame(nghttp2_session *s, const nghttp2_frame *frame, void *ud) {
     cl->goaway = 1;
     cl->goaway_error = frame->goaway.error_code;
     cl->goaway_last_stream = frame->goaway.last_stream_id;
+  } else if (frame->hd.type == NGHTTP2_PING && (frame->hd.flags & NGHTTP2_FLAG_ACK)) {
+    cl->ping_acks++;
   }
   return 0;
 }
@@ -1299,15 +1303,53 @@ static void test_concurrency(Client *cl, int duration_ms) {
 /* ========================================================================= */
 
 /**
+ * Readiness handshake: sends a PING and pumps until its ACK arrives.
+ * @param cl    an open client whose frames so far (preface, SETTINGS, any
+ *              submitted HEADERS) are queued ahead of the PING
+ * @param secs  give up after this many seconds
+ * @returns 0 once the ACK arrived, -1 on timeout, EOF or a session error
+ * @remarks The server processes one connection's frames in order, so its ACK
+ *          proves every frame sent before the PING was parsed — for
+ *          --drain-check, that the Health/Check stream is open and counted
+ *          in the server's last stream id. run.sh waits for the "ready" line
+ *          printed after this instead of sleeping and hoping the client got
+ *          there first (a fixed 0.3 s sleep lost that race on a host with 30
+ *          of 32 CPUs busy).
+ */
+static int await_ping_ack(Client *cl, int secs) {
+  uint64_t deadline = now_ns() + (uint64_t)secs * 1000000000ull;
+  /* Put everything already queued on the wire FIRST. nghttp2 serializes
+   * PING from its urgent queue ahead of queued HEADERS and DATA, so a PING
+   * submitted while the drain check's HEADERS still waited would be sent —
+   * and ACKed — before the stream even existed. (Deferred DATA does not
+   * count as wanting to write, so this terminates with the body stalled.) */
+  while ((nghttp2_session_want_write(cl->session) || cl->out_off < cl->out_len) && !cl->eof) {
+    if (pump(cl, 0) < 0 || now_ns() >= deadline) return -1;
+  }
+  int before = cl->ping_acks;
+  if (nghttp2_submit_ping(cl->session, NGHTTP2_FLAG_NONE, NULL) != 0) return -1;
+  while (cl->ping_acks == before && !cl->eof && now_ns() < deadline)
+    if (pump(cl, 50) < 0) return -1;
+  return cl->ping_acks > before ? 0 : -1;
+}
+
+/**
  * --wait-goaway: holds an idle connection until the server sends GOAWAY and
  * then closes the connection.
  * @param secs  give up after this many seconds
  * @returns process exit code: 0 on GOAWAY(NO_ERROR) followed by EOF, 1 on
  *          anything else, 2 if the connection could not be made
+ * @remarks Prints "wait-goaway: ready" (flushed) once the server has
+ *          answered a PING on this connection, i.e. once the connection is
+ *          accepted and served — the point after which run.sh may stop the
+ *          server.
  */
 static int wait_goaway(int secs) {
   Client cl;
   if (client_open(&cl, g_host, g_port, 65535) != 0) return 2;
+  if (await_ping_ack(&cl, secs) != 0) return 2;
+  printf("wait-goaway: ready\n");
+  fflush(stdout);
   uint64_t deadline = now_ns() + (uint64_t)secs * 1000000000ull;
   while (!cl.eof && now_ns() < deadline)
     if (pump(&cl, 100) < 0) break;
@@ -1328,6 +1370,10 @@ static int wait_goaway(int secs) {
  * @param secs  overall time limit
  * @returns exit code: 0 on the behavior above, 1 otherwise, 2 if the
  *          connection or submission failed
+ * @remarks Prints "drain-check: ready" (flushed) once a PING sent after the
+ *          stream's HEADERS has been answered: from then on the server has
+ *          accepted the stream, so run.sh's SIGTERM tests draining an
+ *          in-flight call rather than racing the client's connect.
  */
 static int drain_check(int secs) {
   Client cl;
@@ -1336,6 +1382,9 @@ static int drain_check(int secs) {
   static Call c;
   c.defer_at = 1;                        /* HEADERS + 1 body byte, then stall */
   if (call_submit(&cl, &c, "POST", PATH_HEALTH, GRPC_CT, NULL, m.p, m.len) != 0) return 2;
+  if (await_ping_ack(&cl, secs) != 0) return 2;   /* the stream is accepted now */
+  printf("drain-check: ready\n");
+  fflush(stdout);
   uint64_t deadline = now_ns() + (uint64_t)secs * 1000000000ull;
   while (!cl.goaway && !cl.eof && now_ns() < deadline)
     if (pump(&cl, 50) < 0) break;

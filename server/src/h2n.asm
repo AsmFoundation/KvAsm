@@ -2043,6 +2043,10 @@ stream_open:
     push    r13                         ; 3 pushes: aligned for calls
     mov     rbx, rdi
     mov     r12d, esi
+    ; kv_pool_calloc's memset stays: an inline 16-byte zeroing loop was
+    ; measured (callgrind, 2026-09-27) to save nothing — a GET cost 1,424
+    ; instructions with it (and stream_free's NULL skips) against 1,428
+    ; without either. glibc's AVX2 memset is already cheap for 184 bytes.
     mov     edi, 1
     mov     esi, Stream_size
     mov     rdx, [rbx + Conn.worker]
@@ -2362,8 +2366,13 @@ kv_h2n_reply_parts:
 ; @param  rdi  Conn*   @param rsi  Stream* (resp_buf / resp_len set; the
 ;              buffer is freed with the stream)
 ; @returns eax = 0, or -1 when out of memory.
-; @remarks Used by dispatch for Put / Delete / Health replies; same fast and
-;          slow paths as kv_h2n_reply_parts, without a second copy.
+; @remarks Same fast and slow paths as kv_h2n_reply_parts, without a second
+;          copy: for a message that already lives in a pool buffer the
+;          stream owns. No caller today — Put / Delete / Health replies are
+;          5-7 bytes, built on the stack and sent through kv_h2n_reply_parts,
+;          which needs no buffer at all when the windows allow (grpc.asm
+;          .bool_reply). Kept as the entry point for a large, pre-built
+;          message.
 ; =============================================================================
 kv_h2n_reply_buf:
     push    rbx

@@ -85,6 +85,22 @@ continuations or thread hand-offs), and an idle worker sleeps in
 `epoll_wait`. Measured: 4 workers holding 1,000 idle connections used 10 ms
 of CPU in 10 s.
 
+**Why an event-driven server still shows wakeup costs:**
+
+- **A sleeping thread cannot "enter the action" by itself.** When its
+  event arrives, the kernel must make it runnable and, if its CPU is idle,
+  interrupt that CPU. That is the price of sleeping instead of spinning.
+- **Under load a KvNode worker never sleeps** (0.00 wakeups per 1,000
+  requests, measured). Each `epoll_wait` returns the next batch at once.
+- **The wakeups in a loopback profile are the client's.** Its threads
+  sleep between responses. With no network card in between, our `sendto`
+  runs the client socket's receive path on our CPU, and ends by waking the
+  client thread.
+- **Remote clients** are woken by their own NIC on their own machine,
+  where this cost never reaches the server.
+
+The measurements are in `benchmarks/results/2026-09-27-second-pass`.
+
 Allocation on this path goes through the worker's own pool (`pool.asm`):
 streams, stream maps, HPACK rings and entries, and every request buffer. A
 connection never leaves its worker thread, so the pool needs no locks.

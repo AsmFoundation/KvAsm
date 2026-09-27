@@ -1,0 +1,52 @@
+== B get
+instructions 807,395,353  requests (get_execute calls) 565,264  Ir/request 1,428
+  kv_pool_malloc                    1.000 calls/request
+  kv_pool_free                      2.000 calls/request
+  kv_pool_calloc                    1.000 calls/request
+  __memset_avx2_unaligned_erms      1.000 calls/request
+  kv_h2n_reply_parts                1.000 calls/request
+  stream_open                       1.000 calls/request
+  get_execute                       1.000 calls/request
+== F get
+instructions 833,134,353  requests (get_execute calls) 584,480  Ir/request 1,425
+  kv_pool_malloc                    1.000 calls/request
+  kv_pool_free                      1.000 calls/request
+  kv_pool_calloc                    1.000 calls/request
+  __memset_avx2_unaligned_erms      1.000 calls/request
+  kv_h2n_reply_parts                1.000 calls/request
+  stream_open                       1.000 calls/request
+  get_execute                       1.000 calls/request
+== B set
+instructions 766,324,264  requests (kv_store_put calls) 422,832  Ir/request 1,812
+  kv_pool_malloc                    2.000 calls/request
+  kv_pool_free                      2.000 calls/request
+  kv_pool_calloc                    1.000 calls/request
+  __memset_avx2_unaligned_erms      1.000 calls/request
+  kv_h2n_reply_buf                  1.000 calls/request
+  stream_open                       1.000 calls/request
+  kv_store_put                      1.000 calls/request
+== F set
+instructions 795,893,863  requests (kv_store_put calls) 444,768  Ir/request 1,789
+  kv_pool_malloc                    1.000 calls/request
+  kv_pool_free                      1.000 calls/request
+  kv_pool_calloc                    1.000 calls/request
+  __memset_avx2_unaligned_erms      1.000 calls/request
+  kv_h2n_reply_parts                1.000 calls/request
+  stream_open                       1.000 calls/request
+  kv_store_put                      1.000 calls/request
+== B ping
+instructions 707,656,488  requests (kv_h2n_reply_buf calls) 816,544  Ir/request 867
+  kv_pool_malloc                    2.000 calls/request
+  kv_pool_free                      2.000 calls/request
+  kv_pool_calloc                    1.000 calls/request
+  __memset_avx2_unaligned_erms      1.000 calls/request
+  kv_h2n_reply_buf                  1.000 calls/request
+  stream_open                       1.000 calls/request
+== F ping
+instructions 1,538,175,138  requests (kv_h2n_reply_parts calls) 1,819,216  Ir/request 846
+  kv_pool_malloc                    1.000 calls/request
+  kv_pool_free                      1.000 calls/request
+  kv_pool_calloc                    1.000 calls/request
+  __memset_avx2_unaligned_erms      1.000 calls/request
+  kv_h2n_reply_parts                1.000 calls/request
+  stream_open                       1.000 calls/request

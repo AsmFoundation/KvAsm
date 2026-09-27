@@ -5,6 +5,31 @@ Valkey, Dragonfly, Garnet and Memcached), using one client, one placement
 and one statistical method for all of them. The rules, and the reasons
 behind each, are in [METHODOLOGY.md](METHODOLOGY.md).
 
+## Second pass: exact instruction counts (2026-09-27)
+
+Another project kept 25–30 of 32 CPUs busy, so this pass measured what
+host load cannot change
+([README](results/2026-09-27-second-pass/README.md)):
+
+- **Wakeups per 1,000 requests under load:** KvNode's worker 0.00, the
+  client ~27. The worker never sleeps under load; the wakeups on a
+  loopback profile are the client's, run on our CPU by our `sendto`.
+- **Instructions per request, exact (callgrind):**
+  - GET 1,425, where SipHash is 18%, frame parsing 20%, response framing
+    16% and stream lifecycle 15%;
+  - SET 1,789;
+  - health check 846.
+- **PUT, DELETE and health replies no longer allocate:** −23 and −21
+  instructions per request, and one pool allocation and one free fewer.
+- **What is left, ranked:**
+  - the record slab (+6%, measured);
+  - a Unix-socket listener for co-located clients (~20% estimated);
+  - batching writes like reads (a SET is 1.26× the instructions but ~4×
+    the time);
+  - SipHash-1-3 (~4 ns);
+  - io_uring (opt-in);
+  - HTTP/2 fast paths.
+
 ## The two-phase event loop: fewer client wakeups (2026-09-27)
 
 The profile below found half of a loaded core waking the co-located

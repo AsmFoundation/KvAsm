@@ -312,6 +312,18 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   drop it in one step.
 - **Skip zeroing:** `calloc` zeroes every byte. Initialize fields explicitly
   when all of them are set anyway.
+  - *KvNode:* ✗ for the Stream. Inline SSE2 zeroing (12 × 16 bytes)
+    instead of `kv_pool_calloc`'s glibc `memset` saved nothing, measured
+    exactly with callgrind: 1,424 vs 1,428 instructions per GET. glibc's
+    AVX2 memset is already cheap for 184 bytes.
+- **No buffer for a reply that fits on the stack**
+  - *What:* build a tiny message on the stack and let the framer copy it,
+    instead of allocating a buffer the stream frees later.
+  - *KvNode:* ✅ Put, Delete and health replies are 5–7 bytes and now go
+    through `kv_h2n_reply_parts` like a GET miss. Callgrind: SET 1,812 →
+    1,789 and health check 867 → 846 instructions per request (−2.4%),
+    one pool allocation and one free fewer each
+    (`benchmarks/results/2026-09-27-second-pass`).
 - **Size to the class:** a 240-byte first buffer plus a 16-byte header fills
   a 256-byte block exactly. *KvNode:* ✅ `MIN_REQ_CAP`.
 
@@ -408,6 +420,12 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     or flat combining.
   - *KvNode:* 🔜. Writes are serialized; batching them like GETs is the
     write-path analogue of §1.
+  - *Evidence (2026-09-27):* a SET runs only 26% more instructions than a
+    GET (1,789 vs 1,425, callgrind), yet it took ~4× the time on the same
+    host. PUTs execute at dispatch, outside the GET batch's prefetch
+    pipeline, so their bucket and old-record misses serialize. Batching
+    would prefetch them at parse time and take the writer lock once per
+    read. Measure write throughput on a quiet host first.
 - **Share nothing where possible:** per-worker sessions, pools and loops.
   *KvNode:* ✅.
 
@@ -470,7 +488,9 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - SipHash-2-4 is the conservative HashDoS defense (*KvNode:* ✅).
     Profiled 2026-09-26 with a busy-polling client: 4.9% of the core,
     ~19 ns per GET, mostly the 128-bit finalization. Scalar SipHash is
-    latency-bound (one dependency chain).
+    latency-bound (one dependency chain). Callgrind (2026-09-27): 254
+    instructions, **18% of a GET's user-space instructions**, the largest
+    single item. It runs at a high IPC, so ~12 ns on a quiet host.
   - SipHash-1-3 (Rust's choice) is cheaper: about 40% fewer rounds. Keep a
     keyed hash either way; the snapshot checksum must keep its own
     function.
@@ -512,6 +532,27 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Correctness under optimization:** torn-value detector, h2spec baseline,
   reset-in-batch test, full unit suite. Every optimization passes them
   before its numbers count.
+- **When the clock cannot be trusted, count instructions** (callgrind).
+  - *Use it for:* user-space changes that remove work, on a busy host.
+    Exact counts, independent of load; they overstate time for ALU code
+    and understate it for stall-bound code.
+  - *Method* (`benchmarks/results/2026-09-27-second-pass`):
+    - run the server under valgrind in a helper image sharing the dev
+      container's network;
+    - zero the counters after the preload with `callgrind_control -z`,
+      which needs `--cap-add=SYS_PTRACE`;
+    - dump after a fixed workload and divide by exact call counts
+      (`get_execute`, `kv_store_put`).
+  - *Gotchas:* NASM's DWARF has no function entries, so callgrind shows
+    addresses; map them with `nm -n`. A tail-`jmp` target is charged to
+    its caller.
+  - *KvNode's GET* (1,425 user instructions):
+    - SipHash 18%;
+    - frame parsing 20%;
+    - response framing 16%;
+    - stream lifecycle 15%;
+    - store lookup 11%;
+    - gRPC and protobuf 11%.
 - **Profile the kernel too, and read call chains.** `perf` in the dev
   container cannot sample kernel symbols (`perf_event_paranoid=2`). Run it
   from a privileged helper container that shares the dev container's PID
