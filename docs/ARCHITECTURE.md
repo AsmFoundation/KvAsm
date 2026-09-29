@@ -44,11 +44,14 @@ flowchart LR
    an open-addressing map, and every RFC 9113 state and error rule is
    applied (h2spec 146/146).
 3. **Route.** Headers decide the route: `:path` picks
-   `/kvnode.v1.KvNode/{Get,Put,Delete}` or `/grpc.health.v1.Health/Check`,
-   and `:method`, `content-type` and `grpc-encoding` are checked. The body
-   is buffered per stream within two budgets: the per-request
-   `max_request` and the per-connection `KVNODE_CONN_BUFFER_MB`; a body
-   that arrives whole in one DATA frame is used in place instead.
+   `/kvnode.v1.KvNode/{Get,Put,Delete,Upload,Download}` or
+   `/grpc.health.v1.Health/Check`, and `:method`, `content-type` and
+   `grpc-encoding` are checked. The body is buffered per stream within two
+   budgets: the per-request `max_request` and the per-connection
+   `KVNODE_CONN_BUFFER_MB`; a body that arrives whole in one DATA frame is
+   used in place instead. An **Upload** body is never buffered: every DATA
+   payload goes to the streaming decoder as it arrives (see
+   [Streaming calls](#streaming-calls-adr-0010)).
 4. **Execute.** At END_STREAM the worker validates the 5-byte gRPC framing,
    decodes the protobuf (zero-copy, `proto.asm`), checks limits and hashes
    the key (SipHash-2-4-128, secret key).
@@ -107,6 +110,77 @@ connection never leaves its worker thread, so the pool needs no locks.
 Freed blocks are reused LIFO while still cached. Memory use, measured, is
 in [OPERATIONS.md](OPERATIONS.md#memory).
 
+**Fairness.** One connection's flush writes at most `FLUSH_BUDGET` (256 KiB)
+per pass; with output still pending it keeps both EPOLLIN and EPOLLOUT
+interest and yields to the worker's other connections. A bulk Download
+therefore cannot monopolize its worker: measured with one worker, unary
+Gets beside 32 MiB downloads stayed at 0.03 ms mean and 0.2–0.6 ms worst
+(about 3 ms worst without the budget).
+
+## Streaming calls (ADR 0010)
+
+```mermaid
+flowchart LR
+    subgraph U["Upload (client streaming)"]
+        D1["DATA frame<br/>(read buffer)"] --> F1["kv_pb_stream_feed<br/>resumable decoder"]
+        F1 -- "key, total_size" --> R1["kv_store_rec_alloc<br/>reserve: limits, budget, memory"]
+        F1 -- "data pieces" --> C1["kv_crc32c_copy<br/>copy + CRC, one pass"]
+        C1 --> R1
+        R1 -- "END_STREAM: size + CRC ok" --> P1["kv_store_publish<br/>one pointer store"]
+    end
+    subgraph D["Download (server streaming)"]
+        L2["lookup + kv_store_pin"] --> G2["kv_grpc_gen_fill<br/>frame by frame as windows open"]
+        G2 --> O2["DATA frames<br/>total_size · chunks · crc32c"]
+        G2 -. "last frame / reset / close" .-> U2["kv_store_unpin"]
+    end
+```
+
+- **Upload.** `kv_grpc_upload_data` receives each non-empty DATA payload of
+  an Upload the moment h2n has accounted it for flow control, and feeds it
+  to `kv_pb_stream_feed` (`proto.asm`, state in `pbstream.inc`): a decoder
+  resumable at every byte, which reports fields as events and hands data
+  payloads over as pointers into the frame. The first message's `key` and
+  `total_size` reserve the final record (`kv_store_rec_alloc`: the upload
+  limit, the connection's budget `Conn.up_bytes ≤ KVNODE_CONN_BUFFER_MB`,
+  the store's memory limit); every data piece is then copied straight into
+  that record with its CRC-32C computed in the same pass
+  (`kv_crc32c_copy`). At END_STREAM `upload_finish` checks whole messages,
+  the exact size and the checksum, and `kv_store_publish` inserts the
+  record or replaces the old one with one pointer store under the writer
+  mutex. Any refusal is answered at once (Trailers-Only, then
+  `RST_STREAM(NO_ERROR)` from `response_done`); a reset, a closed connection
+  or the idle timeout frees the unpublished record (`kv_store_rec_free`)
+  and returns its reservation. The value is copied once, and nothing is
+  buffered per stream but the decoder's 64 bytes.
+- **Download.** `download_start` looks the key up and **pins** the record
+  (`kv_store_pin`) before the worker's next quiescent state, so the record
+  stays readable for the whole call whatever writers do. The response body
+  is **generated**: the stream is marked `ST_GEN` with its exact length
+  (`download_body_len`), and each DATA frame's payload is produced in place
+  by `kv_grpc_gen_fill` — message heads, value bytes (copied from the record
+  and checksummed in the same pass) and the final CRC tail — as the peer's
+  windows and the output buffer allow. A frame boundary can fall anywhere,
+  inside a head or the CRC tail; the state lives in the stream's `Xfer`. The
+  pin is dropped when the stream is freed: after its last frame, on reset,
+  on connection close.
+- **Pins and reclamation.** Pins live in a small open-addressing table
+  beside the store, updated under the writer mutex (a Download pins and
+  unpins once each). Reclamation consults it only while a pin exists: a
+  retired record whose grace period ended but that is still pinned is
+  marked deferred instead of freed, and the last `kv_store_unpin` frees it.
+  Its bytes stay counted in `mem_used` until then, so a pinned 64 MiB
+  record keeps holding 64 MiB of `KVNODE_MAX_MEMORY_MB`.
+- **CRC-32C** (`crc32c.asm`): the SSE4.2 `crc32` instruction when CPUID has
+  it, else slicing-by-8 tables that NASM generates at assembly time;
+  `KVNODE_CRC32C` forces either. Fused with the copy it runs at ~16 GB/s
+  (SSE4.2) or ~3.3 GB/s (tables) on the development machine.
+- **Idle timeout and stalled transfers.** Bytes the server manages to send
+  count as activity, so a long Download whose client never needs to speak is
+  not cut. A peer that stops reading at the TCP level is different: the idle
+  GOAWAY cannot leave the full socket, so on the next expiry with no byte
+  moved the connection is destroyed outright (`CONN_IDLE_CLOSING`),
+  releasing its pins and reservations.
+
 ## Store (ADR 0001, ADR 0003)
 
 - **Table:** 2^k buckets × 64 bytes. Each bucket holds a version word, six
@@ -133,11 +207,15 @@ in [OPERATIONS.md](OPERATIONS.md#memory).
   sees the key or retries.
 - **Records** are immutable: a 24-byte header, the key padded to 8 bytes,
   then the value. Put allocates and fills the new record outside the writer
-  lock and publishes it with one pointer store.
+  lock and publishes it with one pointer store. Upload uses the same record
+  in two steps — reserved (`kv_store_rec_alloc`), filled chunk by chunk,
+  then published (`kv_store_publish`) — so a record is still written once
+  and never changes after it becomes visible.
 - **Reclamation:** old records go to a limbo list stamped with a global
   epoch. They are freed once every online worker has announced a quiescent
   state since then (QSBR). A worker announces between event batches and is
-  offline while it blocks in `epoll_wait`.
+  offline while it blocks in `epoll_wait`. A record pinned by a Download is
+  deferred to its last unpin instead.
 
 ## Lifecycle
 
@@ -147,10 +225,12 @@ in [OPERATIONS.md](OPERATIONS.md#memory).
   error), then every listener bound before any worker starts.
 - **Shutdown** begins on SIGTERM/SIGINT (`sigwaitinfo` on the main thread,
   which works as PID 1). Workers close their listeners and send GOAWAY with
-  the last processed stream id. In-flight requests complete; health checks
-  answer `NOT_SERVING` from then on. Idle connections close with a
-  lingering close. Anything still open after `KVNODE_SHUTDOWN_GRACE_SEC` is
-  closed. The process exits 0.
+  the last processed stream id. In-flight requests complete — Uploads and
+  Downloads included; health checks answer `NOT_SERVING` from then on. Idle
+  connections close with a lingering close. Anything still open after
+  `KVNODE_SHUTDOWN_GRACE_SEC` is closed. The process exits 0, logging
+  `pinned=` and `deferred=` (both must be 0: every Download pin ended with
+  its call).
 
 ## Source map
 
@@ -162,10 +242,11 @@ in [OPERATIONS.md](OPERATIONS.md#memory).
 | `server/src/h2n.asm` | native HTTP/2 engine: frames, stream states and map, flow control, precomputed responses, flood defenses |
 | `server/src/hpack.asm` | HPACK decoder (RFC 7541): Huffman FSM, dynamic table, per-field meanings |
 | `server/include/huffman.inc` | the Huffman decoding table, generated and self-verified by `server/tools/gen_huffman.py` |
-| `server/src/grpc.asm` | request logic: body budgets, validation, dispatch, batched GET execution, health service |
+| `server/src/grpc.asm` | request logic: body budgets, validation, dispatch, batched GET execution, health service; Upload (decode, reserve, verify, publish) and Download (pin, generated body) |
 | `server/src/pool.asm` | per-worker size-class allocator (malloc-shaped, no locks) |
-| `server/src/proto.asm` | protobuf decode (zero-copy, skips unknown fields) and varint encode |
-| `server/src/store.asm` | table lifecycle, Put/Delete, memory accounting, QSBR |
+| `server/src/proto.asm` | protobuf decode (zero-copy, skips unknown fields), varint encode, and the resumable message-stream decoder `kv_pb_stream_feed` (`server/include/pbstream.inc`) |
+| `server/src/crc32c.asm` | CRC-32C: SSE4.2 and assembly-time slicing-by-8 tables, fused copy + checksum |
+| `server/src/store.asm` | table lifecycle, Put/Delete, write-once records for Upload, Download pins, memory accounting, QSBR |
 | `server/src/cuckoo.asm` | lock-free lookup (SWAR or SSE2 tag scan), insert with BFS displacement, remove, prefetch stages |
 | `server/src/hcache.asm` | optional per-worker private L1/L2 record cache, generation-validated |
 | `server/src/siphash.asm`, `util.asm` | SipHash-2-4-128; exact key compare and SWAR tag match |
@@ -179,11 +260,11 @@ in [OPERATIONS.md](OPERATIONS.md#memory).
 
 | Layer | What | Where |
 |---|---|---|
-| unit (C over assembly) | ABI layouts, SipHash vectors, key compare with guard pages, protobuf, store model and torture, snapshot parsing and every rejection reason, HPACK (RFC vectors and 30,000 blocks differential against nghttp2 as the oracle) | `make -C server test` |
+| unit (C over assembly) | ABI layouts, SipHash vectors, key compare with guard pages, protobuf (and the stream decoder: golden events, 200,000 random streams in random pieces against a reference model), CRC-32C (vectors, SSE4.2 vs tables vs bitwise), store model and torture (pinned readers across quiescent states), snapshot parsing and every rejection reason, HPACK (RFC vectors and 30,000 blocks differential against nghttp2 as the oracle) | `make -C server test` |
 | bake-off | cuckoo vs chaining vs trie, every answer verified | `make -C server bench` |
 | store levels | lookup variants per memory level (SWAR/SSE2, private caches), every answer verified | `make -C server bench-store` |
-| end to end | real server over loopback, driven by an independent HTTP/2 client (nghttp2's client API): protocol and limits, pipelining, cancel, torn-value detection, drain with an in-flight request, idle timeout, snapshot source, startup refusals, h2spec 146/146 (empty baseline), and fuzzing of the HTTP/2 input path followed by the full suite on the same server | `make -C server itest` |
-| client | 64 SipHash vectors, compaction, byte-exact snapshot vs the server tool, and the real container via Testcontainers | `dotnet test --solution client/dotnet/KvNode.Client.slnx` |
+| end to end | real server over loopback, driven by an independent HTTP/2 client (nghttp2's client API, its own CRC-32C): protocol and limits, pipelining, cancel, torn-value detection; Upload/Download: every refusal, a size × chunking × checksum matrix, every DATA split, cancels and resets at every stage, ranges, 1-byte windows, one version per download while the key changes, a streaming race; drain with in-flight unary and streaming calls; idle timeout against stalled, slow and frozen transfers; memory/budget/capacity limits and their release; fairness with one worker; snapshot source; startup refusals; h2spec 146/146 (empty baseline); fuzzing of the HTTP/2 input path (Upload and Download soups included) followed by the full suite on the same server; no pin may outlive its call (checked at every shutdown) | `make -C server itest` |
+| client | 64 SipHash vectors, compaction, byte-exact snapshot vs the server tool, CRC-32C vectors, and the real container via Testcontainers — including Upload/Download through a fault-injecting TCP proxy (resets mid-transfer, hung paths, slow links, refused connections) and a memory-limited server | `dotnet test --solution client/dotnet/KvNode.Client.slnx` |
 
 The Docker build runs the unit, bake-off and end-to-end layers. An image
 exists only if all of them pass.

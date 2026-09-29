@@ -21,6 +21,14 @@ only library linked in).
   replaced, is out of the server
   ([ADR 0008](docs/adr/0008-remove-nghttp2-from-the-server.md)); it
   survives only as the independent client the tests and benchmarks use.
+- **Streaming for large values.** Client-streaming Upload and
+  server-streaming Download move values up to 64 MiB (configurable to
+  2 GiB) and byte ranges of them in CRC-32C-verified chunks: an upload is
+  copied once, straight into the record it will publish atomically; a
+  download is generated frame by frame from a pinned record, one version
+  per call, with no response buffer. Tested byte by byte, including resets,
+  hangs and slow links mid-transfer
+  ([ADR 0010](docs/adr/0010-streaming-upload-download.md)).
 - **Two data sources:** clients write via gRPC, and a verified snapshot
   file loads at startup.
 - **Production behavior:** standard gRPC health service, graceful drain on
@@ -41,6 +49,13 @@ using var kv = new KvNodeClient(new Uri("http://localhost:50051"));
 bool created = await kv.PutAsync("user:42", "Ada");   // true: new key
 string? name = await kv.GetStringAsync("user:42");    // "Ada"
 bool deleted = await kv.DeleteAsync("user:42");       // true
+
+// Large values: streamed in chunks, CRC-32C-checked at both ends.
+await using FileStream file = File.OpenRead("video.mp4");
+UploadResult up = await kv.UploadAsync("media:1"u8.ToArray(), file);
+await using FileStream copy = File.Create("copy.mp4");
+DownloadResult? got = await kv.DownloadToAsync("media:1"u8.ToArray(), copy);
+byte[]? head = await kv.DownloadAsync("media:1"u8.ToArray(), offset: 0, length: 4096);
 ```
 
 Load data at startup from a snapshot written by

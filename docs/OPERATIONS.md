@@ -3,8 +3,8 @@
 ## Configuration
 
 Every setting is an environment variable. Numeric values are strict decimal
-integers: no sign, no spaces, no units. Named choices (`KVNODE_SCAN`) must
-be one of the listed lowercase words exactly.
+integers: no sign, no spaces, no units. Named choices (`KVNODE_SCAN`,
+`KVNODE_CRC32C`) must be one of the listed lowercase words exactly.
 Out-of-range, malformed or unknown values stop startup with exit code **2**
 and a log line naming the variable, the value and what is allowed. A typo
 never silently falls back to a default.
@@ -15,13 +15,15 @@ never silently falls back to a default.
 | `KVNODE_WORKERS` | 0–256 | 0 | event-loop threads; 0 = CPUs in the affinity mask. This honors `--cpuset-cpus` but not a `--cpus` quota, so set it explicitly under quotas |
 | `KVNODE_CAPACITY` | 1–2³⁶ | 1000000 | maximum number of keys; sizes the table once, resident from startup (see [Memory](#memory)) |
 | `KVNODE_MAX_KEY_BYTES` | 1–65536 | 1024 | longest accepted key |
-| `KVNODE_MAX_VALUE_BYTES` | 0–67108864 | 1048576 | largest accepted value |
-| `KVNODE_MAX_MEMORY_MB` | 0–16777216 | 0 | cap on record memory; 0 = unlimited |
+| `KVNODE_MAX_VALUE_BYTES` | 0–67108864 | 1048576 | largest value Put accepts and Get returns (larger ones only through Upload/Download) |
+| `KVNODE_MAX_UPLOAD_BYTES` | 0–2147483647 | 67108864 | largest value Upload stores; must not exceed `KVNODE_CONN_BUFFER_MB` (checked: exit 2 — such an upload could never fit one connection's budget) |
+| `KVNODE_MAX_MEMORY_MB` | 0–16777216 | 0 | cap on record memory, uploads in progress and records pinned by downloads included; 0 = unlimited |
 | `KVNODE_MAX_STREAMS` | 1–1000 | 100 | concurrent requests per connection (HTTP/2 SETTINGS) |
 | `KVNODE_MAX_CONNECTIONS` | 1–1000000 | 10000 | connections per worker; beyond it, accepting pauses |
-| `KVNODE_IDLE_TIMEOUT_SEC` | 0–86400 | 300 | idle connections get GOAWAY and are closed; 0 = never |
+| `KVNODE_IDLE_TIMEOUT_SEC` | 0–86400 | 300 | connections with no byte received or sent get GOAWAY and are closed; one whose peer does not even read that is dropped at the next expiry; 0 = never |
 | `KVNODE_SHUTDOWN_GRACE_SEC` | 0–3600 | 10 | time in-flight requests get after SIGTERM |
-| `KVNODE_CONN_BUFFER_MB` | 1–4096 | 64 | request bytes one connection may buffer; the excess stream is reset with `ENHANCE_YOUR_CALM` |
+| `KVNODE_CONN_BUFFER_MB` | 1–4096 | 64 | request bytes one connection may buffer (the excess stream is reset with `ENHANCE_YOUR_CALM`), and the total declared size of one connection's uploads in progress (the excess upload is refused, `RESOURCE_EXHAUSTED`) |
+| `KVNODE_CRC32C` | `auto` \| `sse42` \| `table` | `auto` | CRC-32C of Upload/Download: `auto` uses the SSE4.2 instruction when the CPU has it (~16 GB/s), else tables (~3.3 GB/s); `sse42` on a CPU without it refuses to start (exit 2) |
 | `KVNODE_SNAPSHOT` | path | unset | snapshot to load at startup (see Snapshots) |
 | `KVNODE_SCAN` | `swar` \| `sse2` | `sse2` | how lookups match tags. `sse2` matches both candidate buckets in one compare: 2–6% faster per batched lookup, and SSE2 is part of every x86-64 CPU. `swar` is the scalar path. Results are identical ([ADR 0006](adr/0006-store-memory-levels-simd-and-private-caches.md)) |
 | `KVNODE_CACHE_L1_BITS` | 0–24 | 0 | per-worker private L1 record cache of 2^bits entries (32 bytes each); 0 = off. Measured slower than the CPU's own caches except for tiny hot sets, so off by default (ADR 0006) |
@@ -41,8 +43,10 @@ KvNode does not read, a leftover `KVNODE_H2_ENGINE` is ignored.
 | 2 | invalid configuration |
 
 On **SIGTERM** or **SIGINT**, listeners close and every connection gets
-GOAWAY. In-flight requests finish, and health checks answer `NOT_SERVING`.
-The process exits 0 within `KVNODE_SHUTDOWN_GRACE_SEC`. Signals are consumed
+GOAWAY. In-flight requests finish — an Upload still sending, a Download
+still streaming — and health checks answer `NOT_SERVING`. The process exits
+0 within `KVNODE_SHUTDOWN_GRACE_SEC`: size the grace period for your largest
+transfers, since what is still open then is cut. Signals are consumed
 with `sigwaitinfo`, so this works when kvnode runs as PID 1 (the normal case
 in a container). `docker stop` needs no `--init`.
 
@@ -58,14 +62,18 @@ One line per event on stderr, written with a single `write(2)`, so lines from
 different threads never interleave:
 
 ```
-ts=1790373017.207 level=INFO msg="starting" version=0.1.0 port=50051 workers=2 capacity=1000000 ...
+ts=1790373017.207 level=INFO msg="starting" version=0.1.0 port=50051 workers=2 capacity=1000000 ... max_upload_bytes=67108864 crc32c=sse42 snapshot=none
 ts=1790373017.208 level=INFO msg="listening" transport=h2c port=50051 workers=2
 ts=1790373019.575 level=INFO msg="shutdown requested" signal=15
-ts=1790373019.575 level=INFO msg="stopped" connections=2 requests=1 errors=0 keys=0
+ts=1790373019.575 level=INFO msg="stopped" connections=2 requests=1 errors=0 keys=0 pinned=0 deferred=0
 ```
 
 `ts` is Unix time with milliseconds. Errors carry a `reason`, and `record`
-or `errno` where one applies. Failure lines use `level=ERROR`.
+or `errno` where one applies. Failure lines use `level=ERROR`. The starting
+line reports the CRC-32C implementation in force (`crc32c=sse42|table`).
+`pinned` and `deferred` in the stopped line count Download pins still held,
+and replaced records still waiting for one, after every connection closed:
+both are always 0 — anything else is a leak worth a bug report.
 
 ## Health checks
 
@@ -136,6 +144,23 @@ Measured resident memory (`/proc/PID/smaps_rollup`; `VmRSS` in
   (the malloc overhead above is not counted). Replaced and deleted records
   stay counted until reclamation frees them, typically within milliseconds;
   glibc keeps freed record memory for later Puts.
+- **Uploads** reserve their whole declared size when the first message
+  arrives — counted against `KVNODE_MAX_MEMORY_MB` and against the
+  connection's `KVNODE_CONN_BUFFER_MB` — and fill it as data comes; the
+  record *is* the buffer, so an upload costs its value once, never twice.
+  A cancelled, refused, reset or timed-out upload gives it all back at once.
+- **Downloads** cost no buffer: the response is generated frame by frame
+  from the stored record as the client's window opens (a slow client slows
+  its download, it does not grow the server). But a download **pins** its
+  record: replaced or deleted meanwhile, it stays in memory (and counted)
+  until the download ends. Long downloads of hot, often-replaced large
+  values therefore hold one extra version each; budget
+  `KVNODE_MAX_MEMORY_MB` for the concurrent downloads you allow.
+- **Stalled transfers** end with the idle timeout: a peer that sends and
+  receives nothing for `KVNODE_IDLE_TIMEOUT_SEC` (default 300 s) gets
+  GOAWAY and loses its connection, and with it its reservations and pins.
+  A peer that stopped reading its socket altogether cannot even receive the
+  GOAWAY; it is dropped at the next expiry (about 2 s later).
 - **Connections:** buffered request bytes are bounded per connection by
   `KVNODE_CONN_BUFFER_MB`; the peer's HPACK entries add at most 4 KiB. The
   worker's pool keeps its chunks until the worker exits, so its size
@@ -155,9 +180,11 @@ Measured resident memory (`/proc/PID/smaps_rollup`; `VmRSS` in
 - **Hash flooding** is prevented: bucket placement uses SipHash under a
   per-process secret from `getrandom`, and clients cannot influence it
   (ADR 0004).
-- **Resource limits:** key and value sizes, request size, per-connection
-  buffering, streams per connection, connections per worker, idle timeout,
-  and the HTTP/2 engine's flood defenses. The engine limits rapid stream
+- **Resource limits:** key and value sizes, request size, upload size,
+  per-connection buffering and upload budget (a client cannot pin more
+  memory than one connection's budget by declaring uploads it never sends),
+  streams per connection, connections per worker, idle timeout, and the
+  HTTP/2 engine's flood defenses. The engine limits rapid stream
   resets to a burst of 1,000 then 33 per second (CVE-2023-44487), caps a
   header block at 64 KiB and 64 CONTINUATION frames, and never buffers an
   oversized frame (it is rejected from its header). Every build fuzzes it

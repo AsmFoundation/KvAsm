@@ -8,7 +8,7 @@
     <IsAotCompatible>true</IsAotCompatible>
     <PackageId>KvNode.Client</PackageId>
     <Version>0.1.0</Version>
-    <Description>.NET client for KvNode, the gRPC key-value server written in x86-64 assembly: Get/Put/Delete, health checks, long-key compaction and snapshot file writing.</Description>
+    <Description>.NET client for KvNode, the gRPC key-value server written in x86-64 assembly: Get/Put/Delete, streaming Upload/Download of large values and ranges with CRC-32C verification, health checks, long-key compaction and snapshot file writing.</Description>
   </PropertyGroup>
 
   <ItemGroup>

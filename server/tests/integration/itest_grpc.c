@@ -66,6 +66,9 @@
  *       KVNODE_CONN_BUFFER_MB=16 KVNODE_MAX_UPLOAD_BYTES=16777216.
  *   itest_grpc --fairness HOST PORT   one worker (KVNODE_WORKERS=1) serving
  *       unary calls beside 32 MiB downloads.
+ *   itest_grpc --bench-transfer HOST PORT PID   not a test: Upload/Download
+ *       throughput against unary Put/Get on one connection, and the server's
+ *       memory (PID's RSS) while a 64 MiB value is stored and downloaded.
  *
  * MAX_KEY/MAX_VALUE must equal the server's KVNODE_MAX_KEY_BYTES and
  * KVNODE_MAX_VALUE_BYTES: the boundary cases are computed from them.
@@ -2881,6 +2884,48 @@ static void test_download_cancel(Client *cl) {
 }
 
 /**
+ * The conformance vectors of docs/PROTOCOL.md, byte for byte: the documented
+ * request bodies must produce exactly the documented response bodies, so the
+ * page other client implementations test against can never drift from the
+ * server.
+ * @param cl  connection
+ * @remarks Uses the vectors' fixed key "k" (deleted first, so "created"
+ *          holds on a server that saw it before).
+ */
+static void test_conformance_vectors(Client *cl) {
+  static const struct {
+    const char *what, *path, *req, *resp;
+  } v[] = {
+      {"upload abc (created)", PATH_UPLOAD, "000000000f0a016b10031a03616263" "25b73f4b36",
+       "00000000070801" "15b73f4b36"},
+      {"upload abc (replaced)", PATH_UPLOAD, "000000000f0a016b10031a03616263" "25b73f4b36",
+       "0000000005" "15b73f4b36"},
+      {"download, chunk 2", PATH_DOWNLOAD, "00000000050a016b2002",
+       "000000000608031202" "6162" "0000000008120163" "1db73f4b36"},
+      {"download, empty range", PATH_DOWNLOAD, "00000000050a016b1003",
+       "000000000708031d00000000"},
+  };
+  op_delete(cl, "k", 1);
+  for (size_t i = 0; i < sizeof v / sizeof v[0]; i++) {
+    uint8_t req[64], resp[64];
+    size_t rl = strlen(v[i].req) / 2, pl = strlen(v[i].resp) / 2;
+    for (size_t j = 0; j < rl; j++) sscanf(v[i].req + 2 * j, "%2hhx", &req[j]);
+    for (size_t j = 0; j < pl; j++) sscanf(v[i].resp + 2 * j, "%2hhx", &resp[j]);
+    Call c;
+    int ok = call_run(cl, &c, "POST", v[i].path, GRPC_CT, NULL, req, rl) == 0 &&
+             call_ok(v[i].what, &c) && c.body_len == pl && memcmp(c.body, resp, pl) == 0;
+    if (!ok) {
+      fprintf(stderr, "  conformance \"%s\": got", v[i].what);
+      for (size_t j = 0; j < c.body_len && j < 40; j++) fprintf(stderr, " %02x", c.body[j]);
+      fprintf(stderr, "\n");
+    }
+    CHECK(ok);
+    call_free(&c);
+  }
+  CHECK(op_delete(cl, "k", 1) == 1);
+}
+
+/**
  * Unary Get of a value only Upload can store (above max_value) is refused
  * with RESOURCE_EXHAUSTED naming Download, which serves it; unary Put of the
  * same size stays refused (the unary limit is unchanged by Upload).
@@ -4083,6 +4128,129 @@ static int fairness(void) {
 }
 
 /**
+ * The server's resident memory in KiB (0 when unavailable).
+ * @param pid  server pid
+ * @remarks /proc/PID/smaps_rollup walks the page tables; /proc/PID/status
+ *          VmRSS lags on kernels with split RSS counting (see fuzz_h2.c).
+ */
+static long server_rss_kib(long pid) {
+  char path[64], line[256];
+  snprintf(path, sizeof path, "/proc/%ld/smaps_rollup", pid);
+  FILE *f = fopen(path, "r");
+  if (!f) return 0;
+  long kib = 0;
+  while (fgets(line, sizeof line, f))
+    if (sscanf(line, "Rss: %ld", &kib) == 1) break;
+  fclose(f);
+  return kib;
+}
+
+/** Sorts doubles ascending (qsort). */
+static int cmp_double(const void *a, const void *b) {
+  double x = *(const double *)a, y = *(const double *)b;
+  return x < y ? -1 : x > y;
+}
+
+/**
+ * --bench-transfer: throughput of Upload/Download against unary Put/Get on
+ * one connection, and the server's memory while values move. The client
+ * does the least it can (streams built before the clock starts, responses
+ * only length-checked, no client-side CRC), so the numbers bound the server
+ * from below; the nghttp2 client itself is usually the limit on loopback.
+ * @param pid  the server's pid (its RSS is sampled from /proc)
+ * @returns exit code: 0 (numbers printed), 1 on a failed transfer, 2 no connection
+ * @remarks Medians of 7. Needs KVNODE_MAX_UPLOAD_BYTES >= 64 MiB (the
+ *          default) and nothing else loading the host.
+ */
+static int bench_transfer(long pid) {
+  mode_init();
+  Client cl;
+  if (client_open(&cl, g_host, g_port, 1u << 30) != 0) return 2;
+  enum { RUNS = 7 };
+  static const size_t sizes[] = {64 * 1024, 1 * MIB, 16 * MIB, 64 * MIB};
+  uint8_t *val = malloc(64 * MIB);
+  uint64_t seed = 0xBE7C;
+  rng_fill(&seed, val, 64 * MIB);
+  char k[64];
+  size_t kl = mkkey(k, sizeof k, "bench", 1);
+  int bad = 0;
+  printf("  size       unary Put  unary Get   Upload   Download  (MB/s, 1 connection, median of %d)\n", RUNS);
+  for (size_t si = 0; si < sizeof sizes / sizeof sizes[0]; si++) {
+    size_t n = sizes[si];
+    double up[RUNS], down[RUNS], put[RUNS], get[RUNS];
+    Buf s = up_stream(k, kl, val, n, n < MIB ? n : MIB, CRC_LAST, 1);
+    Msg dm = msg_download(k, kl, 0, 0, 0, DL_MAX_CHUNK);
+    for (int r = 0; r < RUNS; r++) {
+      Call c;
+      memset(&c, 0, sizeof c);
+      uint64_t t0 = now_ns();
+      if (upload_run(&cl, &c, &s) != 0 || !call_ok("bench upload", &c)) bad++;
+      up[r] = (double)n / ((double)(now_ns() - t0) / 1e9) / 1e6;
+      call_free(&c);
+      t0 = now_ns();
+      if (call_run(&cl, &c, "POST", PATH_DOWNLOAD, GRPC_CT, NULL, dm.p, dm.len) != 0 ||
+          !call_ok("bench download", &c) || c.body_len < n)
+        bad++;
+      down[r] = (double)n / ((double)(now_ns() - t0) / 1e9) / 1e6;
+      call_free(&c);
+      if (n <= g_max_value) {
+        Msg pm = msg_kv(k, kl, val, n), gm = msg_kv(k, kl, NULL, 0);
+        t0 = now_ns();
+        if (call_run(&cl, &c, "POST", PATH_PUT, GRPC_CT, NULL, pm.p, pm.len) != 0 || !call_ok("bench put", &c)) bad++;
+        put[r] = (double)n / ((double)(now_ns() - t0) / 1e9) / 1e6;
+        call_free(&c);
+        t0 = now_ns();
+        if (call_run(&cl, &c, "POST", PATH_GET, GRPC_CT, NULL, gm.p, gm.len) != 0 || !call_ok("bench get", &c) ||
+            c.body_len < n)
+          bad++;
+        get[r] = (double)n / ((double)(now_ns() - t0) / 1e9) / 1e6;
+        call_free(&c);
+        free(pm.p);
+        free(gm.p);
+      }
+    }
+    qsort(up, RUNS, sizeof up[0], cmp_double);
+    qsort(down, RUNS, sizeof down[0], cmp_double);
+    qsort(put, RUNS, sizeof put[0], cmp_double);
+    qsort(get, RUNS, sizeof get[0], cmp_double);
+    if (n <= g_max_value)
+      printf("  %6zu KiB  %9.0f  %9.0f  %8.0f  %8.0f\n", n / 1024, put[RUNS / 2], get[RUNS / 2],
+             up[RUNS / 2], down[RUNS / 2]);
+    else
+      printf("  %6zu KiB  %9s  %9s  %8.0f  %8.0f\n", n / 1024, "-", "-", up[RUNS / 2], down[RUNS / 2]);
+    buf_free(&s);
+    free(dm.p);
+  }
+
+  /* Memory: a stored 64 MiB value costs ~64 MiB (the upload's record is its
+   * only buffer); a download of it costs nothing more (generated frames). */
+  CHECK(op_delete(&cl, k, kl) == 1);
+  sleep_ms(1500);                                  /* reclamation + housekeeping */
+  long before = server_rss_kib(pid);
+  CHECK(op_upload(&cl, k, kl, val, 64 * MIB, MIB, CRC_LAST, 1, NULL) == 1);
+  long stored = server_rss_kib(pid);
+  Client m;
+  if (client_open_ex(&m, g_host, g_port, 65535, 1, NULL) != 0) return 2;
+  static Call d;
+  Msg dreq;
+  CHECK(start_stalled_download(&m, &d, &dreq, k, kl) == 0);
+  long during = server_rss_kib(pid);
+  CHECK(wait_closed(&m, &d, CALL_TIMEOUT_MS) == 0 && d.body_len > 64 * MIB);
+  long after = server_rss_kib(pid);
+  printf("  server RSS: %ld KiB idle, +%ld KiB with a 64 MiB value stored, +%ld KiB more during a "
+         "(stalled) download of it, +%ld KiB after it\n",
+         before, stored - before, during - stored, after - stored);
+  call_free(&d);
+  free(dreq.p);
+  client_close(&m);
+  CHECK(op_delete(&cl, k, kl) == 1);
+  free(val);
+  client_close(&cl);
+  if (bad) fprintf(stderr, "  %d transfers failed\n", bad);
+  return bad ? 1 : test_finish("itest_grpc --bench-transfer");
+}
+
+/**
  * Entry point.
  * @param argc  argument count
  * @param argv  see the file header for the usages
@@ -4125,6 +4293,11 @@ int main(int argc, char **argv) {
     g_port = argv[3];
     return fairness();
   }
+  if (argc == 5 && strcmp(argv[1], "--bench-transfer") == 0) {
+    g_host = argv[2];
+    g_port = argv[3];
+    return bench_transfer(atol(argv[4]));
+  }
   if (argc != 5 && argc != 6) {
     fprintf(stderr, "usage: %s HOST PORT MAX_KEY MAX_VALUE [MAX_UPLOAD]\n"
                     "       %s --wait-goaway HOST PORT SECS\n"
@@ -4133,8 +4306,9 @@ int main(int argc, char **argv) {
                     "       %s --drain-transfers HOST PORT SECS\n"
                     "       %s --stream-limits HOST PORT\n"
                     "       %s --stall HOST PORT\n"
-                    "       %s --fairness HOST PORT\n",
-            argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
+                    "       %s --fairness HOST PORT\n"
+                    "       %s --bench-transfer HOST PORT PID\n",
+            argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
     return 2;
   }
   g_host = argv[1];
@@ -4174,6 +4348,7 @@ int main(int argc, char **argv) {
   test_download_flow(&cl);
   test_download_consistency(&cl);
   test_download_cancel(&cl);
+  test_conformance_vectors(&cl);
   test_get_too_big(&cl);
   test_concurrency(&cl, 3000);
   test_stream_concurrency(&cl, 2000);

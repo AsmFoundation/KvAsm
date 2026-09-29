@@ -11,7 +11,8 @@ namespace KvNode.Client;
 
 /// <summary>
 /// Client for a KvNode server: Get, Put and Delete of binary or UTF-8 keys and
-/// values, plus the standard gRPC health check.
+/// values; Upload and Download of large values (and byte ranges) as streams
+/// of CRC-32C-verified chunks; plus the standard gRPC health check.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -24,11 +25,14 @@ namespace KvNode.Client;
 /// Errors surface as <see cref="RpcException"/> with the server's status:
 /// <c>INVALID_ARGUMENT</c> (key/value limits, malformed request),
 /// <c>RESOURCE_EXHAUSTED</c> (store full, memory limit, message too large),
-/// <c>UNAVAILABLE</c> (connection problems; Get is retried automatically, see
-/// <see cref="KvNodeClientOptions.ReadAttempts"/>), <c>DEADLINE_EXCEEDED</c>
-/// (see <see cref="KvNodeClientOptions.Timeout"/>), <c>CANCELLED</c>.
-/// Input that can be checked locally throws <see cref="ArgumentException"/>
-/// before any network traffic.
+/// <c>UNAVAILABLE</c> (connection problems; Get and Download are retried
+/// automatically, see <see cref="KvNodeClientOptions.ReadAttempts"/>),
+/// <c>DEADLINE_EXCEEDED</c> (see <see cref="KvNodeClientOptions.Timeout"/>,
+/// and for transfers <see cref="KvNodeClientOptions.TransferTimeout"/> /
+/// <see cref="KvNodeClientOptions.TransferIdleTimeout"/>), <c>CANCELLED</c>;
+/// transfers add <c>NOT_FOUND</c>-as-null, <c>OUT_OF_RANGE</c> and
+/// <c>DATA_LOSS</c>. Input that can be checked locally throws
+/// <see cref="ArgumentException"/> before any network traffic.
 /// </para>
 /// <para>
 /// Zero-copy: keys and values passed as <see cref="ReadOnlyMemory{T}"/> are
@@ -37,7 +41,7 @@ namespace KvNode.Client;
 /// are immutable views of the response and never change afterwards.
 /// </para>
 /// </remarks>
-public sealed class KvNodeClient : IDisposable
+public sealed partial class KvNodeClient : IDisposable
 {
     /// <summary>The service name the server reports health for.</summary>
     public const string ServiceName = "kvnode.v1.KvNode";
@@ -86,8 +90,9 @@ public sealed class KvNodeClient : IDisposable
 
     /// <summary>
     /// Channel settings matching the given client options: message-size limits
-    /// that fit the largest legal key/value, retries for read-only calls, and
-    /// HTTP/2 keep-alive pings so dead connections are detected.
+    /// that fit the largest legal key/value and every Upload/Download chunk,
+    /// retries for read-only calls, and HTTP/2 keep-alive pings so dead
+    /// connections are detected.
     /// </summary>
     /// <param name="options">The client options to derive the settings from.</param>
     /// <returns>A new options object; callers may adjust it before creating a channel.</returns>
@@ -99,8 +104,11 @@ public sealed class KvNodeClient : IDisposable
         {
             // Protobuf framing adds a few bytes per field; 1 KiB of headroom
             // keeps a maximum-size value from tripping the transport limit.
-            MaxReceiveMessageSize = options.MaxValueBytes + 1024,
-            MaxSendMessageSize = options.MaxKeyBytes + options.MaxValueBytes + 1024,
+            // Download messages carry up to the server's 1 MiB chunk maximum,
+            // and an Upload's first message a key next to a whole chunk,
+            // whatever MaxValueBytes says.
+            MaxReceiveMessageSize = Math.Max(options.MaxValueBytes, KvNodeClientOptions.MaxDownloadChunkBytes) + 1024,
+            MaxSendMessageSize = options.MaxKeyBytes + Math.Max(options.MaxValueBytes, options.UploadChunkBytes) + 1024,
             HttpHandler = new SocketsHttpHandler
             {
                 EnableMultipleHttp2Connections = true,
@@ -112,11 +120,16 @@ public sealed class KvNodeClient : IDisposable
 
         if (options.ReadAttempts > 1)
         {
+            // Download is read-only too; gRPC retries a server stream only until
+            // its first response message (then the call is committed), so a
+            // transfer broken mid-way surfaces instead of silently restarting
+            // against a value that may have changed.
             var readOnly = new MethodConfig
             {
                 Names =
                 {
                     new MethodName { Service = ServiceName, Method = "Get" },
+                    new MethodName { Service = ServiceName, Method = "Download" },
                     new MethodName { Service = "grpc.health.v1.Health", Method = "Check" },
                 },
                 RetryPolicy = new RetryPolicy
@@ -143,7 +156,12 @@ public sealed class KvNodeClient : IDisposable
     /// </returns>
     /// <exception cref="ArgumentException">The key is empty.</exception>
     /// <exception cref="ArgumentOutOfRangeException">The key exceeds <see cref="KvNodeClientOptions.MaxKeyBytes"/>.</exception>
-    /// <exception cref="RpcException">The server or transport reported an error.</exception>
+    /// <exception cref="RpcException">
+    /// The server or transport reported an error; <c>RESOURCE_EXHAUSTED</c> for
+    /// a value above the server's <c>KVNODE_MAX_VALUE_BYTES</c>, which only an
+    /// upload can store — read those with
+    /// <see cref="DownloadAsync(ReadOnlyMemory{byte}, long, long?, CancellationToken)"/>.
+    /// </exception>
     public async Task<ReadOnlyMemory<byte>?> GetAsync(ReadOnlyMemory<byte> key, CancellationToken cancellationToken = default)
     {
         var request = new GetRequest { Key = WireKey(key) };

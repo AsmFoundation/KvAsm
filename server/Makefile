@@ -5,8 +5,9 @@
 #   all      the kvnode server binary (build/kvnode)
 #   test     build and run every native test; any failure exits non-zero
 #   itest    run the real server end to end (tests/integration/run.sh):
-#            gRPC protocol and limits, concurrency, shutdown, idle timeout,
-#            snapshot loading, startup refusals
+#            gRPC protocol and limits, concurrency, streaming Upload/Download
+#            (limits, stalls, drain, fairness), shutdown, idle timeout,
+#            snapshot loading, startup refusals, h2spec, fuzzing
 #   bench    run the full data-structure bake-off (build/bench/bench_ds)
 #   clean    remove build/
 #
