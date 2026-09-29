@@ -1,0 +1,42 @@
+revision 0aa7f65
+cpu 13th Gen Intel(R) Core(TM) i9-13900K
+thp [always] madvise never
+
+(sink 473444384036530)
+keys 1000000  buckets 262144  table 16.0 MiB  slot load 63.6%  pages 4096  cpu 4  reps 5
+collect-pf   median      2.343 ms  (min      2.175, max      2.456)      2.34 ns/key
+collect-new  median      2.137 ms  (min      2.084, max      5.516)      2.14 ns/key
+tablecopy    median      1.205 ms  (min      1.173, max      1.689)    294.20 ns/page
+page-pf      median      0.787 ms  (min      0.736, max      1.191)    192.26 ns/page
+page-fault   median      3.425 ms  (min      3.349, max      6.017)    836.18 ns/page
+occupancy    median      1.134 ms  (min      1.027, max      1.466)      1.13 ns/key
+prefix       median     11.393 ms  (min     10.828, max     12.165)     11.39 ns/key
+dfa          median     23.356 ms  (min     22.241, max     24.223)     23.36 ns/key
+emit         median     24.864 ms  (min     24.624, max     26.400)     24.86 ns/key
+emit rate    4907 MB/s of output, 40.22 M keys/s; prefix matches 0, dfa matches 100000
+
+(sink 472765513235365)
+keys 4000000  buckets 1048576  table 64.0 MiB  slot load 63.6%  pages 16384  cpu 4  reps 5
+collect-pf   median      9.000 ms  (min      8.813, max      9.234)      2.25 ns/key
+collect-new  median      8.850 ms  (min      8.236, max     18.757)      2.21 ns/key
+tablecopy    median      2.965 ms  (min      2.851, max      3.377)    180.98 ns/page
+page-pf      median      2.882 ms  (min      2.851, max      2.946)    175.88 ns/page
+page-fault   median     13.951 ms  (min     13.391, max     22.738)    851.48 ns/page
+occupancy    median      3.978 ms  (min      3.926, max      4.172)      0.99 ns/key
+prefix       median     53.689 ms  (min     53.094, max     55.987)     13.42 ns/key
+dfa          median    104.050 ms  (min    101.837, max    105.145)     26.01 ns/key
+emit         median    114.119 ms  (min    111.133, max    115.062)     28.53 ns/key
+emit rate    4276 MB/s of output, 35.05 M keys/s; prefix matches 1000000, dfa matches 400000
+
+(sink 473157586880990)
+keys 16000000  buckets 4194304  table 256.0 MiB  slot load 63.6%  pages 65536  cpu 4  reps 5
+collect-pf   median     37.233 ms  (min     35.174, max     43.322)      2.33 ns/key
+collect-new  median     72.818 ms  (min     68.319, max     74.131)      4.55 ns/key
+tablecopy    median     16.289 ms  (min     11.336, max     17.054)    248.56 ns/page
+page-pf      median     13.010 ms  (min     12.122, max     15.244)    198.52 ns/page
+page-fault   median     91.246 ms  (min     78.598, max     95.837)   1392.30 ns/page
+occupancy    median     17.484 ms  (min     15.556, max     17.822)      1.09 ns/key
+prefix       median    374.290 ms  (min    317.729, max    496.635)     23.39 ns/key
+dfa          median    663.051 ms  (min    609.701, max    739.341)     41.44 ns/key
+emit         median    645.345 ms  (min    567.276, max    647.307)     40.33 ns/key
+emit rate    3025 MB/s of output, 24.79 M keys/s; prefix matches 1000000, dfa matches 1600000

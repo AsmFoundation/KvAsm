@@ -1,0 +1,72 @@
+revision 29ab560
+cpu 13th Gen Intel(R) Core(TM) i9-13900K
+
+== cap_probe --keys 100000 ==
+keys 100000, cpu 4, reps 7
+
+build (whole set; per key = the cost a create would pay to maintain it)
+  arena             10.6 ns/key      25.5 bytes/key  (2.43 MB of keys + offsets)
+  sorted            48.0 ns/key       4.0 bytes/key  (sort of the whole set: 4.8 ms)
+  trigram          118.5 ns/key     120.9 bytes/key
+  symspell        2564.7 ns/key     675.1 bytes/key  (21.5 variants per key)
+  bloom             34.1 ns/key      10.0 bits/key
+
+queries (median over 7 repetitions; every result count checked against its reference)
+  exact get                      cuckoo, batched pipeline                  27.1 ns   per key
+  definitely-absent test         blocked bloom, 10 bits/key                37.7 ns   false positives 1.04% (incl. hashing the key)
+  successor / rank               sorted snapshot, binary search           165.2 ns   any key, O(log n)
+  count by prefix                sorted snapshot, 2 binary searches        86.6 ns   no iteration ("user:kalo" = 32000 keys)
+  range scan, 100 keys           sorted snapshot                          159.9 ns   seek + 100 keys in order
+  keep it sorted on create       array insert (memmove)                    2.25 us   per create: O(n)
+  contains "lomika" (96 keys)    scan of the store's records              2.072 ms   
+                                 key arena, glibc memmem                 320.56 us   
+                                 key arena, AVX2 first/last filter        84.65 us   
+                                 trigram index                             7.89 us   
+  contains "kalo" (34008 keys)   scan of the store's records              2.440 ms   
+                                 key arena, glibc memmem                  1.528 ms   
+                                 key arena, AVX2 first/last filter        1.052 ms   
+                                 trigram index                           485.65 us   
+  glob user:ka*mi*:e* (10560)    scan of the store's records              2.492 ms   any pattern, O(n)
+                                 key arena                                1.277 ms   any pattern, O(n)
+  typo: substitution (d<=1)      key arena, Myers bit-parallel            3.595 ms   1 matches
+                                 SymSpell index (symmetric delete)         1.48 us   1,000 different typos; independent of n
+  typo: deletion (d<=1)          key arena, Myers bit-parallel            3.694 ms   5 matches
+                                 SymSpell index (symmetric delete)         1.22 us   1,000 different typos; independent of n
+  typo: insertion (d<=1)         key arena, Myers bit-parallel            1.906 ms   1 matches
+                                 SymSpell index (symmetric delete)         1.38 us   1,000 different typos; independent of n
+  typo: two substitutions (d<=2) key arena, Myers bit-parallel            3.670 ms   4 matches
+
+== cap_probe --keys 1000000 ==
+keys 1000000, cpu 4, reps 7
+
+build (whole set; per key = the cost a create would pay to maintain it)
+  arena             12.7 ns/key      25.5 bytes/key  (24.32 MB of keys + offsets)
+  sorted            59.1 ns/key       4.0 bytes/key  (sort of the whole set: 59.1 ms)
+  trigram          119.1 ns/key      97.2 bytes/key
+  symspell        3203.6 ns/key     540.9 bytes/key  (21.5 variants per key)
+  bloom             35.0 ns/key      10.0 bits/key
+
+queries (median over 7 repetitions; every result count checked against its reference)
+  exact get                      cuckoo, batched pipeline                  40.7 ns   per key
+  definitely-absent test         blocked bloom, 10 bits/key                38.8 ns   false positives 1.04% (incl. hashing the key)
+  successor / rank               sorted snapshot, binary search           324.1 ns   any key, O(log n)
+  count by prefix                sorted snapshot, 2 binary searches       155.6 ns   no iteration ("user:kalo" = 32000 keys)
+  range scan, 100 keys           sorted snapshot                          192.1 ns   seek + 100 keys in order
+  keep it sorted on create       array insert (memmove)                   29.97 us   per create: O(n)
+  contains "lomika" (1888 keys)  scan of the store's records             24.969 ms   
+                                 key arena, glibc memmem                  3.165 ms   
+                                 key arena, AVX2 first/last filter        1.290 ms   
+                                 trigram index                            90.92 us   
+  contains "kalo" (40092 keys)   scan of the store's records             31.987 ms   
+                                 key arena, glibc memmem                  5.182 ms   
+                                 key arena, AVX2 first/last filter        2.503 ms   
+                                 trigram index                           611.90 us   
+  glob user:ka*mi*:e* (29679)    scan of the store's records             28.095 ms   any pattern, O(n)
+                                 key arena                                9.151 ms   any pattern, O(n)
+  typo: substitution (d<=1)      key arena, Myers bit-parallel           36.543 ms   1 matches
+                                 SymSpell index (symmetric delete)         1.45 us   1,000 different typos; independent of n
+  typo: deletion (d<=1)          key arena, Myers bit-parallel           36.925 ms   5 matches
+                                 SymSpell index (symmetric delete)         2.19 us   1,000 different typos; independent of n
+  typo: insertion (d<=1)         key arena, Myers bit-parallel           19.009 ms   1 matches
+                                 SymSpell index (symmetric delete)         1.56 us   1,000 different typos; independent of n
+  typo: two substitutions (d<=2) key arena, Myers bit-parallel           36.754 ms   4 matches
