@@ -6,9 +6,12 @@
   of the keys that match a filter. `Watch` streams every later write to
   matching keys. Filters combine exact keys, prefixes, globs and regular
   expressions.
-- **Evidence:**
-  [benchmarks/results/2026-09-29-export-probe](../../benchmarks/results/2026-09-29-export-probe/README.md)
-  measures, on the store's real code, the costs the main choices depend on.
+- **Evidence:** two probes on the store's real code.
+  - [2026-09-29-export-probe](../../benchmarks/results/2026-09-29-export-probe/README.md):
+    the costs the cut and scan choices depend on.
+  - [2026-09-29-index-probe](../../benchmarks/results/2026-09-29-index-probe/README.md):
+    the lock-free revision sequence (§3.1) and the key indexes of the
+    companion proposal [key-indexes.md](key-indexes.md).
 - **Work in parallel:** Upload/Download (client and server streaming) is
   being built in the worktree `worktree-upload-download`. It needs the same
   HTTP/2 streaming layer (§7). Both features must land on one mechanism, so
@@ -17,10 +20,17 @@
 
 ## Summary
 
-- **Revisions.** Writes are already serialized by one mutex (ADR 0003).
-  Each applied write gets the next 64-bit **revision**, which gives every
-  write a place in one global order. A random **incarnation** id per process
-  start tells clients when revisions restarted.
+- **Revisions, without a lock.** Each applied write takes the next 64-bit
+  **revision** with one atomic fetch-and-add (`LOCK XADD`, 3 ns).
+  - A write publishes its revision in its own history slot. Readers advance
+    a **stable revision** over the published slots, so a write whose number
+    is taken but not yet visible is never announced.
+  - No step of Export or Watch takes the writer mutex, and writers never
+    coordinate with each other to publish.
+  - Measured: +3.3 ns per write for today's serialized writers, and 41.6M
+    writes/s across 7 cores where a mutex tops out at 15.1M/s (§3.1).
+  - A random **incarnation** id per process start tells clients when
+    revisions restarted.
 - **Export** streams the matching keys and values **exactly as they were at
   one revision R**, while writes continue.
   - The cut is taken by **copy-on-write of 4 KiB pages of the bucket
@@ -44,12 +54,15 @@
   - compilation is bounded;
   - measured cost is 23-41 ns per key during a scan.
 - **What does not change:** Get is untouched and readers stay lock-free.
-  Put and Delete gain one increment and one predictable branch, plus the
-  history append when Watch is enabled (budget: ≤ 5%, gate G1).
-- **The main limit:** a hash table has no key order, so **a filtered Export
-  scans the whole table**. That is O(n) by design: about 1 ns per key to
-  walk the table, 11-41 ns with each key read and matched. An ordered index
-  is ADR 0001's revisit condition.
+  Put and Delete gain one atomic increment, one slot store and one
+  predictable branch, plus the history append when Watch is enabled
+  (budget: ≤ 5%, gate G1).
+- **The main limit, and its answer:** a hash table has no key order, so
+  without an index **a filtered Export scans the whole table**: about 1 ns
+  per key to walk the table, 11-41 ns with each key read and matched.
+  [key-indexes.md](key-indexes.md) proposes opt-in indexes that make
+  selective prefix, suffix and anchored-pattern queries O(1) + O(k).
+  Measured at 16M keys: 447 ms → 0.2 µs for a 4-key prefix.
 
 ## 1. Goals and non-goals
 
@@ -69,9 +82,12 @@
 
 **Non-goals**
 
-- Ordered or range iteration, and prefix queries faster than a full scan.
-  Those need an ordered index: ADR 0001's "revisit if range or prefix
-  queries become a requirement".
+- Ordered or range iteration. That needs an ordered index: ADR 0001's
+  "revisit if range or prefix queries become a requirement".
+- Prefix, suffix and pattern queries faster than a full scan. These are
+  covered separately, by the key indexes of
+  [key-indexes.md](key-indexes.md), which this proposal's Export uses when
+  one exists.
 - Matching on values.
 - Durability. Export feeds snapshot files that the client writes; the
   server still never writes to disk.
@@ -190,18 +206,62 @@ failure before the first message is a Trailers-Only response.
 
 ### 3.1 Revisions and incarnations
 
-- **Numbering.** The store's revision starts at 0. Every applied write
-  increments it under the writer mutex:
-  - a Put that created or replaced a value;
-  - a Delete that removed a key.
+- **Numbering: an atomic increment, no lock.**
+  - Revisions start at 0. A write takes its revision with one `LOCK XADD`
+    on the store's counter.
+  - Who gets one: a Put that created or replaced a value, a Delete that
+    removed a key, and an Upload's publish (Upload/Download work). A refused
+    Put and a Delete of an absent key change nothing and get none.
+  - Cuts also take a number (§5.2), so revisions are unique and increasing
+    but not every number is a write.
+  - A write takes its number while it owns its key. Today that is inside
+    the critical section ADR 0003 already has for the index update, which
+    is why the original proposal could use a plain increment. In a future
+    design where writes run concurrently, it would be while the write holds
+    its key's buckets. Either way, two writes to one key carry revisions in
+    the order they took effect.
+- **Visibility: the stable revision.**
+  - A number is taken before its write is visible, and **published** after:
+    the writer stores the revision in the write's own history slot (§6.1),
+    or in a small completion ring when Watch is off.
+  - The **stable revision** is the highest R such that every revision ≤ R
+    is published. Readers compute it by advancing over contiguous published
+    slots, so it never goes backwards and writers never coordinate.
+  - Watchers deliver, and cuts start, only up to the stable revision, never
+    up to the raw counter.
+  - A writer about to reuse a slot first waits until the slot's previous
+    revision was published. That happens only if some write stalls for a
+    whole ring of revisions.
+- **Why the counter alone is not enough.**
+  - Writer A takes 7, writer B takes 8, and B's write lands first. A reader
+    of the counter would announce 8 while 7 is still being written: a
+    watcher would deliver them out of order, and a cut "at 8" could miss 7.
+  - Measured, 7 threads
+    ([index probe](../../benchmarks/results/2026-09-29-index-probe/README.md)):
 
-  A refused Put (full, too large) and a Delete of an absent key change
-  nothing and get no revision. Loading a snapshot file applies Puts, so
-  after startup the revision equals the number of records loaded,
-  duplicates included.
-- **One global order.** Revisions follow the order in which writes take
-  effect. The mutex serializes every write (ADR 0003), so this is one
-  total order, consistent with linearizability.
+    | Way to publish "done up to R" | M writes/s | Monotonic |
+    |---|---|---|
+    | every writer CAS-advances one shared watermark | 13.4 | yes, but no faster than the mutex (15.1): all writers serialize on one cache line |
+    | each writer announces a bound in its own line; readers take the minimum | 30.2 | **no**: a stale announcement moved it back 312-3,070 times per verified run |
+    | **each writer publishes only its own slot; readers advance (proposed)** | **41.6** | **yes, by construction** |
+
+  - A concurrent verifier checked every configuration: no watermark ever
+    covered an unpublished revision (4M-28M revisions each).
+  - The bare counter hands out 137M revisions per second, so the sequencer
+    itself never limits writes.
+  - With today's serialized writers the protocol costs +3.3 ns per write.
+- **One global order.** Revisions give every write one place in a total
+  order, and the stable revision makes that order safe to read.
+  - Today the index update itself is serialized (ADR 0003), so effects
+    also become visible to Gets in revision order: the order is
+    linearizable.
+  - If writes to different keys ever run concurrently, two of them may
+    become visible to Gets in the opposite order of their revisions. Within
+    one key the order stays exact, and cuts and watches stay consistent
+    with the revision order. Making cross-key visibility follow revisions
+    too would need effects published in revision order: a commit sequencer,
+    which is exactly the serialization a lock provides. It is a property to
+    decide then, not a reason to keep the lock now.
 - **Incarnation.** A 64-bit random id drawn from `getrandom` at startup
   (next to the SipHash seed). A restart loses every write and restarts the
   revisions, so revisions compare only within one incarnation. Every
@@ -264,8 +324,9 @@ nothing missed. Two ways:
 1. **`Watch(initial_state = true)`**, one stream.
    - It sends the matching keys as of `started.revision`, then
      `initial_done`, then events from `started.revision + 1`.
-   - The cut and the watcher's position are set together under the writer
-     mutex, so no write can fall between them.
+   - The cut takes a revision number and the watcher starts right after it
+     (§6.6), so no write can fall between them. No lock is needed: every
+     write the cut lacks has a larger number.
    - The history must hold everything written while the initial state
      streams. On a busy server with a large result, that may end in
      `OUT_OF_RANGE`: raise the history or use way 2.
@@ -400,26 +461,53 @@ worker; gate G6 measures it. Concurrent exports and watchers are capped
 | MVCC version chains | per-record versions and garbage collection | rejected: rewrites the core for one feature |
 | **Copy-on-write of 4 KiB bucket pages** | **0.2 µs per page copy (0.84-1.4 µs if it also faults in its destination page), paid once per page by the first writer that modifies it** | **proposed** |
 
-### 5.2 The cut
+### 5.2 The cut, as one more operation in the revision sequence
 
-A cut is taken in O(1) under the writer mutex:
+A cut takes a revision number like a write does. That places it exactly
+between the writes it contains and the writes it does not, with no lock.
 
-1. `R = revision`; `E = epoch` (the QSBR epoch, ADR 0003).
-2. Take a reserved QSBR reader slot and set it to `E`. It is one of
-   `KVNODE_MAX_EXPORTS` extra slots after the workers' slots.
-3. Mark the cut active: one bit in `Table.cut_mask`, which writers test.
-
-Two things were prepared before taking the lock:
+**Prepared first**, touching nothing shared:
 
 - **Bitmaps:** `preserved` (written by writers) and `consumed` (written by
   the exporter), one bit per 4 KiB page. That is 512 bytes for the default
   table and 8 KiB at 16M keys.
-- **A copy area** the size of the bucket array, `mmap`'ed
-  `MAP_NORESERVE` with `MADV_NOHUGEPAGE`. It is untouched, so it costs no
-  memory yet.
+- **A copy area** the size of the bucket array, `mmap`'ed `MAP_NORESERVE`
+  with `MADV_NOHUGEPAGE`. It is untouched, so it costs no memory yet.
+  `MADV_NOHUGEPAGE` matters: a first write into a transparent huge page
+  would zero 2 MiB inside a writer's critical section.
 
-`MADV_NOHUGEPAGE` matters: a first write into a transparent huge page would
-zero 2 MiB inside a writer's critical section.
+**Then, in order:**
+
+1. **Hold.** Set one of the `KVNODE_MAX_EXPORTS` reserved QSBR reader slots
+   to the current epoch E (§5.5).
+2. **Announce.** Set the cut's bit in `Table.cut_mask`, with its revision
+   `c.R` marked pending.
+3. **Take a number.** `r = LOCK XADD(counter) + 1`, then `c.R = r − 1`.
+   Publish slot r as a CUT marker that watchers skip, so the stable
+   revision can pass it.
+4. **Wait for R.** The exporter starts walking pages once the stable
+   revision reaches R. Every write numbered ≤ R has then published. With
+   today's serialized writers it already has.
+
+**Why the split is exact:**
+
+- **After the cut:** steps 1 and 2 precede the `LOCK XADD`, a full barrier.
+  A write numbered above r reserved after it, so its load of `cut_mask`
+  (made after its own reservation) sees the bit, and its later retirements
+  see the held slot.
+- **Before the cut:** a write that sees the bit compares its revision with
+  `c.R`. It waits the few nanoseconds `c.R` may still be pending, right
+  after a cut starts. Above R, it preserves pages (§5.3). At or below R, it
+  is part of the cut and must not.
+
+**Release** reverses the order:
+
+1. Clear the bit.
+2. Take a number `r_e` (and publish its marker). Writes numbered above
+   `r_e` cannot see the bit.
+3. Once the stable revision reaches `r_e`, no write that might have seen
+   the bit is still copying. Only then unmap the copy area and free the
+   QSBR slot.
 
 The bucket array never resizes (ADR 0001), so a page index is stable for
 the life of the process. That is what makes page-level copy-on-write
@@ -427,29 +515,39 @@ simple.
 
 ### 5.3 Writers
 
-Every routine that modifies a bucket runs under the mutex:
+Before its first store to bucket `b`, every routine that modifies one
+checks the active cuts:
 
 - publish (insert);
 - replace;
 - remove;
 - each move of a displacement path.
 
-Before its first store to bucket `b`:
-
 ```
 if (cut_mask != 0)                       // predictable branch; nothing else when idle
     for each active cut c:
-        p = page(b)
-        if (!c.preserved[p] && !c.consumed[p]):
-            copy page p -> c.copy[p]     // 176-199 ns measured, cold source
-            sfence                       // string stores (rep movsb) are not ordered
-            c.preserved[p] = 1           // plain store: writers are serialized
+        wait while c.R is pending        // nanoseconds, only right after a cut starts
+        if (my_revision > c.R):          // this write comes after the cut
+            p = page(b)
+            if (!c.preserved[p] && !c.consumed[p]):
+                copy page p -> c.copy[p] // 176-199 ns measured, cold source
+                sfence                   // string stores (rep movsb) are not ordered
+                c.preserved[p] = 1
 ```
 
 - A write modifies one bucket, and a displacement path a few, so a write
   copies at most a few pages, and each page at most once per export.
 - For the default table the whole cost across one export is bounded by its
   4,096 pages.
+- **Today** every bucket store happens inside ADR 0003's index critical
+  section, so `preserved` needs only plain stores.
+- **If writes to different buckets ever run concurrently:**
+  - a writer claims a page with an atomic bit test-and-set, and one that
+    loses the race waits for the winner's bit before modifying;
+  - a write after the cut first waits until the stable revision reaches R,
+    so that it never copies a page an older write is still changing.
+
+  Neither changes anything above.
 
 ### 5.4 The exporter (lock-free)
 
@@ -540,8 +638,9 @@ The cut holds pointers to records that writers may replace or delete after R.
   - A writer never releases the slot itself: the exporter may be reading
     those records at that moment.
 - **Any stream end** releases the cut: success, cancel, deadline, drain or
-  connection loss. The worker clears the cut bit and the slot under the
-  mutex and unmaps the copy area.
+  connection loss. The worker follows §5.2's release order: clear the bit,
+  take a number, and unmap the copy area and free the QSBR slot once the
+  stable revision passes that number.
 
 ### 5.8 Later, if measurements ask for it
 
@@ -563,23 +662,26 @@ per cache line), allocated once at startup:
 
 | Offset | Field | Meaning |
 |---|---|---|
-| 0 | `rev` | 0 while the slot is being written; then the event's revision |
-| 8 | `kind` | PUT or DELETE; the `created` flag |
+| 0 | `rev` | the event's revision once published; 0 while the slot is being rewritten |
+| 8 | `kind` | PUT, DELETE, or CUT (a cut's number, §5.2; watchers skip it); the `created` flag |
 | 16 | `rec` | the record: the new one for a PUT, the removed one for a DELETE |
 | 24 | `h1` | the key's SipHash h1, so exact-key watchers can filter without touching the record |
 
-The table also gets `hist_head`, the newest revision (the same counter as
-`revision`), and `hist_tail`, the oldest revision still retained.
+- **Newest end:** the newest *published* revision is §3.1's stable
+  revision. Watchers compute it from the slots themselves, so the ring
+  needs no head pointer.
+- **Oldest end:** the table keeps `hist_tail`, the oldest revision still
+  retained.
 
-### 6.2 The writer's append (under the mutex, after the index update)
+### 6.2 The writer's append (after the index update)
 
 ```
-seq  = revision + 1
+seq  = its revision (LOCK XADD, taken while the write owns its key, §3.1)
 slot = ring[seq & mask]
+wait while slot.rev < seq - capacity      // previous occupant unpublished: only after a long stall
 slot.rev = 0                              // readers of the old event now fail validation
 slot.kind, slot.rec, slot.h1 = ...
-slot.rev = seq                            // publish the slot ...
-revision = seq                            // ... then the revision readers poll
+slot.rev = seq                            // publish: the stable revision may now pass seq
 rec.aux = seq                             // "newest event referencing me" (writer-only field)
 hist_tail = max(hist_tail, seq - capacity + 1)
 release held records whose aux < hist_tail   // bounded per write (see 6.3)
@@ -589,8 +691,18 @@ release held records whose aux < hist_tail   // bounded per write (see 6.3)
   and records the writer just wrote or looked up. Releasing held records
   reads each one's header once, as today's reclamation already does for
   every retired record.
-- **When Watch is disabled** (`KVNODE_WATCH_HISTORY=0`), only
-  `revision = seq` remains.
+- **Who owns what.**
+  - The slot belongs to its revision, so publishing needs no lock.
+  - `hist_tail`, the held FIFO and `rec.aux` belong to reclamation, which
+    runs inside ADR 0003's critical section today, as the limbo list and
+    Download's pin table do.
+  - Concurrent writers would give reclamation its own synchronization, for
+    all of them at once.
+- **When Watch is disabled** (`KVNODE_WATCH_HISTORY=0`):
+  - the fetch-and-add remains;
+  - so does a store into a small completion ring, which keeps the stable
+    revision exact for cuts (§3.1);
+  - nothing else.
 
 ### 6.3 Records the history still points to
 
@@ -638,12 +750,18 @@ Each worker keeps a list of its watchers, and the minimum of their cursors.
 
 ```
 r1 = slot.rev
-if r1 != want: overflow (overwritten) — or not yet published if want > revision
+if r1 < want: stop for this pass — not published yet (its write is still in
+              flight), or being rewritten; the next pass tells which
+if r1 > want: overflow (overwritten)
 kind, rec, h1 = slot fields
 if slot.rev != r1: overflow (overwritten while reading)
 if want < hist_tail: overflow (released early by the byte budget); do not touch rec
 now rec is safe to read until this worker's next quiescent announcement
 ```
+
+Stopping at the first unpublished slot is exactly "delivering up to the
+stable revision" (§3.1): a watcher never gets revision 8 before 7, even if
+8's write landed first.
 
 The last check is what makes early release safe:
 
@@ -681,22 +799,26 @@ worker sleeps in `epoll_wait` for up to 1 s. Three pieces wake it:
   (`worker.asm`). This becomes a bitmask set with `lock or`: DRAIN, WATCH,
   ABORT. The worker `xchg`-clears it after reading its `eventfd`.
 
-**The writer, after releasing the mutex** (the unlock's `lock xadd` fences
-the revision store):
+**The writer, after publishing its slot:**
 
 ```
 if watch_workers != 0:
+    mfence                           // the slot store before the flag loads; no fence without watchers
     for each worker w in watch_workers, w != me:
         if w.sleeping and xchg(w.doorbell_pending, 1) == 0:
             doorbell_reasons |= WATCH; write(w.event_fd, 1)
 ```
+
+Today the writer mutex's unlock (`lock xadd`) already orders the stores
+before it, so a writer that checks after unlocking gets this fence for
+free. The explicit one keeps Watch independent of that lock.
 
 **The worker, before blocking:**
 
 ```
 doorbell_pending = 0                 // first: a writer that saw 1 skipped its doorbell
 xchg(sleeping, 1)                    // full fence
-if revision >= min_cursor: sleeping = 0 and process now
+if slot(min_cursor).rev == min_cursor: sleeping = 0 and process now
 ```
 
 Both sides fence before they read the other's flag, so a wake-up cannot be
@@ -704,10 +826,13 @@ lost:
 
 - **A writer that finds `sleeping == 1`** rings, unless `doorbell_pending`
   shows a ring is already under way.
-- **A writer that finds `sleeping == 0`** stored its revision before
-  checking, so the worker's re-check after its `xchg` sees that revision.
+- **A writer that finds `sleeping == 0`** published its slot before
+  checking, so the worker's re-check after its `xchg` sees it.
 - **A writer that skipped because `doorbell_pending` was still 1** is caught
   by the same re-check, because the worker clears the flag first.
+- **A write published out of order** (8 before 7) wakes the worker, which
+  finds the event at its cursor (7) not yet published and sleeps again.
+  7's own publication then wakes it.
 
 **Costs:**
 
@@ -727,7 +852,10 @@ lost:
 `Watch(initial_state = true)` works as follows:
 
 - It takes a cut exactly as Export does (§5).
-- In the same critical section it sets the watcher's cursor to `R + 1`.
+- It sets the watcher's cursor to `R + 1`, R being the cut's number
+  (§5.2). Every write the cut does not contain has a larger revision, so
+  nothing falls between the initial state and the first event, with no
+  lock.
 - It streams the cut's matching keys as `initial` messages, then
   `initial_done`, then events from `R + 1`.
 - Events written meanwhile wait in the shared ring, not in per-watcher
@@ -812,7 +940,7 @@ what it must also cover, so that there is one mechanism.
 |---|---|
 | `proto/kvnode/v1/kvnode.proto` | the messages and methods of §2 |
 | `server/include/kvnode.inc` | `Table`: `revision` and the history head/tail next to `epoch` (both polled by readers once per pass); `incarnation` (immutable line); `cut_mask`, cut and history pointers; the `HistEvent` and `Cut` structs; `Rec.aux` documented as "newest history revision while live" |
-| `server/src/store.asm` | revision increment; history append and held FIFO; retire deferral; reserved QSBR slots for cuts; retention accounting and abort flags |
+| `server/src/store.asm` | revision fetch-and-add and slot publication (every publishing path: Put, Delete, Upload's publish, snapshot load); history append and held FIFO; retire deferral; reserved QSBR slots for cuts; retention accounting and abort flags |
 | `server/src/cuckoo.asm` | the page-preserve hook before bucket stores (publish, replace, remove, displacement moves) |
 | `server/src/filter.asm` (new) | filter parser, NFA, byte classes, DFA construction, executor, exact/prefix fast paths |
 | `server/src/export.asm` (new) | cut start and release, the lock-free page walk, the Export producer |
@@ -938,6 +1066,7 @@ stated otherwise.
 
 | Gate | Measures | Pass |
 |---|---|---|
+| G0 | the revision sequence and its stable-revision protocol, alone | **done** (index probe): +3.3 ns per write with today's serialized writers; 41.6M/s lock-free at 7 threads; verified safe and monotonic |
 | G1 | SET throughput and p99 with the history on vs off | ≤ 5% loss |
 | G2 | write p99 / p99.9 while an export runs vs idle | p99.9 ≤ 2× (otherwise add the page pool, §5.8) |
 | G3 | export throughput (keys/s, MB/s) over loopback, .NET and kvbench | network-bound: server CPU per exported byte below the client's |
@@ -975,6 +1104,9 @@ Each phase ends committed with its tests, docs and gates.
 | Writers match patterns and push to each watcher | O(watchers) of work inside the critical section that every write shares |
 | Per-watcher event queues | memory multiplied by watchers; the shared ring stores each event once |
 | Reference-counted history | a cold record-header miss inside the critical section on nearly every write (§6.3) |
+| Revisions numbered inside the writer mutex (this proposal's first version) | correct today, but it ties Export and Watch to ADR 0003's lock; the lock-free sequence costs +3.3 ns per write and removes that tie (§3.1) |
+| A stable revision that every writer advances by CAS | measured no faster than the mutex: 13.4M vs 15.1M writes/s at 7 threads, all writers on one cache line |
+| Per-writer announcements of in-flight revisions | measured 30.2M/s but not monotonic: a stale announcement moved the watermark back 312-3,070 times per verified run, so every consumer would have to clamp |
 | An ordered secondary index for prefix queries | O(log n) or O(k) writes and a second copy of every key; against O(1)-first (ADR 0001) |
 | Keyspace notifications (Redis Pub/Sub style) | no order guarantee against a snapshot, no resume, silent loss |
 
