@@ -30,6 +30,24 @@
 ; Every operation does O(1) work in the number of keys: the index is O(1),
 ; reclamation frees at most RECLAIM_BATCH records per call, and reader scans
 ; are O(n_readers) and rate-limited.
+;
+; Streaming (Upload/Download) adds two mechanisms:
+;   * Write-once records: kv_store_rec_alloc reserves and allocates a record
+;     whose value the caller fills in place (an upload writes each chunk
+;     straight into it), kv_store_publish makes it visible atomically like
+;     a Put, and kv_store_rec_free abandons an unpublished one. The value is
+;     copied once, from the network buffer into its final place.
+;   * Pins: a Download reads one record across many event-loop passes, i.e.
+;     across quiescent states, so QSBR alone could free it under the reader
+;     once a writer replaces it. kv_store_pin records the record in a small
+;     table (under the writer mutex); reclamation defers a pinned record
+;     instead of freeing it, and the last kv_store_unpin frees it. Why a
+;     table instead of a count in the record: a count would need a new
+;     field (8 bytes on every record for a rare operation) and readers
+;     writing shared record memory; with no pin held the table costs
+;     reclamation one compare. Pinning is O(1) expected (hashing), and the
+;     pin/unpin pair takes the writer mutex twice per download — noise next
+;     to a transfer.
 ; =============================================================================
 
 default rel
@@ -76,6 +94,14 @@ global kv_qsbr_quiescent
 global kv_store_prefetch
 global kv_store_prefetch_records
 global kv_store_enable_inval
+global kv_store_rec_alloc
+global kv_store_rec_free
+global kv_store_publish
+global kv_store_pin
+global kv_store_unpin
+
+%define PIN_HASH_MUL        0x9E3779B97F4A7C15  ; Fibonacci hashing of record pointers
+%define PIN_MIN_SLOTS       16                  ; first pin table (grows by doubling)
 
 ; =============================================================================
 ; kv_store_create — allocate an empty store.
@@ -293,12 +319,36 @@ kv_store_destroy:
     mov     r12, [rbx + Table.limbo_head]
 .limbo_next:
     test    r12, r12
-    jz      .scratch
+    jz      .pins
     mov     r13, [r12 + Rec.next]
     mov     rdi, r12
     call    free wrt ..plt
     mov     r12, r13
     jmp     .limbo_next
+.pins:
+    ; A record whose grace period ended while pinned is in neither the index
+    ; nor limbo: its deferred pin entry is its only owner. (A pinned record
+    ; still live or still in limbo was freed above, and its entry is not
+    ; deferred, so nothing is freed twice.) Normally empty: main destroys the
+    ; store after every worker — and so every Download — is gone.
+    mov     r12, [rbx + Table.pins]
+    test    r12, r12
+    jz      .scratch
+    mov     r13, [rbx + Table.pin_mask]
+    inc     r13                         ; slots
+.pin_next:
+    cmp     qword [r12 + PinEnt.rec], 0
+    je      .pin_skip
+    cmp     qword [r12 + PinEnt.deferred], 0
+    je      .pin_skip
+    mov     rdi, [r12 + PinEnt.rec]
+    call    free wrt ..plt
+.pin_skip:
+    add     r12, PinEnt_size
+    dec     r13
+    jnz     .pin_next
+    mov     rdi, [rbx + Table.pins]
+    call    free wrt ..plt
 .scratch:
     mov     rdi, [rbx + Table.inval]
     call    free wrt ..plt              ; 0 when caching was never enabled
@@ -629,6 +679,10 @@ kv_store_stats:
     mov     [rsi + KvStats.full], rax
     mov     rax, [rdi + Table.st_freed]
     mov     [rsi + KvStats.freed], rax
+    mov     rax, [rdi + Table.pin_used]
+    mov     [rsi + KvStats.pinned], rax
+    mov     rax, [rdi + Table.pin_deferred]
+    mov     [rsi + KvStats.deferred], rax
     ret
 
 ; =============================================================================
@@ -864,10 +918,17 @@ store_reclaim_step:
     jae     .done                       ; FIFO: everything behind is newer
     test    r13d, r13d
     jz      .done
-    dec     r13d
+    dec     r13d                        ; bounded work: a deferral counts like a free
     mov     rcx, [rax + Rec.next]
     mov     [rbx + Table.limbo_head], rcx
     dec     qword [rbx + Table.limbo_count]
+    ; A pinned record's grace period has ended, but a Download still reads it
+    ; across quiescent states: its pin entry takes it over (deferred) and the
+    ; last kv_store_unpin frees it. Its bytes stay counted in mem_used until
+    ; then. With no pin held anywhere this is one compare.
+    cmp     qword [rbx + Table.pin_used], 0
+    jne     .check_pin
+.free_it:
     mov     ecx, [rax + Rec.key_len]
     add     rcx, 7
     and     rcx, -8
@@ -880,12 +941,526 @@ store_reclaim_step:
     call    free wrt ..plt
     inc     qword [rbx + Table.st_freed]
     jmp     .free_next
+.check_pin:
+    mov     r10, rax                    ; the record (pin_find keeps r10/r11)
+    mov     rdi, rbx
+    mov     rsi, rax
+    call    pin_find
+    test    rax, rax
+    jz      .not_pinned
+    mov     qword [rax + PinEnt.deferred], 1
+    inc     qword [rbx + Table.pin_deferred]
+    jmp     .free_next
+.not_pinned:
+    mov     rax, r10
+    jmp     .free_it
 .emptied:
     mov     qword [rbx + Table.limbo_tail], 0
 .done:
     pop     r13
     pop     r12
     pop     rbx
+    ret
+
+; =============================================================================
+; kv_store_rec_alloc — reserve and allocate a record whose value the caller
+; fills in place, to be made visible later by kv_store_publish (Upload).
+;
+; @param  rdi  Table*   @param rsi  key   @param rdx  key len
+; @param  rcx  value len (the value area is left uninitialized)
+; @returns rax = Rec* with header and key written — the value area is at
+;          data + align8(key_len), val_len bytes — or -E2BIG if a length
+;          exceeds 2^31-1, or -ENOMEM if the memory limit would be exceeded
+;          or allocation failed.
+; @remarks Why: a streamed value arrives chunk by chunk; writing each chunk
+;          straight into its final record copies it once, where kv_store_put
+;          would need the whole value contiguous first. The bytes count
+;          against KVNODE_MAX_MEMORY_MB from this call on — so a client
+;          cannot declare more than the store may hold and then hold it — and
+;          the record belongs to the caller until kv_store_publish succeeds:
+;          every other outcome MUST end in kv_store_rec_free, or the memory
+;          reservation leaks. Readers cannot see it before it is published.
+;          Lock-free (the reservation is a LOCK XADD, like kv_store_put's).
+; =============================================================================
+kv_store_rec_alloc:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 16                     ; [0] record size; 5 pushes + 16: aligned
+    mov     rbx, rdi
+    mov     r12, rsi                    ; key
+    mov     r13, rdx                    ; key len
+    mov     r14, rcx                    ; value len
+    mov     eax, MAX_FIELD_LEN
+    cmp     r13, rax
+    ja      .e2big
+    cmp     r14, rax
+    ja      .e2big
+    lea     r15, [r13 + 7]
+    and     r15, -8                     ; key area, padded to 8
+    lea     rax, [r15 + r14 + Rec_size]
+    mov     [rsp], rax
+    ; Reserve first, exactly as kv_store_put does, so concurrent writers and
+    ; uploads cannot overshoot the limit between check and allocation.
+    mov     rcx, rax
+    lock xadd [rbx + Table.mem_used], rcx
+    add     rcx, rax
+    cmp     rcx, [rbx + Table.mem_limit]
+    ja      .nomem_release
+    mov     rdi, rax
+    call    malloc wrt ..plt
+    test    rax, rax
+    jz      .nomem_release
+    mov     qword [rax + Rec.next], 0
+    mov     qword [rax + Rec.aux], 0
+    mov     [rax + Rec.key_len], r13d
+    mov     [rax + Rec.val_len], r14d
+    test    r13, r13
+    jz      .out
+    ; Zero the last word of the padded key area before copying the key, so
+    ; padding bytes are deterministic (never stale heap contents).
+    mov     qword [rax + Rec.data + r15 - 8], 0
+    mov     r14, rax                    ; (the value length is stored already)
+    lea     rdi, [rax + Rec.data]
+    mov     rsi, r12
+    mov     rdx, r13
+    call    memcpy wrt ..plt
+    mov     rax, r14
+    jmp     .out
+.nomem_release:
+    mov     rcx, [rsp]
+    neg     rcx
+    lock xadd [rbx + Table.mem_used], rcx
+    mov     rax, -ENOMEM
+    jmp     .out
+.e2big:
+    mov     rax, -E2BIG
+.out:
+    add     rsp, 16
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
+; kv_store_rec_free — abandon a record from kv_store_rec_alloc that was never
+; published (a failed, cancelled or interrupted upload).
+;
+; @param  rdi  Table*   @param rsi  Rec* (NULL is a no-op)
+; @returns nothing.
+; @remarks Frees it at once and returns its bytes to the memory reservation:
+;          no grace period is needed because no reader ever saw it. Never
+;          call it for a published record (that one belongs to the store now
+;          and is retired by the next replace or delete). Lock-free.
+; =============================================================================
+kv_store_rec_free:
+    test    rsi, rsi
+    jz      .none
+    push    rbx
+    push    r12                         ; 2 pushes + 8: aligned for the call
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     ecx, [rsi + Rec.key_len]
+    add     rcx, 7
+    and     rcx, -8
+    mov     edx, [rsi + Rec.val_len]
+    add     rcx, rdx
+    add     rcx, Rec_size
+    mov     r12, rcx                    ; size, needed after free
+    mov     rdi, rsi
+    call    free wrt ..plt
+    neg     r12
+    lock xadd [rbx + Table.mem_used], r12
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+.none:
+    ret
+
+; =============================================================================
+; kv_store_publish — make a filled record from kv_store_rec_alloc visible:
+; insert it, or atomically replace the key's current record.
+;
+; @param  rdi  Table*   @param rsi  Rec* (fully written)
+; @param  rdx  h1       @param rcx  h2 (kv_store_hash of the record's key)
+; @returns rax = 1 if the key was created, 0 if an existing value was
+;          replaced, or -ENOSPC if the key is new and the store is at
+;          capacity — in which case the record is still the caller's (free
+;          it with kv_store_rec_free).
+; @remarks Exactly kv_store_put's locked section: one pointer store publishes
+;          the record, so readers see the old or the new value, never a mix;
+;          the replaced record is retired (freed after a grace period, or
+;          after its last unpin). On success the store owns the record.
+; =============================================================================
+kv_store_publish:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 8                      ; [0] result; 4 pushes + 8: aligned
+    mov     rbx, rdi
+    mov     r12, rsi                    ; record
+    mov     r13, rdx                    ; h1
+    mov     r14, rcx                    ; h2
+    lea     rdi, [rbx + Table.wlock]
+    call    kv_mutex_lock wrt ..plt
+    mov     rdi, rbx
+    mov     rsi, r12
+    mov     rdx, r13
+    mov     rcx, r14
+    call    kv_cuckoo_upsert wrt ..plt
+    test    rax, rax
+    js      .refused                    ; -ENOSPC
+    jz      .created
+    ; Replaced: same order as kv_store_put (see hcache.asm) — the new pointer
+    ; is published, the key's generation bumped, only then the old record
+    ; retired.
+    mov     r12, rax                    ; old record (the new one is the store's now)
+    mov     rdi, rbx
+    mov     rsi, r13                    ; h1
+    call    inval_bump
+    mov     rdi, rbx
+    mov     rsi, r12
+    call    store_retire
+    mov     qword [rsp], 0
+    jmp     .reclaim
+.created:
+    mov     qword [rsp], 1
+    jmp     .reclaim
+.refused:
+    mov     [rsp], rax
+.reclaim:
+    mov     rdi, rbx
+    xor     esi, esi
+    call    store_reclaim_step
+    lea     rdi, [rbx + Table.wlock]
+    call    kv_mutex_unlock wrt ..plt
+    mov     rax, [rsp]
+    add     rsp, 8
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
+; kv_store_pin — keep a record alive across quiescent states (Download).
+;
+; @param  rdi  Table*
+; @param  rsi  Rec* returned by kv_store_get during the caller's CURRENT
+;              online period (before its next quiescent/offline announcement)
+; @returns rax = 0, or -ENOMEM when the pin table could not grow (the record
+;          is then not pinned; nothing changed).
+; @remarks Safety argument: the lookup that returned the record happened
+;          while the caller was online, so the record cannot be freed before
+;          the caller's next quiescent announcement (QSBR). This function
+;          records the pin under the writer mutex before that announcement;
+;          reclamation checks pins under the same mutex, so whenever it later
+;          reaches the record — still live, still in limbo, or past its grace
+;          period — it sees the pin and defers instead of freeing. Pins
+;          nest: every kv_store_pin needs one kv_store_unpin.
+; =============================================================================
+kv_store_pin:
+    push    rbx
+    push    r12
+    sub     rsp, 8                      ; [0] result; 2 pushes + 8: aligned
+    mov     rbx, rdi
+    mov     r12, rsi
+    lea     rdi, [rbx + Table.wlock]
+    call    kv_mutex_lock wrt ..plt
+    mov     rdi, rbx
+    mov     rsi, r12
+    call    pin_find
+    test    rax, rax
+    jnz     .nested
+    ; A new entry: keep the load factor <= 1/2 so probes stay short.
+    cmp     qword [rbx + Table.pins], 0
+    je      .grow
+    mov     rax, [rbx + Table.pin_used]
+    lea     rax, [rax * 2 + 2]          ; 2 * (used + 1)
+    mov     rcx, [rbx + Table.pin_mask]
+    inc     rcx
+    cmp     rax, rcx
+    jbe     .insert
+.grow:
+    mov     rdi, rbx
+    call    pin_grow
+    test    eax, eax
+    jnz     .nomem
+.insert:
+    mov     r8, [rbx + Table.pins]
+    mov     rdx, [rbx + Table.pin_mask]
+    mov     rax, r12
+    mov     rcx, PIN_HASH_MUL
+    imul    rax, rcx
+    shr     rax, 32
+    and     rax, rdx                    ; home slot
+.probe:
+    mov     rcx, rax
+    shl     rcx, 5                      ; * PinEnt_size
+    cmp     qword [r8 + rcx + PinEnt.rec], 0
+    je      .slot
+    inc     rax
+    and     rax, rdx
+    jmp     .probe
+.slot:
+    mov     [r8 + rcx + PinEnt.rec], r12
+    mov     qword [r8 + rcx + PinEnt.count], 1
+    mov     qword [r8 + rcx + PinEnt.deferred], 0
+    inc     qword [rbx + Table.pin_used]
+    mov     qword [rsp], 0
+    jmp     .unlock
+.nested:
+    inc     qword [rax + PinEnt.count]
+    mov     qword [rsp], 0
+    jmp     .unlock
+.nomem:
+    mov     qword [rsp], -ENOMEM
+.unlock:
+    lea     rdi, [rbx + Table.wlock]
+    call    kv_mutex_unlock wrt ..plt
+    mov     rax, [rsp]
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
+; kv_store_unpin — release one pin taken by kv_store_pin.
+;
+; @param  rdi  Table*   @param rsi  Rec* (pinned)
+; @returns nothing.
+; @remarks The last unpin of a record that reclamation already deferred (it
+;          was replaced or deleted and its grace period is over) frees it
+;          here, under the writer mutex, and returns its bytes to the memory
+;          accounting. The last unpin of a record still live, or still in
+;          limbo, only forgets the pin; reclamation frees it normally later.
+;          Unpinning a record that is not pinned is a caller bug and is
+;          ignored (never a crash, never a double free).
+; =============================================================================
+kv_store_unpin:
+    push    rbx
+    push    r12
+    push    r13                         ; 3 pushes: aligned for calls
+    mov     rbx, rdi
+    mov     r12, rsi
+    lea     rdi, [rbx + Table.wlock]
+    call    kv_mutex_lock wrt ..plt
+    mov     rdi, rbx
+    mov     rsi, r12
+    call    pin_find
+    test    rax, rax
+    jz      .unlock                     ; not pinned: ignored
+    dec     qword [rax + PinEnt.count]
+    jnz     .unlock                     ; other pins remain
+    mov     r13, [rax + PinEnt.deferred]
+    mov     rdi, rbx
+    mov     rsi, rax
+    call    pin_remove
+    dec     qword [rbx + Table.pin_used]
+    test    r13, r13
+    jz      .unlock
+    ; Deferred: nobody else can reach it (retired, grace period over, last pin
+    ; gone), so it is freed now, exactly as reclamation would have.
+    dec     qword [rbx + Table.pin_deferred]
+    mov     ecx, [r12 + Rec.key_len]
+    add     rcx, 7
+    and     rcx, -8
+    mov     edx, [r12 + Rec.val_len]
+    add     rcx, rdx
+    add     rcx, Rec_size
+    neg     rcx
+    lock xadd [rbx + Table.mem_used], rcx
+    mov     rdi, r12
+    call    free wrt ..plt
+    inc     qword [rbx + Table.st_freed]
+.unlock:
+    lea     rdi, [rbx + Table.wlock]
+    call    kv_mutex_unlock wrt ..plt
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
+; pin_find — the pin entry of a record. Internal, leaf; the caller holds the
+; writer mutex.
+; @param  rdi  Table*   @param rsi  Rec*
+; @returns rax = PinEnt*, or 0 when the record is not pinned (or no pin
+;          table exists yet). Clobbers rcx, rdx, r8, r9 — NOT r10/r11, which
+;          store_reclaim_step keeps the record in.
+; @remarks Fibonacci hashing of the pointer (records are 16-byte aligned, so
+;          the low bits carry nothing; the multiply spreads the rest), then
+;          linear probing; the table is at most half full, so a miss ends at
+;          an empty slot within a few probes.
+; =============================================================================
+pin_find:
+    mov     r8, [rdi + Table.pins]
+    test    r8, r8
+    jz      .none
+    mov     rdx, [rdi + Table.pin_mask]
+    mov     rax, rsi
+    mov     rcx, PIN_HASH_MUL
+    imul    rax, rcx
+    shr     rax, 32
+    and     rax, rdx                    ; home slot
+.probe:
+    mov     rcx, rax
+    shl     rcx, 5                      ; * PinEnt_size
+    mov     r9, [r8 + rcx + PinEnt.rec]
+    test    r9, r9
+    jz      .none
+    cmp     r9, rsi
+    je      .found
+    inc     rax
+    and     rax, rdx
+    jmp     .probe
+.found:
+    lea     rax, [r8 + rcx]
+    ret
+.none:
+    xor     eax, eax
+    ret
+
+; =============================================================================
+; pin_grow — double the pin table (or create it) and rehash. Internal; the
+; caller holds the writer mutex.
+; @param  rdi  Table*
+; @returns eax = 0, or -1 when out of memory (the old table stays intact).
+; @remarks Entries move with their count and deferred flag unchanged, so a
+;          deferred record keeps its owner through the move.
+; =============================================================================
+pin_grow:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15                         ; 5 pushes: aligned for calls
+    mov     rbx, rdi
+    mov     r12, [rbx + Table.pins]     ; old table, or 0
+    xor     r13d, r13d                  ; old slot count
+    mov     r14d, PIN_MIN_SLOTS         ; new slot count
+    test    r12, r12
+    jz      .alloc
+    mov     r13, [rbx + Table.pin_mask]
+    inc     r13
+    lea     r14, [r13 * 2]
+.alloc:
+    mov     rdi, r14
+    mov     esi, PinEnt_size
+    call    calloc wrt ..plt
+    test    rax, rax
+    jz      .nomem
+    mov     r15, rax                    ; new table
+    dec     r14                         ; new mask
+    xor     ecx, ecx                    ; old slot index
+.next:
+    cmp     rcx, r13
+    jae     .done
+    mov     r8, rcx
+    shl     r8, 5
+    add     r8, r12                     ; old entry
+    mov     r9, [r8 + PinEnt.rec]
+    test    r9, r9
+    jz      .skip
+    mov     rax, r9
+    mov     rdx, PIN_HASH_MUL
+    imul    rax, rdx
+    shr     rax, 32
+    and     rax, r14                    ; home slot in the new table
+.probe:
+    mov     rdx, rax
+    shl     rdx, 5
+    cmp     qword [r15 + rdx + PinEnt.rec], 0
+    je      .place
+    inc     rax
+    and     rax, r14
+    jmp     .probe
+.place:
+    mov     r10, [r8 + PinEnt.rec]
+    mov     [r15 + rdx + PinEnt.rec], r10
+    mov     r10, [r8 + PinEnt.count]
+    mov     [r15 + rdx + PinEnt.count], r10
+    mov     r10, [r8 + PinEnt.deferred]
+    mov     [r15 + rdx + PinEnt.deferred], r10
+.skip:
+    inc     rcx
+    jmp     .next
+.done:
+    mov     [rbx + Table.pins], r15
+    mov     [rbx + Table.pin_mask], r14
+    mov     rdi, r12
+    call    free wrt ..plt              ; free(NULL) for the first table
+    xor     eax, eax
+    jmp     .out
+.nomem:
+    mov     eax, -1
+.out:
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
+; pin_remove — delete an entry from the pin table. Internal, leaf; the
+; caller holds the writer mutex (and adjusts pin_used).
+; @param  rdi  Table*   @param rsi  PinEnt* (in use)
+; @returns nothing. Clobbers rax, rcx, rdx, rsi, r8-r11.
+; @remarks Backward-shift deletion instead of tombstones (h2n.asm's
+;          map_remove uses the same rule): each entry after the hole moves
+;          back into it when the hole lies on that entry's probe path, so the
+;          table never degrades however many downloads come and go.
+; =============================================================================
+pin_remove:
+    mov     r8, [rdi + Table.pins]
+    mov     rdx, [rdi + Table.pin_mask]
+    mov     rcx, rsi
+    sub     rcx, r8
+    shr     rcx, 5                      ; i: index of the hole
+    mov     r9, rcx                     ; j scans forward from the hole
+.shift:
+    inc     r9
+    and     r9, rdx
+    mov     rax, r9
+    shl     rax, 5
+    mov     r10, [r8 + rax + PinEnt.rec]
+    test    r10, r10
+    jz      .clear                      ; end of the cluster: the hole stays empty
+    mov     r11, r10
+    mov     rsi, PIN_HASH_MUL
+    imul    r11, rsi
+    shr     r11, 32
+    and     r11, rdx                    ; home of the entry at j
+    mov     rsi, r9
+    sub     rsi, r11
+    and     rsi, rdx                    ; dist(home -> j)
+    mov     r11, r9
+    sub     r11, rcx
+    and     r11, rdx                    ; dist(hole -> j)
+    cmp     r11, rsi
+    ja      .shift                      ; the hole is not on its probe path: stays
+    ; Move entry j into the hole i; j becomes the new hole.
+    mov     r11, rcx
+    shl     r11, 5
+    mov     rsi, [r8 + rax + PinEnt.rec]
+    mov     [r8 + r11 + PinEnt.rec], rsi
+    mov     rsi, [r8 + rax + PinEnt.count]
+    mov     [r8 + r11 + PinEnt.count], rsi
+    mov     rsi, [r8 + rax + PinEnt.deferred]
+    mov     [r8 + r11 + PinEnt.deferred], rsi
+    mov     rcx, r9
+    jmp     .shift
+.clear:
+    shl     rcx, 5
+    mov     qword [r8 + rcx + PinEnt.rec], 0
+    mov     qword [r8 + rcx + PinEnt.count], 0
+    mov     qword [r8 + rcx + PinEnt.deferred], 0
     ret
 
 section .note.GNU-stack noalloc noexec nowrite progbits

@@ -19,6 +19,12 @@
 %define READ_CHUNK          65536       ; bytes per recv() into the worker buffer
 %define OUT_INITIAL         65536       ; initial per-connection output buffer
 %define OUT_HIGH_WATER      65536       ; stop producing output above this
+; Fairness of long responses (Download): bytes one connection may frame from
+; its pend list in one flush before worker.asm yields to the other
+; connections of the worker (it resumes on the next loop pass). Without it
+; a fast local reader of a 64 MiB download would keep the worker in one
+; flush for tens of milliseconds while every other connection waits.
+%define FLUSH_BUDGET        262144
 %define MAX_EVENTS          256         ; epoll events per wait
 %define GRPC_PREFIX         5           ; compressed flag + 4-byte length
 ; HTTP/2 flow control: the per-stream receive window we grant (large values
@@ -48,7 +54,14 @@ struc Config
     .scan_mode:         resq 1          ; KVNODE_SCAN: 0 = swar, 1 = sse2 (kv_set_scan_mode)
     .cache_l1_bits:     resq 1          ; KVNODE_CACHE_L1_BITS: 0 = no private L1
     .cache_l2_bits:     resq 1          ; KVNODE_CACHE_L2_BITS: 0 = no private L2
+    .max_upload:        resq 1          ; KVNODE_MAX_UPLOAD_BYTES: largest value Upload stores
+    .crc_mode:          resq 1          ; KVNODE_CRC32C: 0 = auto, 1 = sse42, 2 = table
 endstruc
+
+; KVNODE_CRC32C words (config.asm) — the index stored in Config.crc_mode.
+%define CRC_CFG_AUTO        0
+%define CRC_CFG_SSE42       1
+%define CRC_CFG_TABLE       2
 
 %define INVAL_BITS_DEFAULT  16          ; generation slots when private caches are on
 
@@ -151,6 +164,20 @@ endstruc
 ; ---- Conn: one HTTP/2 connection ------------------------------------------------
 %define CONN_WANT_OUT       1           ; epoll interest is EPOLLOUT (output pending)
 %define CONN_LINGER         2           ; session done, write side shut, draining input
+; epoll interest is EPOLLIN | EPOLLOUT: a flush stopped at FLUSH_BUDGET with
+; the socket still writable, so it resumes on the next pass — while input
+; (WINDOW_UPDATE, RST_STREAM, new calls) is still read. Distinct from
+; CONN_WANT_OUT, which means the socket is full and the connection must stop
+; reading until the peer drains it (back-pressure).
+%define CONN_WANT_BOTH      4
+; The idle timeout expired once and its GOAWAY was queued (terminate mode).
+; If the timeout expires AGAIN with no byte moved since, the peer has stopped
+; reading at the TCP level — its receive window stays 0, so not even the
+; GOAWAY can leave — and housekeeping destroys the connection outright.
+; Without this, such a peer would hold its streams forever: a Download's
+; pinned record (up to KVNODE_MAX_UPLOAD_BYTES of memory), an Upload's
+; reservation, a unary response's buffer.
+%define CONN_IDLE_CLOSING   8
 struc Conn
     .fd:                resq 1
     .flags:             resq 1
@@ -161,13 +188,19 @@ struc Conn
     .out_len:           resq 1          ; bytes queued in out_buf
     .out_off:           resq 1          ; bytes of out_buf already sent
     .buffered:          resq 1          ; request bytes buffered across streams
-    .last_active:       resq 1          ; monotonic ns of the last received bytes
+    .last_active:       resq 1          ; monotonic ns of the last bytes received,
+                                        ; or sent (conn_flush: a long Download is
+                                        ; progress even when the peer says nothing)
     .prev:              resq 1
     .next:              resq 1
     ; GETs parsed from the current read, answered after it (prefetch batch).
     .batch_head:        resq 1
     .batch_tail:        resq 1
     .h2:                resb H2_size    ; HTTP/2 engine state (h2n.asm)
+    ; Value bytes reserved by this connection's Uploads in progress (their
+    ; declared sizes), bounded by Config.conn_budget: a client cannot pin more
+    ; memory than one connection's budget by declaring uploads it never sends.
+    .up_bytes:          resq 1
 endstruc
 
 ; ---- HdrField: one response header field, for the error-path replies ----------
@@ -200,11 +233,17 @@ endstruc
 ; the read that carried it has been fully processed — which covers dispatch
 ; and the GET batch answered right after it.
 %define ST_BORROWED         256
+; The response body is generated on demand by kv_grpc_gen_fill instead of
+; being read from resp_buf (Download: the value is framed straight from its
+; pinned record as windows open). resp_len is the body's exact total length.
+%define ST_GEN              512
 %define M_UNKNOWN           0
 %define M_GET               1
 %define M_PUT               2
 %define M_DELETE            3
 %define M_HEALTH            4           ; grpc.health.v1.Health/Check
+%define M_UPLOAD            5           ; client streaming: DATA consumed as it arrives
+%define M_DOWNLOAD          6           ; server streaming: body generated (ST_GEN)
 struc Stream
     .next:              resq 1
     .prev:              resq 1
@@ -231,6 +270,11 @@ struc Stream
     .clen:              resq 1          ; declared content-length, or -1
     .data_len:          resq 1          ; DATA payload bytes received so far
     .pend_next:         resq 1          ; H2.pend list link
+    ; Streaming calls only (Upload/Download): their transfer state (grpc.asm
+    ; Xfer), or 0. A separate object so that unary calls — nearly every
+    ; stream — keep their small Stream (still one 256-byte pool block).
+    ; stream_free releases it: aborting an upload, unpinning a download.
+    .xfer:              resq 1
 endstruc
 
 %endif

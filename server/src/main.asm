@@ -42,6 +42,8 @@ extern free
 extern clock_gettime
 extern kv_config_load
 extern kv_set_scan_mode
+extern kv_crc32c_set_mode
+extern kv_crc32c_hw_available
 extern kv_store_enable_inval
 extern kv_store_create
 extern kv_store_destroy
@@ -99,6 +101,14 @@ k_l1:       db " cache_l1_bits="
 k_l2:       db " cache_l2_bits="
 v_swar:     db "swar", 0
 v_sse2:     db "sse2", 0
+k_maxup:    db " max_upload_bytes="
+k_crc:      db " crc32c="
+v_sse42:    db "sse42", 0
+v_table:    db "table", 0
+k_pinned:   db " pinned="
+k_deferred: db " deferred="
+m_f_crc:    db ' msg="invalid setting" name=KVNODE_CRC32C value=sse42 reason="this CPU has no SSE4.2 crc32 instruction"'
+L_f_crc     equ $ - m_f_crc
 m_listen:   db ' msg="listening" transport=h2c'
 L_listen    equ $ - m_listen
 m_loaded:   db ' msg="snapshot loaded" records='
@@ -191,6 +201,32 @@ main:
 .config_ok:
     lea     r15, [g_cfg]
 
+    ; CRC-32C implementation (Upload/Download checksums), before any thread:
+    ; auto takes SSE4.2 where CPUID reports it; a forced sse42 on a CPU
+    ; without it is a configuration error (exit 2) — kv_crc32c_set_mode's
+    ; refusal — instead of a #UD crash in a worker at the first upload.
+    ; r14 keeps the mode in force for the "starting" line.
+    mov     rax, [r15 + Config.crc_mode]
+    xor     edi, edi                    ; table
+    cmp     rax, CRC_CFG_TABLE
+    je      .crc_set
+    mov     edi, 1                      ; sse42
+    cmp     rax, CRC_CFG_SSE42
+    je      .crc_set
+    call    kv_crc32c_hw_available wrt ..plt   ; auto
+    mov     edi, eax
+.crc_set:
+    mov     r14d, edi                   ; the mode requested = the mode in force on success
+    call    kv_crc32c_set_mode wrt ..plt
+    test    eax, eax
+    jns     .crc_ok
+    LOGBEGIN lvl_error
+    LOGLIT  m_f_crc, L_f_crc
+    LOGEND
+    mov     eax, 2
+    jmp     .return
+.crc_ok:
+
     LOGBEGIN lvl_info
     LOGLIT  CSTR_starting, L_starting
     LOGLIT  k_port, 6
@@ -218,6 +254,15 @@ main:
     LOGNUM  [r15 + Config.cache_l1_bits]
     LOGLIT  k_l2, 15
     LOGNUM  [r15 + Config.cache_l2_bits]
+    LOGLIT  k_maxup, 18
+    LOGNUM  [r15 + Config.max_upload]
+    LOGLIT  k_crc, 8
+    lea     rdi, [rsp + F_LOG]
+    lea     rsi, [v_table]
+    lea     rax, [v_sse42]
+    test    r14d, r14d
+    cmovnz  rsi, rax
+    call    kv_logb_cstr wrt ..plt
     LOGLIT  k_snapshot, 10
     lea     rdi, [rsp + F_LOG]
     mov     rsi, [r15 + Config.snapshot]
@@ -433,12 +478,19 @@ main:
     inc     r12
     jmp     .join_next
 .joined:
-    sub     rsp, 112                    ; KvStats (14 x u64), alignment kept
+    ; KvStats is 16 x u64: KvStats_size (not a literal) so an appended
+    ; counter can never make kv_store_stats write past this slot again.
+    sub     rsp, (KvStats_size + 15) & ~15  ; alignment kept
     mov     rdi, rbx
     mov     rsi, rsp
     call    kv_store_stats wrt ..plt
     mov     r13, [rsp]                  ; live keys
-    add     rsp, 112
+    ; Pins left after every worker (and so every Download) is gone must be
+    ; zero, and so must records waiting for a last unpin: logged so that the
+    ; end-to-end suite can require "pinned=0 deferred=0" after each phase.
+    mov     r12, [rsp + KvStats.pinned]
+    mov     rbp, [rsp + KvStats.deferred]
+    add     rsp, (KvStats_size + 15) & ~15
     LOGBEGIN lvl_info
     LOGLIT  m_stopped, L_stopped
     LOGNUM  [rsp + F_TOTALS]
@@ -448,6 +500,10 @@ main:
     LOGNUM  [rsp + F_TOTALS + 16]
     LOGLIT  k_keys, 6
     LOGNUM  r13
+    LOGLIT  k_pinned, 8
+    LOGNUM  r12
+    LOGLIT  k_deferred, 10
+    LOGNUM  rbp
     LOGEND
     mov     rdi, r14
     call    free wrt ..plt

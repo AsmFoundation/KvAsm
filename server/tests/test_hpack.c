@@ -48,7 +48,7 @@ extern const uint64_t kv_hpack_abi[];
 enum { HF_OTHER, HF_METHOD, HF_SCHEME, HF_AUTHORITY, HF_PATH, HF_STATUS, HF_PSEUDO_UNKNOWN,
        HF_BAD_NAME, HF_CONTENT_TYPE, HF_TE, HF_GRPC_ENCODING, HF_CONTENT_LENGTH, HF_CONN_SPECIFIC };
 enum { VC_EMPTY = 0x80, VC_POST = 1, VC_HEAD = 2, VC_OK = 1 };
-enum { M_UNKNOWN, M_GET, M_PUT, M_DELETE, M_HEALTH };
+enum { M_UNKNOWN, M_GET, M_PUT, M_DELETE, M_HEALTH, M_UPLOAD, M_DOWNLOAD };
 #define HF_VALUE_BAD 0x10000u
 #define HF_OVERSIZE 0x20000u
 #define HPACK_ERR_COMPRESSION (-1)
@@ -496,6 +496,11 @@ static void test_classify(void) {
   CHECK(CL(":path", "/kvnode.v1.KvNode/Put") == (HF_PATH | M_PUT << 8));
   CHECK(CL(":path", "/kvnode.v1.KvNode/Delete") == (HF_PATH | M_DELETE << 8));
   CHECK(CL(":path", "/grpc.health.v1.Health/Check") == (HF_PATH | M_HEALTH << 8));
+  CHECK(CL(":path", "/kvnode.v1.KvNode/Upload") == (HF_PATH | M_UPLOAD << 8));
+  CHECK(CL(":path", "/kvnode.v1.KvNode/Download") == (HF_PATH | M_DOWNLOAD << 8));
+  CHECK(CL(":path", "/kvnode.v1.KvNode/upload") == HF_PATH);      /* methods are case-sensitive */
+  CHECK(CL(":path", "/kvnode.v1.KvNode/Uploads") == HF_PATH);
+  CHECK(CL(":path", "/kvnode.v1.KvNode/Downloa") == HF_PATH);
   CHECK(CL(":path", "/kvnode.v1.KvNode/Gets") == HF_PATH);
   CHECK(CL(":path", "/kvnode.v1.KvNode/") == HF_PATH);
   CHECK(CL(":path", "") == (HF_PATH | VC_EMPTY << 8));

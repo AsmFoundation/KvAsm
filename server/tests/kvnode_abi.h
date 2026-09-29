@@ -31,6 +31,8 @@ static inline const uint8_t *kv_rec_value(const KvRec *r) {
 typedef struct KvStats {
   uint64_t count, nbuckets, max_records, mem_used, mem_limit, limbo_count, epoch;
   uint64_t inserts, replaces, deletes, bfs, moves, full, freed;
+  uint64_t pinned;   /* distinct records pinned by kv_store_pin */
+  uint64_t deferred; /* of those, retired and past their grace period (freed at last unpin) */
 } KvStats;
 
 typedef struct KvTable KvTable; /* opaque */
@@ -54,6 +56,20 @@ void kv_store_stats(const KvTable *t, KvStats *out);
 void kv_qsbr_online(KvTable *t, uint32_t rid);
 void kv_qsbr_offline(KvTable *t, uint32_t rid);
 void kv_qsbr_quiescent(KvTable *t, uint32_t rid);
+
+/* store.asm — write-once records (Upload) and pins (Download) */
+/** @return a record to fill (value at kv_rec_value) or a negative -errno. */
+KvRec *kv_store_rec_alloc(KvTable *t, const void *key, size_t klen, size_t vlen);
+void kv_store_rec_free(KvTable *t, KvRec *rec); /* unpublished records only */
+/** @return 1 created, 0 replaced, -ENOSPC (the record stays the caller's). */
+int64_t kv_store_publish(KvTable *t, KvRec *rec, uint64_t h1, uint64_t h2);
+int64_t kv_store_pin(KvTable *t, const KvRec *rec); /* 0 or -ENOMEM */
+void kv_store_unpin(KvTable *t, const KvRec *rec);
+
+/** @return 1 when p is one of the negative -errno values the store returns. */
+static inline int kv_is_err(const void *p) {
+  return (intptr_t)p < 0 && (intptr_t)p >= -4095;
+}
 
 /* cuckoo.asm — intrusive index API (used by the bake-off; caller serializes writers) */
 const KvRec *kv_cuckoo_get(KvTable *t, const void *key, size_t len, uint64_t h1, uint64_t h2);

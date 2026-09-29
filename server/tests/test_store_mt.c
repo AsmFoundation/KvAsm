@@ -25,6 +25,16 @@
  * each write returns; a reader that loaded the published state before its
  * lookup must then see at least that version, and never a version at or
  * below one whose delete had already completed.
+ *
+ * Pinned phases model Download: half the readers pin some records they find
+ * (kv_store_pin) and keep them for up to 64 batches — across quiescent
+ * announcements and offline periods, when QSBR alone would let the writers'
+ * replacements free them — re-validating every held record's bytes after
+ * each batch, then unpin. A pin that failed to protect its record would
+ * show as a checksum failure (freed memory is reused by malloc) or a crash.
+ * At the end no pin may remain (pinned == 0, deferred == 0) and the memory
+ * accounting must still equal the live records exactly, so a deferred
+ * record the last unpin forgot to free fails the phase.
  */
 #include <pthread.h>
 #include <stdatomic.h>
@@ -38,11 +48,21 @@ typedef struct {
   KvTable *t;
   uint32_t nids, nstable, nwriters, seconds;
   uint32_t l1_bits, l2_bits;   /* reader caches; both 0 = readers use kv_store_get */
+  uint32_t pin;                /* 1: even readers pin records they read (Download model) */
   _Atomic uint64_t *state;     /* per id: (version << 1) | present, after the write returned */
   atomic_int stop;
   atomic_ullong errors, reads, hits, writes, deletes, full, missing_stable, stale;
   atomic_ullong cache_hits;
+  atomic_ullong pins, pin_checks, pin_errors;
 } Shared;
+
+/** A record a pinning reader holds across quiescent states. */
+typedef struct {
+  const KvRec *r;
+  uint32_t id;
+  uint64_t version;  /**< the version validated when it was pinned */
+  uint32_t left;     /**< batches to keep it before unpinning */
+} Held;
 
 typedef struct {
   Shared *sh;
@@ -80,6 +100,19 @@ static int value_ok(uint32_t id, const uint8_t *buf, size_t len, uint64_t *versi
   if (n != len || memcmp(expect, buf, len) != 0) return 0;
   *version = ver;
   return 1;
+}
+
+/**
+ * Re-validates a held record's bytes and identity.
+ * @param h  the held record
+ * @returns 1 when it is still exactly the version that was pinned
+ */
+static int held_ok(const Held *h) {
+  uint8_t key[16];
+  uint64_t v;
+  key_of(h->id, key);
+  return h->r->key_len == 16 && memcmp(h->r->data, key, 16) == 0 &&
+         value_ok(h->id, kv_rec_value(h->r), h->r->val_len, &v) && v == h->version;
 }
 
 /** Writer thread: puts (85%) and deletes (15%, never stable ids) of owned ids. */
@@ -130,6 +163,11 @@ static void *reader_main(void *p) {
     cache = kv_hcache_create(sh->t, sh->l1_bits, sh->l2_bits);
     CHECK(cache != NULL);
   }
+  /* Pinned phases: even readers hold up to 16 pinned records at a time. */
+  enum { HOLD = 16 };
+  Held held[HOLD];
+  int nheld = 0, pinning = sh->pin && (a->idx & 1) == 0;
+  uint64_t pins = 0, pin_checks = 0, pin_errors = 0;
   kv_qsbr_online(sh->t, a->idx);
   while (!atomic_load_explicit(&sh->stop, memory_order_relaxed)) {
     for (int i = 0; i < 64; i++) {
@@ -157,13 +195,40 @@ static void *reader_main(void *p) {
       seen[id] = v;
       /* Freshness: at least the last completed put; above a completed delete. */
       if ((done & 1) ? v < (done >> 1) : (done && v <= (done >> 1))) stale++;
+      /* Download model: pin it while this online period still protects it. */
+      if (pinning && nheld < HOLD && (rng_next(&s) & 7) == 0) {
+        if (kv_store_pin(sh->t, r) == 0) {
+          held[nheld++] = (Held){r, id, v, 1 + (uint32_t)(rng_next(&s) % 64)};
+          pins++;
+        } else {
+          pin_errors++;               /* -ENOMEM: never expected here */
+        }
+      }
     }
     kv_qsbr_quiescent(sh->t, a->idx); /* drop references between batches */
     if ((rng_next(&s) & 255) == 0) {  /* occasionally idle, like epoll_wait */
       kv_qsbr_offline(sh->t, a->idx);
       kv_qsbr_online(sh->t, a->idx);
     }
+    /* Held records past a quiescent state: only their pins protect them now.
+     * Their bytes must still be exactly the pinned version. */
+    for (int i = nheld - 1; i >= 0; i--) {
+      pin_checks++;
+      if (!held_ok(&held[i])) pin_errors++;
+      if (--held[i].left == 0) {
+        kv_store_unpin(sh->t, held[i].r);
+        held[i] = held[--nheld];
+      }
+    }
   }
+  for (int i = 0; i < nheld; i++) {   /* release what is still held, checked once more */
+    pin_checks++;
+    if (!held_ok(&held[i])) pin_errors++;
+    kv_store_unpin(sh->t, held[i].r);
+  }
+  atomic_fetch_add(&sh->pins, pins);
+  atomic_fetch_add(&sh->pin_checks, pin_checks);
+  atomic_fetch_add(&sh->pin_errors, pin_errors);
   kv_qsbr_offline(sh->t, a->idx);
   if (cache) {
     uint64_t st[4];
@@ -187,15 +252,16 @@ static void *reader_main(void *p) {
  * @param seconds duration.
  * @param l1_bits,l2_bits private cache sizes of the odd readers (0,0 = none).
  * @param scan KV_SCAN_SWAR or KV_SCAN_SSE2, set while no thread runs.
+ * @param pin 1: even readers pin and hold records (the Download model).
  */
 static void run_phase(const char *name, uint64_t capacity, uint32_t nids, uint32_t nstable,
                       uint32_t nw, uint32_t nr, uint32_t seconds, uint32_t l1_bits,
-                      uint32_t l2_bits, int scan) {
+                      uint32_t l2_bits, int scan, int pin) {
   uint8_t seed[16];
   uint64_t s = 99;
   rng_fill(&s, seed, 16);
   Shared sh = {.nids = nids, .nstable = nstable, .nwriters = nw, .seconds = seconds,
-               .l1_bits = l1_bits, .l2_bits = l2_bits};
+               .l1_bits = l1_bits, .l2_bits = l2_bits, .pin = (uint32_t)pin};
   sh.state = calloc(nids, sizeof *sh.state);
   CHECK(sh.state != NULL);
   CHECK(kv_set_scan_mode(scan) >= 0);
@@ -261,6 +327,19 @@ static void run_phase(const char *name, uint64_t capacity, uint32_t nids, uint32
   CHECK_EQ_U64(atomic_load(&sh.missing_stable), 0);
   CHECK_EQ_U64(atomic_load(&sh.stale), 0);
   if (l1_bits | l2_bits) CHECK(atomic_load(&sh.cache_hits) > 0); /* the cache was exercised */
+  /* Every pin released: nothing pinned, nothing deferred (a deferred record
+   * the last unpin did not free would also break mem_used == live_bytes). */
+  CHECK_EQ_U64(st.pinned, 0);
+  CHECK_EQ_U64(st.deferred, 0);
+  CHECK_EQ_U64(atomic_load(&sh.pin_errors), 0);
+  if (pin) {
+    CHECK(atomic_load(&sh.pins) > 0);
+    unsigned long long bad = (unsigned long long)atomic_load(&sh.pin_errors);
+    printf("  %-12s %llu pins held across quiescent states, %llu re-validations, %llu %s\n",
+           name, (unsigned long long)atomic_load(&sh.pins),
+           (unsigned long long)atomic_load(&sh.pin_checks), bad,
+           bad ? "CORRUPTED (a pinned record was freed or changed)" : "corrupted");
+  }
   printf("  %-12s %2u readers %2u writers %us: %llu reads (%llu hits, %llu from caches), %llu writes,"
          " %llu deletes, %llu full; live %llu (load %.0f%%), bfs %llu, moves %llu, freed %llu\n",
          name, nr, nw, seconds, (unsigned long long)atomic_load(&sh.reads),
@@ -277,11 +356,16 @@ static void run_phase(const char *name, uint64_t capacity, uint32_t nids, uint32
 /** Entry point. @return 0 when no invariant was violated. */
 int main(void) {
   /* capacity = 5 * 32768 => up to 83% index load; ids > capacity => ENOSPC churn */
-  run_phase("near-full", 163840, 180000, 20000, 4, 8, 4, 0, 0, KV_SCAN_SWAR);
-  run_phase("hot-keys", 1024, 16, 4, 4, 8, 2, 0, 0, KV_SCAN_SWAR);
+  run_phase("near-full", 163840, 180000, 20000, 4, 8, 4, 0, 0, KV_SCAN_SWAR, 0);
+  run_phase("hot-keys", 1024, 16, 4, 4, 8, 2, 0, 0, KV_SCAN_SWAR, 0);
   /* Same workloads through private caches (L1 256, L2 4096 entries) and SSE2. */
-  run_phase("near-full/c", 163840, 180000, 20000, 4, 8, 3, 8, 12, KV_SCAN_SSE2);
-  run_phase("hot-keys/c", 1024, 16, 4, 4, 8, 2, 8, 12, KV_SCAN_SSE2);
-  run_phase("hot-keys/l2", 1024, 16, 4, 4, 8, 1, 0, 6, KV_SCAN_SWAR); /* L2 only */
+  run_phase("near-full/c", 163840, 180000, 20000, 4, 8, 3, 8, 12, KV_SCAN_SSE2, 0);
+  run_phase("hot-keys/c", 1024, 16, 4, 4, 8, 2, 8, 12, KV_SCAN_SSE2, 0);
+  run_phase("hot-keys/l2", 1024, 16, 4, 4, 8, 1, 0, 6, KV_SCAN_SWAR, 0); /* L2 only */
+  /* Download model: pinned records outlive constant replacement (hot keys:
+   * nearly every pinned record is retired while held, so most pins end in a
+   * deferral) and relocation churn near full load. */
+  run_phase("hot-keys/pin", 1024, 16, 4, 4, 8, 2, 0, 0, KV_SCAN_SSE2, 1);
+  run_phase("near-full/pin", 163840, 180000, 20000, 4, 8, 2, 0, 0, KV_SCAN_SWAR, 1);
   return test_finish("test_store_mt");
 }

@@ -1069,13 +1069,22 @@ conn_event:
 ;          unbounded buffer, and the rest stays on the pend list until the
 ;          next flush. On EAGAIN the connection switches to EPOLLOUT and stops
 ;          reading (half-duplex back-pressure, see the file header).
+;          Fairness (Download): after FLUSH_BUDGET bytes framed from the pend
+;          list, with more still pending, the flush stops although the socket
+;          would take more: the connection is watched for EPOLLIN | EPOLLOUT
+;          and continues on the next loop pass, after the worker's other
+;          ready connections. A fast reader of a large download therefore
+;          shares the worker instead of holding it for the whole transfer,
+;          and its connection still reads input (WINDOW_UPDATE, RST_STREAM,
+;          new calls) meanwhile — unlike a full socket, which stops reading.
 ; =============================================================================
 conn_flush:
     push    rbx
     push    rbp
-    sub     rsp, 8                      ; 2 pushes + 8: rsp 16-aligned for calls
+    sub     rsp, 8                      ; [0] bytes framed by the pump; aligned
     mov     rbx, rdi
     mov     rbp, rsi
+    mov     qword [rsp], 0
 .send_pending:
     mov     rdx, [rbp + Conn.out_len]
     mov     rax, [rbp + Conn.out_off]
@@ -1096,11 +1105,29 @@ conn_flush:
     test    rax, rax
     js      .error
     add     [rbp + Conn.out_off], rax
+    ; Output the peer accepts is activity too: a long Download whose window
+    ; never runs out makes the client send nothing, and must not be cut by
+    ; the idle timeout. A peer that stops reading makes no progress here, so
+    ; KVNODE_IDLE_TIMEOUT_SEC still ends a stalled transfer (and its pin).
+    mov     rcx, [rbx + Worker.now]
+    mov     [rbp + Conn.last_active], rcx
     jmp     .send_pending
 .sent:
     xor     eax, eax
     mov     [rbp + Conn.out_len], rax
     mov     [rbp + Conn.out_off], rax
+    ; Budget spent with streams still pending: yield (see @remarks). A stream
+    ; that is only waiting for window costs one empty pass at most: the next
+    ; pump frames nothing and the connection returns to EPOLLIN below.
+    cmp     qword [rsp], FLUSH_BUDGET
+    jb      .fill
+    cmp     qword [rbp + Conn.h2 + H2.pend_head], 0
+    je      .fill
+    mov     rdi, rbx
+    mov     rsi, rbp
+    mov     edx, 2                      ; EPOLLIN | EPOLLOUT
+    call    set_interest
+    jmp     .idle
 .fill:
     ; out_buf is empty: frame what the windows and OUT_HIGH_WATER allow from
     ; the pend list, send it, and repeat until nothing more can be framed.
@@ -1108,8 +1135,12 @@ conn_flush:
     call    kv_h2n_pump wrt ..plt
     test    eax, eax
     js      .error
-    cmp     qword [rbp + Conn.out_len], 0
-    jne     .send_pending
+    mov     rax, [rbp + Conn.out_len]
+    test    rax, rax
+    jz      .drained
+    add     [rsp], rax                  ; toward FLUSH_BUDGET
+    jmp     .send_pending
+.drained:
     mov     rdi, rbx
     mov     rsi, rbp
     xor     edx, edx
@@ -1137,21 +1168,44 @@ conn_flush:
     ret
 
 ; =============================================================================
-; set_interest — switch a connection between EPOLLIN and EPOLLOUT. Internal.
-; @param  rdi  Worker*   @param rsi  Conn*   @param edx  1 = output pending
-; @remarks Half-duplex on purpose: see the file header (back-pressure).
+; set_interest — choose what epoll reports for a connection. Internal.
+; @param  rdi  Worker*   @param rsi  Conn*
+; @param  edx  0 = EPOLLIN (reading), 1 = EPOLLOUT only (the socket is full:
+;              back-pressure), 2 = EPOLLIN | EPOLLOUT (a flush yielded at
+;              FLUSH_BUDGET with the socket still writable)
+; @returns nothing. Changes the registration only when the mode changes.
+; @remarks Mode 1 is half-duplex on purpose: see the file header
+;          (back-pressure). Mode 2 is not back-pressure — the peer is
+;          keeping up — so input keeps flowing while the remaining output
+;          waits for the next pass. The mode lives in Conn.flags
+;          (CONN_WANT_OUT / CONN_WANT_BOTH).
 ; =============================================================================
 set_interest:
     mov     rax, [rsi + Conn.flags]
-    and     eax, CONN_WANT_OUT
-    cmp     eax, edx
+    xor     ecx, ecx                    ; current mode
+    test    eax, CONN_WANT_OUT
+    jz      .not_out
+    mov     ecx, 1
+.not_out:
+    test    eax, CONN_WANT_BOTH
+    jz      .have_mode
+    mov     ecx, 2
+.have_mode:
+    cmp     ecx, edx
     je      .same
-    xor     qword [rsi + Conn.flags], CONN_WANT_OUT
+    and     qword [rsi + Conn.flags], ~(CONN_WANT_OUT | CONN_WANT_BOTH)
     sub     rsp, 24
     mov     dword [rsp], EPOLLIN
     test    edx, edx
     jz      .mask_ok
+    cmp     edx, 1
+    jne     .both
     mov     dword [rsp], EPOLLOUT
+    or      qword [rsi + Conn.flags], CONN_WANT_OUT
+    jmp     .mask_ok
+.both:
+    mov     dword [rsp], EPOLLIN | EPOLLOUT
+    or      qword [rsi + Conn.flags], CONN_WANT_BOTH
 .mask_ok:
     mov     [rsp + 4], rsi
     mov     rdx, [rsi + Conn.fd]
@@ -1251,8 +1305,14 @@ conn_destroy:
 ; housekeeping — once per second. Internal.
 ; @param  rdi  Worker*
 ; @remarks Re-arms a paused listener, ends lingering connections whose peer
-;          never sent FIN, sends GOAWAY to idle connections, and (worker 0
+;          never sent FIN, sends GOAWAY to idle connections — and destroys
+;          one still idle a timeout after that GOAWAY was queued (a peer
+;          stalled at the TCP level, CONN_IDLE_CLOSING) — and (worker 0
 ;          only) returns retired store memory even when no writes happen.
+;          "Idle" is no byte received or sent for KVNODE_IDLE_TIMEOUT_SEC,
+;          so a transfer that keeps moving is never cut, while one whose
+;          peer stopped reading ends at most ~2 s (two passes) after the
+;          timeout. With the timeout disabled (0) neither ever happens.
 ; =============================================================================
 housekeeping:
     push    rbx
@@ -1293,6 +1353,14 @@ housekeeping:
     jz      .advance
     cmp     r14, rax
     jb      .advance
+    ; Expired again with the idle GOAWAY still undelivered (last_active moves
+    ; with every byte sent, so nothing left since): the peer stopped reading
+    ; at the TCP level. That GOAWAY can never go out, and the connection would
+    ; otherwise live forever holding its streams — a Download's pinned record,
+    ; an Upload's reservation. Close it now, without the courtesy frame.
+    test    qword [rbp + Conn.flags], CONN_IDLE_CLOSING
+    jnz     .stuck
+    or      qword [rbp + Conn.flags], CONN_IDLE_CLOSING
     ; Idle too long: GOAWAY(NO_ERROR) in terminate mode, so the connection
     ; closes as soon as the frame is out; streams still open are abandoned
     ; (an idle connection has none that made progress for the whole timeout).
@@ -1303,6 +1371,11 @@ housekeeping:
     mov     rdi, rbx
     mov     rsi, rbp
     call    flush_or_close
+    jmp     .advance
+.stuck:
+    mov     rdi, rbx
+    mov     rsi, rbp
+    call    conn_destroy                ; frees its streams: unpins, releases reservations
 .advance:
     mov     rbp, r12
     jmp     .next

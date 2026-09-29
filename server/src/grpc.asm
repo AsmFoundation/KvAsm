@@ -21,6 +21,25 @@
 ; and /grpc.health.v1.Health/Check (the standard gRPC health protocol:
 ; SERVING, NOT_SERVING while draining). Anything else is UNIMPLEMENTED.
 ;
+; Streaming routes (docs/adr/0010):
+;   Upload    client streaming. kv_grpc_upload_data receives every DATA
+;             payload as it arrives and decodes the message stream with
+;             kv_pb_stream_feed; the first message's key and total_size
+;             reserve the final record (kv_store_rec_alloc), and every data
+;             chunk is copied straight into it, CRC-32C computed on the way.
+;             At END_STREAM the size and optional checksum are verified and
+;             the record is published atomically (kv_store_publish).
+;             Anything wrong is answered at once (Trailers-Only error, then
+;             RST_STREAM(NO_ERROR) from h2n) and stores nothing; a cancelled
+;             or broken connection frees the unpublished record through
+;             stream_free.
+;   Download  server streaming. The record is looked up and pinned
+;             (kv_store_pin) for the whole call, so one call reads one
+;             version however the key changes meanwhile; the response body
+;             is generated frame by frame (kv_grpc_gen_fill) straight from
+;             the record as flow-control windows open: first message
+;             total_size, then data chunks, last message crc32c.
+;
 ; Responses: success = HEADERS(:status 200, content-type) + DATA(message) +
 ; trailer HEADERS(grpc-status 0), framed by h2n from precomputed header
 ; blocks; gRPC errors = one "Trailers-Only" HEADERS frame with
@@ -39,6 +58,7 @@ bits 64
 
 %include "kvnode.inc"
 %include "server.inc"
+%include "pbstream.inc"
 
 %define GRPC_OK                 0
 %define GRPC_INVALID_ARGUMENT   3
@@ -49,8 +69,102 @@ bits 64
 ; block exactly (a GetRequest is 23 bytes; a Put of a 100-byte value ~130).
 %define MIN_REQ_CAP             240
 
+; Download chunking: data bytes per response message. 64 KiB keeps every
+; message far below gRPC clients' default 4 MiB receive limit and gives the
+; receiver progress often; the 1 MiB ceiling bounds one message's latency.
+%define DL_CHUNK_DEFAULT        65536
+%define DL_CHUNK_MAX            1048576
+
+; UploadRequest tags (proto/kvnode/v1/kvnode.proto): field << 3 | wire type.
+%define UP_TAG_KEY              0x0A    ; 1: bytes
+%define UP_TAG_SIZE             0x10    ; 2: varint (optional uint64 total_size)
+%define UP_TAG_DATA             0x1A    ; 3: bytes
+%define UP_TAG_CRC              0x25    ; 4: fixed32 (optional)
+
+; Xfer.kind
+%define XF_UPLOAD               1
+%define XF_DOWNLOAD             2
+; Xfer.flags (Upload)
+%define XFF_HAVE_KEY            1       ; the key field is complete (and hashed)
+%define XFF_HAVE_SIZE           2       ; total_size was sent
+%define XFF_HAVE_CRC            4       ; crc32c was sent (want_crc)
+%define XFF_FIRST_DONE          8       ; the first message ended; the record exists
+; Xfer.field: what the current length-delimited field of an upload is
+%define XFD_NONE                0
+%define XFD_KEY                 1
+%define XFD_DATA                2
+%define XFD_SKIP                3
+
+; Upload refusal codes: negative, returned by upload_event through
+; kv_pb_stream_feed (which adds its own PB_ERR_* -1..-3) and by the
+; END_STREAM checks; upload_refuse maps each to its gRPC status.
+%define UE_FIRST_ONLY           (-10)   ; key/total_size after the first message
+%define UE_ORDER                (-11)   ; key/total_size after data began, or data first
+%define UE_FIRST_MISSING        (-12)   ; the first message lacked key or total_size
+%define UE_KEY                  (-13)   ; key length out of range
+%define UE_TOO_LARGE            (-14)   ; total_size above KVNODE_MAX_UPLOAD_BYTES
+%define UE_BUDGET               (-15)   ; the connection's upload budget is used up
+%define UE_MEMORY               (-16)   ; the store's memory limit (or malloc) refused
+%define UE_OVERFLOW             (-17)   ; more data than total_size
+%define UE_CRC_TWICE            (-18)   ; crc32c sent more than once
+%define UE_NOMEM                (-19)   ; out of memory for the key buffer: fatal
+%define UE_SHORT                (-20)   ; ended before total_size bytes
+%define UE_TRUNCATED            (-21)   ; ended inside a message
+%define UE_CRC                  (-22)   ; checksum mismatch
+%define UE_FULL                 (-23)   ; the store is at key capacity
+
+; ---- Xfer: a streaming call's state (Stream.xfer), from the worker's pool ------
+; One struct for both directions; the fields each uses are commented.
+struc Xfer
+    .kind:      resq 1                  ; XF_UPLOAD / XF_DOWNLOAD
+    .rec:       resq 1                  ; up: unpublished record being filled;
+                                        ; down: the pinned record
+    .val:       resq 1                  ; the record's value bytes
+    .size:      resq 1                  ; up: declared total_size; down: value size
+    .off:       resq 1                  ; up: value bytes received; down: next to send
+    .crc:       resq 1                  ; CRC-32C of the bytes received / sent so far
+    ; ---- Upload ----
+    .flags:     resq 1                  ; XFF_*
+    .want_crc:  resq 1                  ; the client's crc32c (with XFF_HAVE_CRC)
+    .h1:        resq 1                  ; kv_store_hash of the key (h1, h2 adjacent:
+    .h2:        resq 1                  ;   kv_store_hash writes both)
+    .key:       resq 1                  ; pool block holding the key until the
+                                        ; record exists, else 0
+    .key_len:   resq 1
+    .key_off:   resq 1                  ; key bytes received so far
+    .field:     resq 1                  ; XFD_*: the current bytes field
+    .msgs:      resq 1                  ; messages begun (1 = inside the first)
+    .reserved:  resq 1                  ; bytes this upload counts in Conn.up_bytes
+    .ps:        resb PbStream_size      ; the message-stream decoder
+    ; ---- Download ----
+    .end:       resq 1                  ; one past the last value byte to send
+    .chunk:     resq 1                  ; data bytes per message (the last may be less)
+    .mrem:      resq 1                  ; data bytes of the current message still to send
+    .hlen:      resq 1                  ; head bytes of the current message
+    .hoff:      resq 1                  ; head bytes already sent
+    .tlen:      resq 1                  ; tail bytes (the crc32c field) of the last message
+    .toff:      resq 1                  ; tail bytes already sent
+    .last:      resq 1                  ; the current message is the last one
+    .first:     resq 1                  ; no message has started yet
+    .hbuf:      resb 32                 ; prefix + total_size field + data field header
+    .tbuf:      resb 8                  ; 0x1D + crc32c (little-endian)
+endstruc
+
+; PbDl as written by kv_pb_decode_download (proto.asm)
+struc PbDl
+    .key:           resq 1
+    .key_len:       resq 1
+    .offset:        resq 1
+    .length:        resq 1
+    .chunk:         resq 1
+    .has_key:       resd 1
+    .has_length:    resd 1
+endstruc
+
 extern kv_pool_free
 extern kv_pool_realloc
+extern kv_pool_malloc
+extern kv_pool_calloc
 extern memcpy
 extern kv_keyeq
 extern kv_store_hash
@@ -59,12 +173,23 @@ extern kv_store_put
 extern kv_store_delete
 extern kv_store_prefetch
 extern kv_store_prefetch_records
+extern kv_store_rec_alloc
+extern kv_store_rec_free
+extern kv_store_publish
+extern kv_store_pin
+extern kv_store_unpin
 extern kv_hcache_get
 extern kv_pb_decode_kv
+extern kv_pb_decode_download
+extern kv_pb_stream_feed
+extern kv_pb_stream_idle
 extern kv_pb_write_varint
+extern kv_pb_varint_len
+extern kv_crc32c_copy
 extern kv_h2n_reply_parts
 extern kv_h2n_reply_static
 extern kv_h2n_reply_headers
+extern kv_h2n_reply_stream
 
 ; PbKv as written by kv_pb_decode_kv (proto.asm)
 struc PbKv
@@ -128,6 +253,22 @@ CSTR s_m_toolarge,  "request message too large"
 CSTR s_m_full,      "store is at capacity"
 CSTR s_m_memory,    "store memory limit reached"
 CSTR s_m_noservice, "unknown service"
+; Streaming (Upload/Download) statuses and messages.
+CSTR s_c11,         "11"                ; OUT_OF_RANGE
+CSTR s_c15,         "15"                ; DATA_LOSS
+CSTR s_m_notfound,  "key not found"
+CSTR s_m_range,     "offset is beyond the end of the value"
+CSTR s_m_bigget,    "value exceeds KVNODE_MAX_VALUE_BYTES: read it with Download"
+CSTR s_m_upfirst,   "key and total_size are only allowed in the first message"
+CSTR s_m_uporder,   "key and total_size must come before any data"
+CSTR s_m_upmissing, "the first message must carry key and total_size"
+CSTR s_m_upbudget,  "uploads in progress exceed this connection's budget (KVNODE_CONN_BUFFER_MB)"
+CSTR s_m_upover,    "more data than total_size"
+CSTR s_m_upshort,   "the upload ended before total_size bytes"
+CSTR s_m_uptrunc,   "the request stream ended inside a message"
+CSTR s_m_upcrc2,    "crc32c sent more than once"
+CSTR s_m_upcrc,     "crc32c mismatch: nothing was stored"
+CSTR s_m_upflag,    "invalid gRPC message prefix"
 
 CSTR v_post,        "POST"
 CSTR v_identity,    "identity"
@@ -170,6 +311,20 @@ TRAILERS_ONLY nv_e_toolarge,  s_c8,  s_m_toolarge
 TRAILERS_ONLY nv_e_full,      s_c8,  s_m_full
 TRAILERS_ONLY nv_e_memory,    s_c8,  s_m_memory
 TRAILERS_ONLY nv_e_noservice, s_c5,  s_m_noservice
+; Streaming.
+TRAILERS_ONLY nv_e_notfound,  s_c5,  s_m_notfound
+TRAILERS_ONLY nv_e_range,     s_c11, s_m_range
+TRAILERS_ONLY nv_e_bigget,    s_c8,  s_m_bigget
+TRAILERS_ONLY nv_e_upfirst,   s_c3,  s_m_upfirst
+TRAILERS_ONLY nv_e_uporder,   s_c3,  s_m_uporder
+TRAILERS_ONLY nv_e_upmissing, s_c3,  s_m_upmissing
+TRAILERS_ONLY nv_e_upbudget,  s_c8,  s_m_upbudget
+TRAILERS_ONLY nv_e_upover,    s_c3,  s_m_upover
+TRAILERS_ONLY nv_e_upshort,   s_c3,  s_m_upshort
+TRAILERS_ONLY nv_e_uptrunc,   s_c13, s_m_uptrunc
+TRAILERS_ONLY nv_e_upcrc2,    s_c3,  s_m_upcrc2
+TRAILERS_ONLY nv_e_upcrc,     s_c15, s_m_upcrc
+TRAILERS_ONLY nv_e_upflag,    s_c13, s_m_upflag
 
 section .text
 
@@ -178,6 +333,8 @@ global kv_grpc_run_batch
 global kv_grpc_dispatch
 global kv_grpc_stream_append
 global kv_grpc_stream_release
+global kv_grpc_upload_data
+global kv_grpc_gen_fill
 
 ; =============================================================================
 ; kv_grpc_free_streams — free every Stream still attached to a connection.
@@ -226,6 +383,11 @@ kv_grpc_free_streams:
 ;          on the fast paths — a unary call whose body arrived in one frame,
 ;          answered straight into the output buffer — neither buffer exists,
 ;          so this is two calls saved on every request.
+;          A streaming call's transfer state is released first (xfer_release):
+;          every way a stream ends — its response completed, a reset from
+;          either side, the connection's teardown, drain or idle timeout —
+;          comes through here, which is what makes "an interrupted upload
+;          stores nothing" and "a download never leaks its pin" hold.
 ; =============================================================================
 stream_free:
     push    rbx
@@ -235,6 +397,11 @@ stream_free:
     mov     rax, [rbx + Stream.conn]
     mov     rax, [rax + Conn.worker]
     lea     r12, [rax + Worker.pool]
+    cmp     qword [rbx + Stream.xfer], 0
+    je      .no_xfer                    ; unary calls: one compare
+    mov     rdi, rbx
+    call    xfer_release
+.no_xfer:
     test    qword [rbx + Stream.flags], ST_BORROWED
     jnz     .borrowed                   ; points into the read buffer: not ours
     mov     rdi, [rbx + Stream.req_buf]
@@ -412,6 +579,11 @@ stream_unlink_free:
 ;          + grpc-accept-encoding: identity; flag 1 with no/identity codec is
 ;          INTERNAL (the sender contradicts itself); flag 0 is accepted
 ;          whatever grpc-encoding says, because it means "not compressed".
+;          Streaming routes: an Upload is finalized here (its body was
+;          consumed as it arrived, see upload_finish); a Download is a unary
+;          request whose response is generated (download_start). An Upload
+;          already answered early (a 405/415 whose body is still going out)
+;          reaches here at END_STREAM and is left alone.
 ; =============================================================================
 kv_grpc_dispatch:
     push    rbx
@@ -420,10 +592,13 @@ kv_grpc_dispatch:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 56                     ; [0..40) PbKv, [40] h1, [48] h2;
-                                        ; 6 pushes + 56: rsp 16-aligned for calls
+    sub     rsp, 104                    ; [0..40) PbKv, [40] h1, [48] h2,
+                                        ; [56..104) PbDl (Download);
+                                        ; 6 pushes + 104: rsp 16-aligned for calls
     mov     r12, rdi                    ; Conn*
     mov     rbx, rsi                    ; Stream*
+    test    qword [rbx + Stream.flags], ST_RESPONDED
+    jnz     .answered                   ; an Upload refused early: nothing to add
     mov     rax, [r12 + Conn.worker]
     mov     r13, [rax + Worker.cfg]
     mov     r14, [rax + Worker.table]
@@ -437,6 +612,8 @@ kv_grpc_dispatch:
     jz      .http_415
     cmp     qword [rbx + Stream.method], M_UNKNOWN
     je      .e_method
+    cmp     qword [rbx + Stream.method], M_UPLOAD
+    je      .upload                     ; body already consumed: no framing to check
     test    rax, ST_TOO_LARGE
     jnz     .e_toolarge
 
@@ -455,6 +632,8 @@ kv_grpc_dispatch:
     cmp     rax, rcx
     jne     .e_framing
 
+    cmp     qword [rbx + Stream.method], M_DOWNLOAD
+    je      .download
     lea     rdi, [rsi + GRPC_PREFIX]
     lea     rsi, [rax - GRPC_PREFIX]
     lea     rdx, [rsp]
@@ -676,6 +855,40 @@ kv_grpc_dispatch:
     mov     rdi, r12
     mov     rsi, rbx
     call    kv_h2n_reply_headers wrt ..plt
+    jmp     .submitted
+
+    ; ---- Upload: every byte was consumed as it arrived; verify and publish ----
+.upload:
+    mov     rdi, r12
+    mov     rsi, rbx
+    call    upload_finish               ; answers or refuses: 0 / -1
+    jmp     .submitted
+
+    ; ---- Download: a unary request with a generated, streamed response ----
+    ; (rsi = req_buf, rax = the message's length with its prefix)
+.download:
+    lea     rdi, [rsi + GRPC_PREFIX]
+    lea     rsi, [rax - GRPC_PREFIX]
+    lea     rdx, [rsp + 56]
+    call    kv_pb_decode_download wrt ..plt
+    test    rax, rax
+    jnz     .e_malformed
+    cmp     dword [rsp + 56 + PbDl.has_key], 0
+    je      .e_key
+    mov     rax, [rsp + 56 + PbDl.key_len]
+    test    rax, rax
+    jz      .e_key
+    cmp     rax, [r13 + Config.max_key]
+    ja      .e_key
+    mov     rdi, r12
+    mov     rsi, rbx
+    lea     rdx, [rsp + 56]
+    call    download_start              ; answers: 0 / -1
+    jmp     .submitted
+
+.answered:
+    xor     eax, eax
+    jmp     .out
 .submitted:
     ; h2n's reply functions return 0 or -1 (out of memory); normalize so the
     ; contract above holds whatever negative value they pick.
@@ -683,7 +896,7 @@ kv_grpc_dispatch:
     jz      .out
     mov     eax, -1
 .out:
-    add     rsp, 56
+    add     rsp, 104
     pop     r15
     pop     r14
     pop     r13
@@ -807,6 +1020,15 @@ get_execute:
     jz      .missing
     mov     r15, rax                    ; Rec* (valid while this worker is online)
     mov     ebp, [r15 + Rec.val_len]
+    ; Values above KVNODE_MAX_VALUE_BYTES exist only through Upload (whose
+    ; limit, KVNODE_MAX_UPLOAD_BYTES, may be larger). A unary answer would be
+    ; the whole value as one message — copied into a response buffer when
+    ; the windows are short, a memory hazard for a 2 GiB value, and beyond
+    ; what clients accept — so it is refused, pointing to Download.
+    mov     rcx, [r12 + Conn.worker]
+    mov     rcx, [rcx + Worker.cfg]
+    cmp     rbp, [rcx + Config.max_value]
+    ja      .too_big
     mov     word [rsp + GRPC_PREFIX], 0x0108   ; field 1 (found) = true
     mov     r13d, 2
     test    rbp, rbp
@@ -842,6 +1064,15 @@ get_execute:
     xor     r8d, r8d
     xor     r9d, r9d
     call    kv_h2n_reply_parts wrt ..plt
+    jmp     .out
+.too_big:
+    mov     rax, [r12 + Conn.worker]
+    inc     qword [rax + Worker.st_errors]
+    mov     rdi, r12
+    mov     rsi, rbx
+    lea     rdx, [nv_e_bigget]
+    mov     ecx, 4
+    call    kv_h2n_reply_headers wrt ..plt
 .out:
     add     rsp, 32
     pop     r15
@@ -862,6 +1093,1001 @@ write_prefix:
     mov     eax, esi
     bswap   eax
     mov     [rdi + 1], eax
+    ret
+
+; =============================================================================
+; xfer_release — release a streaming call's transfer state. Internal.
+; @param  rdi  Stream* (xfer != 0; its connection and worker still alive)
+; @returns nothing.
+; @remarks Download: drops the pin (the last unpin of a record replaced or
+;          deleted meanwhile frees it). Upload: frees the unpublished record
+;          — returning its memory reservation — and the key buffer, and gives
+;          the declared size back to the connection's upload budget. A
+;          published upload has rec = 0 and reserved = 0 (upload_finish
+;          cleared them), so nothing is released twice.
+; =============================================================================
+xfer_release:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14                         ; 5 pushes: rsp 16-aligned for calls
+    mov     rbx, rdi                    ; Stream*
+    mov     rbp, [rbx + Stream.xfer]
+    mov     r12, [rbx + Stream.conn]
+    mov     rax, [r12 + Conn.worker]
+    mov     r13, [rax + Worker.table]
+    lea     r14, [rax + Worker.pool]
+    mov     rsi, [rbp + Xfer.rec]
+    cmp     qword [rbp + Xfer.kind], XF_DOWNLOAD
+    jne     .upload
+    test    rsi, rsi
+    jz      .free
+    mov     rdi, r13
+    call    kv_store_unpin wrt ..plt
+    jmp     .free
+.upload:
+    mov     rdi, r13
+    call    kv_store_rec_free wrt ..plt ; NULL (published / never allocated): no-op
+    mov     rdi, [rbp + Xfer.key]
+    mov     rsi, r14
+    call    kv_pool_free                ; NULL is ignored
+    mov     rax, [rbp + Xfer.reserved]
+    sub     [r12 + Conn.up_bytes], rax
+.free:
+    mov     rdi, rbp
+    mov     rsi, r14
+    call    kv_pool_free
+    mov     qword [rbx + Stream.xfer], 0
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; refuse — answer a call with a Trailers-Only gRPC error. Internal.
+; @param  rdi  Conn*   @param rsi  Stream*   @param rdx  HdrField array
+; @param  ecx  field count
+; @returns eax = 0, or -1 when out of memory (the caller ends the connection).
+; @remarks Counts the error. The stream is closed and freed by the answer; a
+;          request the peer is still sending (an Upload) also gets
+;          RST_STREAM(NO_ERROR) from h2n, which stops the rest of its body.
+; =============================================================================
+refuse:
+    mov     rax, [rdi + Conn.worker]
+    inc     qword [rax + Worker.st_errors]
+    jmp     kv_h2n_reply_headers wrt ..plt ; tail call, same arguments
+
+; =============================================================================
+; upload_refuse — answer an Upload with the status of a refusal code.
+; Internal.
+; @param  rdi  Conn*   @param rsi  Stream*   @param edx  PB_ERR_* or UE_* code
+; @returns eax = 0, or -1 for out of memory — including UE_NOMEM, which is
+;          not answered: running out of memory ends the connection, as
+;          everywhere else in the server.
+; @remarks The mapping is the documented contract (docs/PROTOCOL.md):
+;          malformed protobuf and every size/order/checksum rule are
+;          INVALID_ARGUMENT, except a checksum mismatch (DATA_LOSS), a full
+;          store, memory or budget (RESOURCE_EXHAUSTED) and message framing
+;          (INTERNAL; compression follows the unary rules).
+; =============================================================================
+upload_refuse:
+    mov     ecx, 4
+    lea     rax, [nv_e_malformed]
+    cmp     edx, PB_ERR_MALFORMED
+    je      .send
+    cmp     edx, PB_ERR_COMPRESSED
+    jne     .not_compressed
+    lea     rax, [nv_e_badflag]         ; flag 1 without a codec: the sender contradicts itself
+    test    qword [rsi + Stream.flags], ST_ENCODED
+    jz      .send
+    lea     rax, [nv_e_compress]        ; a codec we do not speak: say which we do
+    mov     ecx, 5
+    jmp     .send
+.not_compressed:
+    lea     rax, [nv_e_upflag]
+    cmp     edx, PB_ERR_FLAG
+    je      .send
+    lea     rax, [nv_e_upfirst]
+    cmp     edx, UE_FIRST_ONLY
+    je      .send
+    lea     rax, [nv_e_uporder]
+    cmp     edx, UE_ORDER
+    je      .send
+    lea     rax, [nv_e_upmissing]
+    cmp     edx, UE_FIRST_MISSING
+    je      .send
+    lea     rax, [nv_e_key]
+    cmp     edx, UE_KEY
+    je      .send
+    lea     rax, [nv_e_value]
+    cmp     edx, UE_TOO_LARGE
+    je      .send
+    lea     rax, [nv_e_upbudget]
+    cmp     edx, UE_BUDGET
+    je      .send
+    lea     rax, [nv_e_memory]
+    cmp     edx, UE_MEMORY
+    je      .send
+    lea     rax, [nv_e_upover]
+    cmp     edx, UE_OVERFLOW
+    je      .send
+    lea     rax, [nv_e_upcrc2]
+    cmp     edx, UE_CRC_TWICE
+    je      .send
+    lea     rax, [nv_e_upshort]
+    cmp     edx, UE_SHORT
+    je      .send
+    lea     rax, [nv_e_uptrunc]
+    cmp     edx, UE_TRUNCATED
+    je      .send
+    lea     rax, [nv_e_upcrc]
+    cmp     edx, UE_CRC
+    je      .send
+    lea     rax, [nv_e_full]
+    cmp     edx, UE_FULL
+    je      .send
+    mov     eax, -1                     ; UE_NOMEM (or an unknown code): fatal
+    ret
+.send:
+    mov     rdx, rax
+    jmp     refuse                      ; tail call: rdi, rsi kept, ecx = count
+
+; =============================================================================
+; kv_grpc_upload_data — take the next DATA payload of an Upload call.
+;
+; @param  rdi  Conn*   @param rsi  Stream* (route M_UPLOAD)
+; @param  rdx  data    @param rcx  length (> 0)
+; @returns eax = 0 (consumed; the stream lives on), 1 (answered early — an
+;          error: the stream may already be closed and freed, the caller must
+;          not touch it), or -1 (out of memory: the connection ends).
+; @remarks Called by h2n.asm for every non-empty DATA payload of an upload,
+;          as it arrives (after flow-control accounting). The first one
+;          applies dispatch's HTTP-level checks (POST, content-type) so a
+;          non-gRPC upload is refused before its body travels, and creates
+;          the Xfer. Every payload goes through kv_pb_stream_feed, whose
+;          events upload_event applies; the bytes of data fields land in the
+;          record directly — this is the one copy of the value. A refusal is
+;          answered at once: Trailers-Only error plus RST_STREAM(NO_ERROR)
+;          (h2n), so the client stops sending; the partial record is freed
+;          with the stream. Data after an early answer (a 405/415 body still
+;          waiting for window) is dropped.
+; =============================================================================
+kv_grpc_upload_data:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 16                     ; 5 pushes + 16: rsp 16-aligned for calls
+    mov     r12, rdi                    ; Conn*
+    mov     rbx, rsi                    ; Stream*
+    mov     r13, rdx                    ; data
+    mov     r14, rcx                    ; length
+    test    qword [rbx + Stream.flags], ST_RESPONDED
+    jnz     .ignore                     ; answered already: nobody reads the rest
+    mov     rbp, [rbx + Stream.xfer]
+    test    rbp, rbp
+    jnz     .feed
+    ; The call's first DATA: dispatch's HTTP-level checks, now.
+    mov     rax, [rbx + Stream.flags]
+    test    rax, ST_POST
+    jz      .http_405
+    test    rax, ST_CT_OK
+    jz      .http_415
+    mov     edi, 1
+    mov     esi, Xfer_size
+    mov     rdx, [r12 + Conn.worker]
+    lea     rdx, [rdx + Worker.pool]
+    call    kv_pool_calloc wrt ..plt    ; zeroed: an empty decoder, no flags
+    test    rax, rax
+    jz      .fatal
+    mov     rbp, rax
+    mov     [rbx + Stream.xfer], rax
+    mov     qword [rbp + Xfer.kind], XF_UPLOAD
+.feed:
+    lea     rdi, [rbp + Xfer.ps]
+    mov     rsi, r13
+    mov     rdx, r14
+    mov     rcx, rbx                    ; ctx = Stream*
+    lea     r8, [upload_event]
+    call    kv_pb_stream_feed wrt ..plt
+    test    rax, rax
+    jnz     .refused
+.ignore:
+    xor     eax, eax
+    jmp     .out
+.refused:
+    cmp     rax, UE_NOMEM
+    je      .fatal
+    ; Refused early: count the call here — dispatch never sees it, since the
+    ; stream closes now.
+    mov     rcx, [r12 + Conn.worker]
+    inc     qword [rcx + Worker.st_requests]
+    or      qword [rbx + Stream.flags], ST_RESPONDED
+    mov     rdi, r12
+    mov     rsi, rbx
+    mov     edx, eax
+    call    upload_refuse
+    test    eax, eax
+    jnz     .fatal
+    mov     eax, 1                      ; closed and freed
+    jmp     .out
+.http_405:
+    lea     rax, [b_405]
+    mov     ecx, b_405_len
+    lea     rdx, [nv_405]
+    jmp     .http_error
+.http_415:
+    lea     rax, [b_415]
+    mov     ecx, b_415_len
+    lea     rdx, [nv_415]
+.http_error:
+    ; As dispatch answers it: 3 headers + a static text body that ends the
+    ; stream (ST_STATIC_RESP). The body may wait for window, so the stream can
+    ; outlive this call — ST_RESPONDED makes its later DATA be ignored, and h2n
+    ; resets the rest of the upload once the body is out.
+    mov     r8, [r12 + Conn.worker]
+    inc     qword [r8 + Worker.st_requests]
+    or      qword [rbx + Stream.flags], ST_RESPONDED | ST_STATIC_RESP
+    mov     [rbx + Stream.resp_buf], rax
+    mov     [rbx + Stream.resp_len], rcx
+    mov     qword [rbx + Stream.resp_off], 0
+    mov     rdi, r12
+    mov     rsi, rbx
+    mov     ecx, 3                      ; rdx = the 405 or 415 fields
+    call    kv_h2n_reply_static wrt ..plt
+    test    eax, eax
+    jnz     .fatal
+    mov     eax, 1                      ; possibly closed and freed already
+    jmp     .out
+.fatal:
+    mov     eax, -1
+.out:
+    add     rsp, 16
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; upload_event — kv_pb_stream_feed's handler for an Upload: applies one
+; decoder event to the call's Xfer. Internal.
+;
+; @param  rdi  ctx = Stream* (Stream.xfer set)
+; @param  esi  PBE_* event   @param rdx  tag
+; @param  rcx  a1 (length, value or pointer)   @param r8  a2 (piece length)
+; @returns eax = 0 to continue, or a UE_* code that stops the decoding.
+; @remarks The contract, rule by rule:
+;          * key and total_size are allowed in the first message only
+;            (UE_FIRST_ONLY) and before any data (UE_ORDER); within the first
+;            message a repeated one replaces the earlier (protobuf's last-wins);
+;          * the record is reserved when the first data field starts, or at
+;            the end of the first message (ensure_record: size, budget and
+;            memory limits);
+;          * data bytes go straight into the record, CRC-32C computed in the
+;            same pass; more than total_size is UE_OVERFLOW, at once;
+;          * crc32c may come in any message, once (UE_CRC_TWICE);
+;          * unknown fields and known numbers of another wire type are
+;            skipped (forward compatibility, as in every KvNode decoder).
+;          Each event is O(1) plus the bytes it carries.
+; =============================================================================
+upload_event:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14                         ; 5 pushes: rsp 16-aligned for calls
+    mov     rbx, rdi                    ; Stream*
+    mov     rbp, [rbx + Stream.xfer]
+    mov     r12, [rbx + Stream.conn]
+    mov     r13, rcx                    ; a1
+    mov     r14, r8                     ; a2
+    cmp     esi, PBE_BYTES
+    je      .bytes                      ; the hot event: pieces of data
+    cmp     esi, PBE_MSG_BEGIN
+    je      .msg_begin
+    cmp     esi, PBE_BYTES_BEGIN
+    je      .bytes_begin
+    cmp     esi, PBE_BYTES_END
+    je      .bytes_end
+    cmp     esi, PBE_VARINT
+    je      .varint
+    cmp     esi, PBE_FIXED32
+    je      .fixed32
+    cmp     esi, PBE_MSG_END
+    je      .msg_end
+    jmp     .ok                         ; PBE_FIXED64: nothing defined
+.msg_begin:
+    inc     qword [rbp + Xfer.msgs]
+    jmp     .ok
+.varint:
+    cmp     rdx, UP_TAG_SIZE
+    jne     .ok
+    cmp     qword [rbp + Xfer.msgs], 1
+    jne     .first_only
+    cmp     qword [rbp + Xfer.rec], 0
+    jne     .order                      ; the record already has its size
+    mov     [rbp + Xfer.size], r13
+    or      qword [rbp + Xfer.flags], XFF_HAVE_SIZE
+    jmp     .ok
+.fixed32:
+    cmp     rdx, UP_TAG_CRC
+    jne     .ok
+    test    qword [rbp + Xfer.flags], XFF_HAVE_CRC
+    jnz     .crc_twice
+    mov     [rbp + Xfer.want_crc], r13
+    or      qword [rbp + Xfer.flags], XFF_HAVE_CRC
+    jmp     .ok
+.bytes_begin:
+    mov     qword [rbp + Xfer.field], XFD_SKIP
+    cmp     rdx, UP_TAG_DATA
+    je      .data_begin
+    cmp     rdx, UP_TAG_KEY
+    jne     .ok                         ; an unknown bytes field: skipped
+    cmp     qword [rbp + Xfer.msgs], 1
+    jne     .first_only
+    cmp     qword [rbp + Xfer.rec], 0
+    jne     .order
+    test    r13, r13
+    jz      .bad_key
+    mov     rax, [r12 + Conn.worker]
+    mov     rax, [rax + Worker.cfg]
+    cmp     r13, [rax + Config.max_key]
+    ja      .bad_key
+    ; Last wins: a repeated key in the first message replaces the earlier one.
+    mov     rdi, [rbp + Xfer.key]
+    mov     rsi, [r12 + Conn.worker]
+    lea     rsi, [rsi + Worker.pool]
+    call    kv_pool_free                ; NULL is ignored
+    mov     qword [rbp + Xfer.key], 0
+    and     qword [rbp + Xfer.flags], ~XFF_HAVE_KEY
+    mov     rdi, r13
+    mov     rsi, [r12 + Conn.worker]
+    lea     rsi, [rsi + Worker.pool]
+    call    kv_pool_malloc wrt ..plt
+    test    rax, rax
+    jz      .nomem
+    mov     [rbp + Xfer.key], rax
+    mov     [rbp + Xfer.key_len], r13
+    mov     qword [rbp + Xfer.key_off], 0
+    mov     qword [rbp + Xfer.field], XFD_KEY
+    jmp     .ok
+.data_begin:
+    cmp     qword [rbp + Xfer.rec], 0
+    jne     .data_ready
+    mov     rax, [rbp + Xfer.flags]
+    and     eax, XFF_HAVE_KEY | XFF_HAVE_SIZE
+    cmp     eax, XFF_HAVE_KEY | XFF_HAVE_SIZE
+    jne     .order                      ; data before key and total_size
+    mov     rdi, rbx
+    call    ensure_record
+    test    eax, eax
+    jnz     .out                        ; UE_TOO_LARGE / UE_BUDGET / UE_MEMORY
+.data_ready:
+    mov     qword [rbp + Xfer.field], XFD_DATA
+    jmp     .ok
+.bytes:
+    mov     rax, [rbp + Xfer.field]
+    cmp     eax, XFD_DATA
+    je      .data
+    cmp     eax, XFD_KEY
+    jne     .ok                         ; a skipped field's bytes
+    mov     rdi, [rbp + Xfer.key]
+    add     rdi, [rbp + Xfer.key_off]
+    mov     rsi, r13
+    mov     rdx, r14
+    call    memcpy wrt ..plt
+    add     [rbp + Xfer.key_off], r14
+    jmp     .ok
+.data:
+    ; The value's bytes: straight into the record, checksummed in the same pass.
+    mov     rax, [rbp + Xfer.off]
+    add     rax, r14
+    cmp     rax, [rbp + Xfer.size]
+    ja      .overflow                   ; refused before a byte lands past the end
+    mov     edi, [rbp + Xfer.crc]
+    mov     rsi, [rbp + Xfer.val]
+    add     rsi, [rbp + Xfer.off]
+    mov     rdx, r13
+    mov     rcx, r14
+    call    kv_crc32c_copy wrt ..plt
+    mov     [rbp + Xfer.crc], rax
+    add     [rbp + Xfer.off], r14
+    jmp     .ok
+.bytes_end:
+    cmp     qword [rbp + Xfer.field], XFD_KEY
+    jne     .field_none
+    or      qword [rbp + Xfer.flags], XFF_HAVE_KEY
+    ; Hash it now: the key buffer goes away once the record holds the key.
+    mov     rdi, [r12 + Conn.worker]
+    mov     rdi, [rdi + Worker.table]
+    mov     rsi, [rbp + Xfer.key]
+    mov     rdx, [rbp + Xfer.key_len]
+    lea     rcx, [rbp + Xfer.h1]        ; h1 then h2
+    call    kv_store_hash wrt ..plt
+.field_none:
+    mov     qword [rbp + Xfer.field], XFD_NONE
+    jmp     .ok
+.msg_end:
+    cmp     qword [rbp + Xfer.msgs], 1
+    jne     .ok
+    ; The first message is complete: it must have carried key and total_size.
+    mov     rax, [rbp + Xfer.flags]
+    and     eax, XFF_HAVE_KEY | XFF_HAVE_SIZE
+    cmp     eax, XFF_HAVE_KEY | XFF_HAVE_SIZE
+    jne     .first_missing
+    mov     rdi, rbx
+    call    ensure_record
+    test    eax, eax
+    jnz     .out
+    or      qword [rbp + Xfer.flags], XFF_FIRST_DONE
+.ok:
+    xor     eax, eax
+    jmp     .out
+.first_only:
+    mov     eax, UE_FIRST_ONLY
+    jmp     .out
+.order:
+    mov     eax, UE_ORDER
+    jmp     .out
+.first_missing:
+    mov     eax, UE_FIRST_MISSING
+    jmp     .out
+.bad_key:
+    mov     eax, UE_KEY
+    jmp     .out
+.crc_twice:
+    mov     eax, UE_CRC_TWICE
+    jmp     .out
+.overflow:
+    mov     eax, UE_OVERFLOW
+    jmp     .out
+.nomem:
+    mov     eax, UE_NOMEM
+.out:
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; ensure_record — reserve an Upload's record once key and total_size are
+; known. Internal.
+; @param  rdi  Stream* (Xfer with key, key_len, size, h1/h2 set)
+; @returns eax = 0 (the record exists), or UE_TOO_LARGE (total_size above
+;          KVNODE_MAX_UPLOAD_BYTES), UE_BUDGET (the connection's uploads in
+;          progress would exceed KVNODE_CONN_BUFFER_MB), UE_MEMORY (the
+;          store's memory limit, or malloc, refused).
+; @remarks Idempotent. The declared size is reserved twice on purpose: in
+;          the store's memory accounting (kv_store_rec_alloc), which bounds
+;          the whole server, and in Conn.up_bytes, which bounds what one
+;          connection can hold by declaring uploads it never completes. The
+;          key buffer is freed here: the record holds the key now, and the
+;          hash was taken when the key arrived.
+; =============================================================================
+ensure_record:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14                         ; 5 pushes: rsp 16-aligned for calls
+    mov     rbx, rdi
+    mov     rbp, [rbx + Stream.xfer]
+    cmp     qword [rbp + Xfer.rec], 0
+    jne     .ok
+    mov     r12, [rbx + Stream.conn]
+    mov     r13, [r12 + Conn.worker]
+    mov     rax, [r13 + Worker.cfg]
+    mov     r14, [rbp + Xfer.size]
+    cmp     r14, [rax + Config.max_upload]
+    ja      .too_large
+    mov     rcx, [r12 + Conn.up_bytes]
+    add     rcx, r14
+    cmp     rcx, [rax + Config.conn_budget]
+    ja      .budget
+    mov     rdi, [r13 + Worker.table]
+    mov     rsi, [rbp + Xfer.key]
+    mov     rdx, [rbp + Xfer.key_len]
+    mov     rcx, r14
+    call    kv_store_rec_alloc wrt ..plt
+    cmp     rax, -4095
+    jae     .alloc_failed               ; -E2BIG / -ENOMEM
+    mov     [rbp + Xfer.rec], rax
+    mov     ecx, [rax + Rec.key_len]
+    add     rcx, 7
+    and     rcx, -8
+    lea     rcx, [rax + Rec.data + rcx] ; the value follows the padded key
+    mov     [rbp + Xfer.val], rcx
+    add     [r12 + Conn.up_bytes], r14
+    mov     [rbp + Xfer.reserved], r14
+    mov     rdi, [rbp + Xfer.key]
+    lea     rsi, [r13 + Worker.pool]
+    call    kv_pool_free
+    mov     qword [rbp + Xfer.key], 0
+.ok:
+    xor     eax, eax
+    jmp     .out
+.too_large:
+    mov     eax, UE_TOO_LARGE
+    jmp     .out
+.budget:
+    mov     eax, UE_BUDGET
+    jmp     .out
+.alloc_failed:
+    mov     ecx, UE_MEMORY
+    mov     edx, UE_TOO_LARGE
+    cmp     rax, -E2BIG
+    cmove   ecx, edx
+    mov     eax, ecx
+.out:
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; upload_finish — the peer ended an Upload: verify, publish, answer.
+; Internal (from kv_grpc_dispatch at END_STREAM).
+; @param  rdi  Conn*   @param rsi  Stream*
+; @returns eax = 0, or -1 when out of memory.
+; @remarks Checks, in order: a first message arrived (UE_FIRST_MISSING —
+;          also a call with no DATA at all), the stream ended between
+;          messages (UE_TRUNCATED), exactly total_size bytes arrived
+;          (UE_SHORT), and the client's crc32c, if sent, matches (UE_CRC).
+;          Only then is the record published — one pointer store, so readers
+;          see the old or the new value, never a part. A full store
+;          (UE_FULL) leaves the record with the stream, which frees it.
+;          Answer: UploadResponse{created, crc32c} — the checksum of what was
+;          stored, so a client that sent none can still verify.
+; =============================================================================
+upload_finish:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    sub     rsp, 24                     ; [0..16) the reply; 4 pushes + 24: aligned
+    mov     r12, rdi                    ; Conn*
+    mov     rbx, rsi                    ; Stream*
+    mov     rbp, [rbx + Stream.xfer]
+    mov     edx, UE_FIRST_MISSING
+    test    rbp, rbp
+    jz      .refuse                     ; no DATA at all
+    lea     rdi, [rbp + Xfer.ps]
+    call    kv_pb_stream_idle wrt ..plt
+    mov     edx, UE_TRUNCATED
+    test    eax, eax
+    jz      .refuse
+    mov     edx, UE_FIRST_MISSING
+    test    qword [rbp + Xfer.flags], XFF_FIRST_DONE
+    jz      .refuse                     ; not one complete message
+    mov     edx, UE_SHORT
+    mov     rax, [rbp + Xfer.off]
+    cmp     rax, [rbp + Xfer.size]
+    jne     .refuse
+    test    qword [rbp + Xfer.flags], XFF_HAVE_CRC
+    jz      .publish
+    mov     edx, UE_CRC
+    mov     eax, [rbp + Xfer.crc]
+    cmp     eax, [rbp + Xfer.want_crc]
+    jne     .refuse
+.publish:
+    mov     rax, [r12 + Conn.worker]
+    mov     rdi, [rax + Worker.table]
+    mov     rsi, [rbp + Xfer.rec]
+    mov     rdx, [rbp + Xfer.h1]
+    mov     rcx, [rbp + Xfer.h2]
+    call    kv_store_publish wrt ..plt
+    mov     edx, UE_FULL
+    test    rax, rax
+    js      .refuse                     ; -ENOSPC: the record is still ours
+    ; Published: the store owns the record, and its reservation became a
+    ; record's accounted bytes — nothing left for xfer_release to free.
+    mov     r13, rax                    ; 1 created, 0 replaced
+    mov     qword [rbp + Xfer.rec], 0
+    mov     rax, [rbp + Xfer.reserved]
+    sub     [r12 + Conn.up_bytes], rax
+    mov     qword [rbp + Xfer.reserved], 0
+    ; UploadResponse: created (field 1, omitted when false), crc32c (field 2,
+    ; fixed32, omitted when 0) — canonical proto3, built on the stack.
+    xor     ecx, ecx
+    test    r13, r13
+    jz      .crc_field
+    mov     word [rsp + GRPC_PREFIX], 0x0108
+    mov     ecx, 2
+.crc_field:
+    mov     eax, [rbp + Xfer.crc]
+    test    eax, eax
+    jz      .reply
+    mov     byte [rsp + GRPC_PREFIX + rcx], 0x15
+    mov     [rsp + GRPC_PREFIX + rcx + 1], eax  ; little-endian, as fixed32 is
+    add     ecx, 5
+.reply:
+    mov     r13d, ecx                   ; protobuf length
+    mov     rdi, rsp
+    mov     esi, ecx
+    call    write_prefix
+    mov     rdi, r12
+    mov     rsi, rbx
+    mov     rdx, rsp
+    lea     ecx, [r13 + GRPC_PREFIX]
+    xor     r8d, r8d
+    xor     r9d, r9d
+    call    kv_h2n_reply_parts wrt ..plt
+    jmp     .out
+.refuse:
+    mov     rdi, r12
+    mov     rsi, rbx
+    call    upload_refuse               ; edx = the code
+.out:
+    add     rsp, 24
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; download_start — look a Download's key up, pin its record, start the
+; generated response. Internal (from kv_grpc_dispatch).
+; @param  rdi  Conn*   @param rsi  Stream*
+; @param  rdx  PbDl* (decoded; key present and within limits)
+; @returns eax = 0, or -1 when out of memory (pin table, Xfer, output).
+; @remarks The lookup runs while the worker is QSBR-online and the pin is
+;          taken before its next quiescent state, which is what makes the
+;          record safe to read for the rest of the call (kv_store_pin). The
+;          range: offset beyond the value is OUT_OF_RANGE; a length reaching
+;          past the end is cut at the end (an empty range is fine: one
+;          message with total_size and crc32c). chunk_size 0 means 64 KiB;
+;          larger than 1 MiB is reduced to 1 MiB. A missing key is NOT_FOUND.
+; =============================================================================
+download_start:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 24                     ; [0] h1, [8] h2, [16] end; aligned
+    mov     r12, rdi                    ; Conn*
+    mov     rbx, rsi                    ; Stream*
+    mov     r15, rdx                    ; PbDl*
+    mov     rax, [r12 + Conn.worker]
+    mov     r13, [rax + Worker.table]
+    mov     rdi, r13
+    mov     rsi, [r15 + PbDl.key]
+    mov     rdx, [r15 + PbDl.key_len]
+    mov     rcx, rsp
+    call    kv_store_hash wrt ..plt
+    mov     rdi, r13
+    mov     rsi, [r15 + PbDl.key]
+    mov     rdx, [r15 + PbDl.key_len]
+    mov     rcx, [rsp]
+    mov     r8, [rsp + 8]
+    call    kv_store_get wrt ..plt
+    test    rax, rax
+    jz      .not_found
+    mov     r14, rax                    ; Rec*
+    mov     ebp, [r14 + Rec.val_len]    ; the value's size
+    mov     rax, [r15 + PbDl.offset]
+    cmp     rax, rbp
+    ja      .out_of_range
+    mov     rcx, rbp                    ; end = size unless a shorter length was sent
+    cmp     dword [r15 + PbDl.has_length], 0
+    je      .have_end
+    mov     rdx, rbp
+    sub     rdx, rax                    ; bytes from offset to the end
+    cmp     [r15 + PbDl.length], rdx
+    jae     .have_end
+    mov     rcx, rax
+    add     rcx, [r15 + PbDl.length]
+.have_end:
+    mov     [rsp + 16], rcx
+    mov     rdi, r13
+    mov     rsi, r14
+    call    kv_store_pin wrt ..plt
+    test    rax, rax
+    jnz     .fatal                      ; the pin table could not grow
+    mov     edi, 1
+    mov     esi, Xfer_size
+    mov     rdx, [r12 + Conn.worker]
+    lea     rdx, [rdx + Worker.pool]
+    call    kv_pool_calloc wrt ..plt
+    test    rax, rax
+    jz      .unpin_fatal
+    mov     [rbx + Stream.xfer], rax    ; from here on stream_free unpins
+    mov     qword [rax + Xfer.kind], XF_DOWNLOAD
+    mov     [rax + Xfer.rec], r14
+    mov     ecx, [r14 + Rec.key_len]
+    add     rcx, 7
+    and     rcx, -8
+    lea     rcx, [r14 + Rec.data + rcx] ; the value follows the padded key
+    mov     [rax + Xfer.val], rcx
+    mov     [rax + Xfer.size], rbp
+    mov     rcx, [r15 + PbDl.offset]
+    mov     [rax + Xfer.off], rcx
+    mov     rcx, [rsp + 16]
+    mov     [rax + Xfer.end], rcx
+    mov     rcx, [r15 + PbDl.chunk]
+    mov     edx, DL_CHUNK_DEFAULT
+    test    rcx, rcx
+    cmovz   rcx, rdx
+    mov     edx, DL_CHUNK_MAX
+    cmp     rcx, rdx
+    cmova   rcx, rdx
+    mov     [rax + Xfer.chunk], rcx
+    mov     qword [rax + Xfer.first], 1
+    mov     rdi, rax
+    call    download_body_len
+    mov     [rbx + Stream.resp_len], rax
+    mov     qword [rbx + Stream.resp_off], 0
+    or      qword [rbx + Stream.flags], ST_GEN
+    mov     rdi, r12
+    mov     rsi, rbx
+    call    kv_h2n_reply_stream wrt ..plt
+    jmp     .out
+.not_found:
+    mov     rdi, r12
+    mov     rsi, rbx
+    lea     rdx, [nv_e_notfound]
+    mov     ecx, 4
+    call    refuse
+    jmp     .out
+.out_of_range:
+    mov     rdi, r12
+    mov     rsi, rbx
+    lea     rdx, [nv_e_range]
+    mov     ecx, 4
+    call    refuse
+    jmp     .out
+.unpin_fatal:
+    mov     rdi, r13
+    mov     rsi, r14
+    call    kv_store_unpin wrt ..plt
+.fatal:
+    mov     eax, -1
+.out:
+    add     rsp, 24
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; download_body_len — the exact byte length of a Download's response body.
+; Internal.
+; @param  rdi  Xfer* (size, off = the range start, end, chunk set)
+; @returns rax = the sum over every response message of its 5-byte prefix
+;          and protobuf bytes.
+; @remarks Must equal what kv_grpc_gen_fill produces, byte for byte: h2n
+;          frames exactly this many bytes and then sends the trailers. The
+;          messages: k = max(1, ceil(len / chunk)); the first carries
+;          total_size (1 + varint), each non-empty one a data field (1 +
+;          varint(n) + n), the last the crc32c field (5):
+;            5k + 1 + vlen(size) + 5 + len
+;               + (k - 1)(1 + vlen(chunk)) + 1 + vlen(last)   when len > 0
+;          The end-to-end tests parse every message of every download they
+;          make, so a disagreement here fails them.
+; =============================================================================
+download_body_len:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15                         ; 5 pushes: rsp 16-aligned for calls
+    mov     rbx, rdi
+    mov     r12, [rbx + Xfer.end]
+    sub     r12, [rbx + Xfer.off]       ; len: bytes in the range
+    mov     r13, [rbx + Xfer.chunk]
+    mov     eax, 1
+    test    r12, r12
+    jz      .have_k
+    lea     rax, [r12 + r13 - 1]
+    xor     edx, edx
+    div     r13                         ; ceil(len / chunk)
+.have_k:
+    mov     r14, rax                    ; k messages
+    lea     r15, [rax + rax * 4]        ; 5k prefixes
+    add     r15, 6                      ; total_size tag + the 5-byte crc32c field
+    add     r15, r12                    ; the data itself
+    mov     rdi, [rbx + Xfer.size]
+    call    kv_pb_varint_len wrt ..plt
+    add     r15, rax                    ; total_size's varint
+    test    r12, r12
+    jz      .done                       ; an empty range: no data fields
+    mov     rdi, r13
+    call    kv_pb_varint_len wrt ..plt
+    inc     rax                         ; a full chunk's data field header
+    lea     rcx, [r14 - 1]
+    imul    rax, rcx
+    add     r15, rax
+    lea     rcx, [r14 - 1]
+    imul    rcx, r13
+    mov     rdi, r12
+    sub     rdi, rcx                    ; the last message's data (1 .. chunk)
+    call    kv_pb_varint_len wrt ..plt
+    inc     rax
+    add     r15, rax
+.done:
+    mov     rax, r15
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
+; kv_grpc_gen_fill — produce the next bytes of a Download's response body.
+;
+; @param  rdi  Stream* (ST_GEN; Xfer of kind XF_DOWNLOAD)
+; @param  rsi  destination (inside the DATA frame h2n is writing)
+; @param  rdx  n: bytes to produce (h2n never asks past resp_len)
+; @returns nothing; exactly n bytes are written.
+; @remarks The body is a sequence of messages, each [head][data][tail]:
+;          head = 5-byte prefix + (first message) total_size + (non-empty)
+;          the data field's tag and length; data = the value's bytes, copied
+;          from the pinned record and checksummed in the same pass
+;          (kv_crc32c_copy); tail = (last message) the crc32c field, built
+;          only once the last data byte is out, so the checksum covers them
+;          all. A frame boundary may fall anywhere, even inside a head or
+;          tail: the state lives in the Xfer. Never allocates, never fails.
+; =============================================================================
+kv_grpc_gen_fill:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8                      ; 6 pushes + 8: rsp 16-aligned for calls
+    mov     rbx, rdi
+    mov     rbp, [rbx + Stream.xfer]
+    mov     r12, rsi                    ; destination cursor
+    mov     r13, rdx                    ; bytes still to produce
+.loop:
+    test    r13, r13
+    jz      .done
+    ; 1. the rest of the current message's head
+    mov     rcx, [rbp + Xfer.hlen]
+    sub     rcx, [rbp + Xfer.hoff]
+    jz      .data
+    cmp     rcx, r13
+    cmova   rcx, r13
+    lea     rsi, [rbp + Xfer.hbuf]
+    add     rsi, [rbp + Xfer.hoff]
+    add     [rbp + Xfer.hoff], rcx
+    sub     r13, rcx
+.hcopy:                                 ; a head is at most 27 bytes
+    movzx   eax, byte [rsi]
+    mov     [r12], al
+    inc     rsi
+    inc     r12
+    dec     rcx
+    jnz     .hcopy
+    jmp     .loop
+.data:
+    ; 2. value bytes: the record into the frame, checksummed
+    mov     r14, [rbp + Xfer.mrem]
+    test    r14, r14
+    jz      .tail
+    cmp     r14, r13
+    cmova   r14, r13
+    mov     edi, [rbp + Xfer.crc]
+    mov     rsi, r12
+    mov     rdx, [rbp + Xfer.val]
+    add     rdx, [rbp + Xfer.off]
+    mov     rcx, r14
+    call    kv_crc32c_copy wrt ..plt
+    mov     [rbp + Xfer.crc], rax
+    add     [rbp + Xfer.off], r14
+    sub     [rbp + Xfer.mrem], r14
+    add     r12, r14
+    sub     r13, r14
+    jmp     .loop
+.tail:
+    ; 3. the last message's crc32c field, built once its data is all out
+    cmp     qword [rbp + Xfer.last], 0
+    je      .next_msg
+    cmp     qword [rbp + Xfer.tlen], 0
+    jne     .tail_copy
+    mov     byte [rbp + Xfer.tbuf], 0x1D        ; field 3, wire type 5 (fixed32)
+    mov     eax, [rbp + Xfer.crc]
+    mov     [rbp + Xfer.tbuf + 1], eax          ; little-endian
+    mov     qword [rbp + Xfer.tlen], 5
+    mov     qword [rbp + Xfer.toff], 0
+.tail_copy:
+    mov     rcx, [rbp + Xfer.tlen]
+    sub     rcx, [rbp + Xfer.toff]
+    jz      .overrun                    ; the body is complete, yet bytes are asked for
+    cmp     rcx, r13
+    cmova   rcx, r13
+    lea     rsi, [rbp + Xfer.tbuf]
+    add     rsi, [rbp + Xfer.toff]
+    add     [rbp + Xfer.toff], rcx
+    sub     r13, rcx
+.tcopy:
+    movzx   eax, byte [rsi]
+    mov     [r12], al
+    inc     rsi
+    inc     r12
+    dec     rcx
+    jnz     .tcopy
+    jmp     .loop
+.next_msg:
+    ; 4. the next message: its data size, whether it is the last, its head
+    mov     r14, [rbp + Xfer.end]
+    sub     r14, [rbp + Xfer.off]       ; left in the range
+    xor     eax, eax
+    cmp     r14, [rbp + Xfer.chunk]
+    setbe   al                          ; the rest fits one message: the last one
+    mov     [rbp + Xfer.last], rax
+    jbe     .n_ok
+    mov     r14, [rbp + Xfer.chunk]
+.n_ok:
+    mov     [rbp + Xfer.mrem], r14
+    lea     r15, [rbp + Xfer.hbuf + GRPC_PREFIX]   ; head cursor, after the prefix
+    cmp     qword [rbp + Xfer.first], 0
+    je      .no_total
+    mov     qword [rbp + Xfer.first], 0
+    mov     byte [r15], 0x08            ; field 1 (total_size), varint
+    lea     rdi, [r15 + 1]
+    mov     rsi, [rbp + Xfer.size]
+    call    kv_pb_write_varint wrt ..plt
+    lea     r15, [r15 + rax + 1]
+.no_total:
+    test    r14, r14
+    jz      .head_done                  ; an empty range has no data field
+    mov     byte [r15], 0x12            ; field 2 (data), bytes
+    lea     rdi, [r15 + 1]
+    mov     rsi, r14
+    call    kv_pb_write_varint wrt ..plt
+    lea     r15, [r15 + rax + 1]
+.head_done:
+    ; prefix: payload = head fields + data + (last) the 5-byte crc32c field
+    mov     rax, r15
+    lea     rcx, [rbp + Xfer.hbuf + GRPC_PREFIX]
+    sub     rax, rcx
+    add     rax, r14
+    cmp     qword [rbp + Xfer.last], 0
+    je      .no_crc
+    add     rax, 5
+.no_crc:
+    mov     byte [rbp + Xfer.hbuf], 0   ; uncompressed
+    bswap   eax
+    mov     [rbp + Xfer.hbuf + 1], eax  ; big-endian length
+    lea     rax, [rbp + Xfer.hbuf]
+    sub     r15, rax
+    mov     [rbp + Xfer.hlen], r15
+    mov     qword [rbp + Xfer.hoff], 0
+    jmp     .loop
+.overrun:
+    ; Unreachable while download_body_len agrees with this generator. Zero-
+    ; fill to keep the HTTP/2 framing exact; the client's length and
+    ; crc32c checks then reject the result instead of the connection dying.
+    mov     byte [r12], 0
+    inc     r12
+    dec     r13
+    jnz     .overrun
+.done:
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
     ret
 
 section .note.GNU-stack noalloc noexec nowrite progbits

@@ -20,6 +20,16 @@
  *      updates, Huffman bits, truncated integers and strings)
  *   5  valid requests pipelined, each byte stream split into random-sized
  *      writes (exercises the carry of partial frames and preface)
+ *   6  Upload soup: up to three client-streaming Uploads interleaved, each
+ *      a valid message stream (up to 64 KiB, crc32c right, wrong, absent or
+ *      twice) that is sometimes mutated, truncated or extended with garbage,
+ *      cut into random DATA frames (some padded, some empty), sometimes
+ *      reset mid-way or left without END_STREAM
+ *   7  Download soup: Downloads of pre-uploaded values (0 B .. 300 KB) and
+ *      of random keys with random ranges and chunk sizes, under a random
+ *      initial window, then random WINDOW_UPDATE / RST_STREAM / SETTINGS /
+ *      PING frames — and the connection dropped while responses are still
+ *      being generated from pinned records
  * then reads whatever comes back for a short while and closes.
  *
  * Checks (any failure exits 1 with the seed and iteration):
@@ -171,6 +181,202 @@ static void get_request(Buf *b, uint32_t sid) {
 static void preface(Buf *b) {
   put(b, kPreface, sizeof kPreface);
   frame_hdr(b, 0, 4, 0, 0);
+}
+
+/* Defined below, used by the streaming builders that follow. */
+static void drain(int fd, int ms);
+static void random_bytes(Buf *b, uint64_t *s, size_t n);
+
+/**
+ * A gRPC call's header block for any path: literals without indexing only,
+ * like get_block, so blocks stay independent of each other.
+ * @param b     destination
+ * @param path  :path (e.g. "/kvnode.v1.KvNode/Upload")
+ */
+static void call_block(Buf *b, const char *path) {
+  const struct { const char *n, *v; } f[] = {
+      {":method", "POST"}, {":scheme", "http"}, {":path", path},
+      {":authority", "fuzz"}, {"content-type", "application/grpc"}, {"te", "trailers"}};
+  for (size_t i = 0; i < sizeof f / sizeof f[0]; i++) {
+    uint8_t z = 0;
+    put(b, &z, 1);
+    hstr(b, f[i].n);
+    hstr(b, f[i].v);
+  }
+}
+
+/** Appends a protobuf varint. */
+static void vput(Buf *b, uint64_t v) {
+  uint8_t t[10];
+  size_t n = 0;
+  while (v >= 0x80) {
+    t[n++] = (uint8_t)(v | 0x80);
+    v >>= 7;
+  }
+  t[n++] = (uint8_t)v;
+  put(b, t, n);
+}
+
+/**
+ * CRC-32C (zlib-style), a plain byte table — this file's own, so the fuzzer
+ * shares no code with the server's crc32c.asm beyond the wire format.
+ */
+static uint32_t crc32c(uint32_t crc, const uint8_t *p, size_t n) {
+  static uint32_t tab[256];
+  if (!tab[1])
+    for (uint32_t i = 0; i < 256; i++) {
+      uint32_t c = i;
+      for (int k = 0; k < 8; k++) c = (c & 1) ? (c >> 1) ^ 0x82F63B78u : c >> 1;
+      tab[i] = c;
+    }
+  crc = ~crc;
+  while (n--) crc = tab[(crc ^ *p++) & 0xFF] ^ (crc >> 8);
+  return ~crc;
+}
+
+/** Frames one message body as a gRPC message (prefix flag, 32-bit length). */
+static void grpc_msg(Buf *b, uint8_t flag, const Buf *body) {
+  uint8_t pfx[5] = {flag, (uint8_t)(body->n >> 24), (uint8_t)(body->n >> 16),
+                    (uint8_t)(body->n >> 8), (uint8_t)body->n};
+  put(b, pfx, 5);
+  if (body->n) put(b, body->p, body->n);
+}
+
+/**
+ * A valid UploadRequest stream for `key`: the first message with key and
+ * total_size (and sometimes the first chunk), then random chunks; the
+ * crc32c right (most often), wrong, absent or sent twice.
+ * @param b    destination (the message stream, not yet in frames)
+ * @param s    PRNG state
+ * @param key  key (NUL-terminated)
+ * @param max  largest total_size to declare
+ */
+static void upload_stream(Buf *b, uint64_t *s, const char *key, size_t max) {
+  size_t size = rng_next(s) % 3 == 0 ? rng_next(s) % 64 : rng_next(s) % (max + 1);
+  Buf val = {0}, m = {0};
+  random_bytes(&val, s, size);
+  uint32_t crc = crc32c(0, val.p, size);
+  int crc_mode = (int)(rng_next(s) % 8);        /* 0-4 right, 5 wrong, 6 absent, 7 twice */
+  uint8_t crcf[5] = {0x25, (uint8_t)crc, (uint8_t)(crc >> 8), (uint8_t)(crc >> 16),
+                     (uint8_t)(crc >> 24)};
+  if (crc_mode == 5) crcf[1] ^= 0x5A;
+  put(&m, "\x0A", 1);
+  vput(&m, strlen(key));
+  put(&m, key, strlen(key));
+  put(&m, "\x10", 1);
+  vput(&m, size);
+  size_t off = 0;
+  if (size && rng_next(s) % 2) {                /* the first chunk in the first message */
+    size_t n = 1 + rng_next(s) % size;
+    put(&m, "\x1A", 1);
+    vput(&m, n);
+    put(&m, val.p, n);
+    off = n;
+  }
+  if (crc_mode == 7) put(&m, crcf, 5);
+  grpc_msg(b, 0, &m);
+  while (off < size) {
+    size_t n = 1 + rng_next(s) % (size - off);
+    m.n = 0;
+    put(&m, "\x1A", 1);
+    vput(&m, n);
+    put(&m, val.p + off, n);
+    off += n;
+    if (off == size && crc_mode != 6) put(&m, crcf, 5);
+    grpc_msg(b, 0, &m);
+  }
+  if (size == 0 && crc_mode != 6) {             /* an empty value: crc alone */
+    m.n = 0;
+    put(&m, crcf, 5);
+    grpc_msg(b, 0, &m);
+  }
+  free(val.p);
+  free(m.p);
+}
+
+/** Keys the Download soup reads, uploaded once at startup (fuzz_setup). */
+static const size_t kDlSizes[4] = {0, 1000, 70000, 300000};
+
+/**
+ * Appends one DownloadRequest message: a pre-uploaded key (or random bytes),
+ * a random offset (sometimes past the end), a length or none, a chunk size
+ * from 0 to far beyond the maximum.
+ */
+static void download_msg(Buf *b, uint64_t *s) {
+  Buf m = {0};
+  char key[32];
+  int k = (int)(rng_next(s) % 5);
+  if (k < 4) {
+    snprintf(key, sizeof key, "fuzz-dl-%d", k);
+    put(&m, "\x0A", 1);
+    vput(&m, strlen(key));
+    put(&m, key, strlen(key));
+  } else {
+    size_t n = rng_next(s) % 40;
+    put(&m, "\x0A", 1);
+    vput(&m, n);
+    random_bytes(&m, s, n);
+  }
+  if (rng_next(s) % 2) {
+    put(&m, "\x10", 1);
+    vput(&m, rng_next(s) % 3 == 0 ? rng_next(s) : rng_next(s) % 310000);
+  }
+  if (rng_next(s) % 2) {
+    put(&m, "\x18", 1);
+    vput(&m, rng_next(s) % 4 == 0 ? rng_next(s) : rng_next(s) % 310000);
+  }
+  if (rng_next(s) % 2) {
+    put(&m, "\x20", 1);
+    vput(&m, rng_next(s) % 4 == 0 ? rng_next(s) : rng_next(s) % 100000);
+  }
+  grpc_msg(b, 0, &m);
+  free(m.p);
+}
+
+/**
+ * Uploads the values the Download soup reads (keys fuzz-dl-0..3), over one
+ * raw connection, and gives the server a moment to answer.
+ * @remarks Fails the run if the connection cannot be made; the answers are
+ *          not parsed (a failed upload only makes those downloads NOT_FOUND,
+ *          still valid fuzzing), the liveness checks cover the server.
+ */
+static void fuzz_setup(void) {
+  uint64_t s = 0x5E7;
+  Buf b = {0};
+  preface(&b);
+  for (int i = 0; i < 4; i++) {
+    Buf blk = {0}, body = {0}, m = {0}, val = {0};
+    call_block(&blk, "/kvnode.v1.KvNode/Upload");
+    frame(&b, 1, 0x4, 1 + 2 * (uint32_t)i, blk.p, (uint32_t)blk.n);
+    char key[32];
+    snprintf(key, sizeof key, "fuzz-dl-%d", i);
+    random_bytes(&val, &s, kDlSizes[i]);
+    put(&m, "\x0A", 1);
+    vput(&m, strlen(key));
+    put(&m, key, strlen(key));
+    put(&m, "\x10", 1);
+    vput(&m, kDlSizes[i]);
+    if (kDlSizes[i]) {
+      put(&m, "\x1A", 1);
+      vput(&m, kDlSizes[i]);
+      put(&m, val.p, kDlSizes[i]);
+    }
+    grpc_msg(&body, 0, &m);
+    for (size_t off = 0; off < body.n; off += 16384) {       /* max frame size */
+      size_t n = body.n - off < 16384 ? body.n - off : 16384;
+      frame(&b, 0, off + n == body.n ? 0x1 : 0, 1 + 2 * (uint32_t)i, body.p + off, (uint32_t)n);
+    }
+    free(blk.p);
+    free(body.p);
+    free(m.p);
+    free(val.p);
+  }
+  int fd = dial();
+  if (fd < 0) fail("cannot connect for the setup uploads");
+  send_all(fd, b.p, b.n);
+  drain(fd, 300);
+  close(fd);
+  free(b.p);
 }
 
 /** Reads and discards input for up to ms milliseconds or until EOF. */
@@ -340,6 +546,115 @@ static void build_case(Buf *b, uint64_t *s, int kind) {
     }
     break;
   }
+  case 6: { /* Upload soup: interleaved streams of DATA frames, some broken */
+    preface(b);
+    enum { MAXS = 3 };
+    Buf body[MAXS] = {{0}};
+    size_t off[MAXS] = {0};
+    int nstreams = 1 + (int)(rng_next(s) % MAXS), cut[MAXS];
+    for (int i = 0; i < nstreams; i++) {
+      Buf blk = {0};
+      call_block(&blk, "/kvnode.v1.KvNode/Upload");
+      frame(b, 1, 0x4, 1 + 2 * (uint32_t)i, blk.p, (uint32_t)blk.n);
+      free(blk.p);
+      char key[32];
+      snprintf(key, sizeof key, "fuzz-up-%d", i);
+      upload_stream(&body[i], s, key, 65536);
+      switch (rng_next(s) % 6) {
+      case 0:                                   /* flipped bytes */
+        for (int f = 0; f < 3; f++) body[i].p[rng_next(s) % body[i].n] ^= (uint8_t)(1 + rng_next(s) % 255);
+        break;
+      case 1:                                   /* truncated */
+        body[i].n = rng_next(s) % body[i].n;
+        break;
+      case 2:                                   /* garbage appended */
+        random_bytes(&body[i], s, 1 + rng_next(s) % 40);
+        break;
+      default:                                  /* valid */
+        break;
+      }
+      /* 1 in 6: reset instead of ending; 1 in 6: never ended */
+      cut[i] = (int)(rng_next(s) % 6);
+    }
+    for (int left = nstreams; left > 0;) {
+      int i = (int)(rng_next(s) % (uint64_t)nstreams);
+      if (off[i] > body[i].n) continue;         /* this stream is done */
+      uint32_t sid = 1 + 2 * (uint32_t)i;
+      size_t n = body[i].n - off[i];
+      size_t maxf = rng_next(s) % 2 ? 1 + rng_next(s) % 64 : 1 + rng_next(s) % 16384;
+      if (n > maxf) n = maxf;
+      int last = off[i] + n == body[i].n;
+      if (last && cut[i] == 0) {                /* RST_STREAM(CANCEL) before the end */
+        static const uint8_t cancel[4] = {0, 0, 0, 8};
+        frame(b, 3, 0, sid, cancel, 4);
+      } else if (rng_next(s) % 8 == 0 && n < 200) { /* padded DATA */
+        uint8_t pad = (uint8_t)(rng_next(s) % 32);
+        frame_hdr(b, (uint32_t)(1 + n + pad), 0, (uint8_t)(0x8 | (last && cut[i] != 1)), sid);
+        put(b, &pad, 1);
+        if (n) put(b, body[i].p + off[i], n);
+        for (uint8_t z = 0, k = 0; k < pad; k++) put(b, &z, 1);
+      } else {
+        frame(b, 0, (uint8_t)(last && cut[i] != 1), sid, body[i].p + off[i], (uint32_t)n);
+      }
+      off[i] += n;
+      if (last) {
+        off[i] = body[i].n + 1;                 /* mark done */
+        left--;
+      }
+    }
+    for (int i = 0; i < nstreams; i++) free(body[i].p);
+    break;
+  }
+  case 7: { /* Download soup: real and bogus ranges, windows shaken, dropped */
+    put(b, kPreface, sizeof kPreface);
+    uint8_t set[6] = {0, 4, 0, 0, 0, 0};        /* SETTINGS_INITIAL_WINDOW_SIZE */
+    uint32_t win = rng_next(s) % 3 == 0 ? (uint32_t)(rng_next(s) % 100) : 65535;
+    set[2] = (uint8_t)(win >> 24);
+    set[3] = (uint8_t)(win >> 16);
+    set[4] = (uint8_t)(win >> 8);
+    set[5] = (uint8_t)win;
+    frame(b, 4, 0, 0, set, 6);
+    int nstreams = 1 + (int)(rng_next(s) % 4);
+    for (int i = 0; i < nstreams; i++) {
+      Buf blk = {0}, msg = {0};
+      call_block(&blk, "/kvnode.v1.KvNode/Download");
+      frame(b, 1, 0x4, 1 + 2 * (uint32_t)i, blk.p, (uint32_t)blk.n);
+      download_msg(&msg, s);
+      frame(b, 0, 0x1, 1 + 2 * (uint32_t)i, msg.p, (uint32_t)msg.n);
+      free(blk.p);
+      free(msg.p);
+    }
+    int extra = (int)(rng_next(s) % 10);
+    for (int i = 0; i < extra; i++) {
+      uint32_t sid = rng_next(s) % 3 == 0 ? 0 : 1 + 2 * (uint32_t)(rng_next(s) % 4);
+      switch (rng_next(s) % 4) {
+      case 0: {                                 /* WINDOW_UPDATE, even 0 or 2^31-1 */
+        uint32_t inc = rng_next(s) % 4 == 0 ? (uint32_t)(rng_next(s) & 0x7FFFFFFF)
+                                            : (uint32_t)(rng_next(s) % 70000);
+        uint8_t p[4] = {(uint8_t)(inc >> 24), (uint8_t)(inc >> 16), (uint8_t)(inc >> 8), (uint8_t)inc};
+        frame(b, 8, 0, sid, p, 4);
+        break;
+      }
+      case 1: {                                 /* RST_STREAM mid-response */
+        static const uint8_t cancel[4] = {0, 0, 0, 8};
+        frame(b, 3, 0, sid ? sid : 1, cancel, 4);
+        break;
+      }
+      case 2: {                                 /* the initial window changes */
+        uint32_t w = (uint32_t)(rng_next(s) % 200000);
+        uint8_t p[6] = {0, 4, (uint8_t)(w >> 24), (uint8_t)(w >> 16), (uint8_t)(w >> 8), (uint8_t)w};
+        frame(b, 4, 0, 0, p, 6);
+        break;
+      }
+      default: {
+        static const uint8_t opaque[8] = "fuzzping";
+        frame(b, 6, 0, 0, opaque, 8);
+        break;
+      }
+      }
+    }
+    break;
+  }
   default: /* valid pipelined requests (split into random writes by the caller) */
     preface(b);
     for (uint32_t i = 0; i < 8; i++) get_request(b, 1 + 2 * i);
@@ -360,11 +675,12 @@ int main(int argc, char **argv) {
   long pid = atol(argv[5]);
   uint64_t s = g_seed ? g_seed : 1;
   check_alive();
+  fuzz_setup();                                  /* the values kind 7 downloads */
   long rss0 = rss_kib(pid);
-  long counts[6] = {0};
+  long counts[8] = {0};
   uint64_t t0 = now_ns();
   for (g_iter = 1; g_iter <= iterations; g_iter++) {
-    int kind = (int)(rng_next(&s) % 6);
+    int kind = (int)(rng_next(&s) % 8);
     counts[kind]++;
     Buf b = {0};
     build_case(&b, &s, kind);
@@ -390,9 +706,10 @@ int main(int argc, char **argv) {
   check_alive();
   long rss1 = rss_kib(pid);
   printf("fuzz_h2: %ld connections in %.1fs (garbage %ld, flipped %ld, soup %ld, truncated %ld, "
-         "hpack %ld, split %ld); server alive; resident memory %ld -> %ld KiB\n",
+         "hpack %ld, split %ld, upload %ld, download %ld); server alive; resident memory "
+         "%ld -> %ld KiB\n",
          iterations, (double)(now_ns() - t0) / 1e9, counts[0], counts[1], counts[2], counts[3],
-         counts[4], counts[5], rss0, rss1);
+         counts[4], counts[5], counts[6], counts[7], rss0, rss1);
   if (rss0 && rss1 - rss0 > 64 * 1024) fail("server memory grew by more than 64 MiB");
   return 0;
 }

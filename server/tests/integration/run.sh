@@ -13,12 +13,21 @@
 # speaks HTTP/2 through its own engine (h2n.asm, ADR 0007/0008); the client
 # (itest_grpc, nghttp2's client API) and h2spec are independent
 # implementations, so the engine is never only checked against itself.
-#   1. protocol, limits, pipelining, cancellation, multi-connection atomicity
+# Every server must stop with "pinned=0 deferred=0" in its stopped line: a
+# Download pin (or a record deferred to one) that outlived its call is a
+# leak, whichever phase caused it (ADR 0010).
+#   1. protocol, limits, pipelining, cancellation, multi-connection atomicity,
+#      and the streaming calls: Upload/Download matrix, every refusal, every
+#      DATA split, cancels, resets, ranges, windows, pins, a streaming race
 #   2. graceful shutdown: an idle client must receive GOAWAY(NO_ERROR) and a
-#      clean close, and the server must exit 0 after SIGTERM
+#      clean close, an in-flight unary call and an in-flight Upload and
+#      Download must complete, and the server must exit 0 after SIGTERM
 #  2b. phase 1's suite again through per-worker private L1/L2 record caches
-#      (hcache.asm) with SWAR tag scans
-#   3. idle timeout: an idle connection is closed with GOAWAY after ~1 s
+#      (hcache.asm) with SWAR tag scans and the table CRC-32C (no SSE4.2)
+#   3. idle timeout: an idle connection is closed with GOAWAY after ~1 s;
+#      stalled transfers end (and give their memory back), slow ones do not,
+#      and a reader frozen at the TCP level is dropped without the GOAWAY it
+#      could never receive
 #   4. snapshot source: 20k records load at startup and are served exactly
 #   5. startup refusals: corrupt/missing snapshot (exit 1), invalid settings
 #      (exit 2), a port already served by another instance (exit 1)
@@ -27,9 +36,15 @@
 #      h2spec-known-failures.txt (empty: 146/146): any new failure or skip
 #      fails the run
 #   7. fuzzing the HTTP/2 input path (fuzz_h2: garbage, mutated requests,
-#      frame soup, random HPACK, truncation, split writes), liveness checked
-#      every 50 connections and memory growth bounded; then the full suite
-#      on the same server, which must still exit 0
+#      frame soup, random HPACK, truncation, split writes, Upload and
+#      Download soups), liveness checked every 50 connections and memory
+#      growth bounded; then the full suite on the same server, which must
+#      still exit 0
+#   8. streaming limits: KVNODE_MAX_MEMORY_MB, the per-connection upload
+#      budget, KVNODE_CAPACITY — and every reservation and pin coming back
+#      however its call ends (cancel, reset connection, completion)
+#   9. one worker: unary calls stay answered beside bulk downloads
+#      (FLUSH_BUDGET)
 # Env (from the Makefile): FUZZ_BIN, FUZZ_ITERATIONS (default 3000),
 # FUZZ_SEED (default 1; a failure prints the seed that reproduces it).
 # =============================================================================
@@ -41,6 +56,9 @@ MKSNAP=${3:?usage: run.sh KVNODE ITEST MKSNAP}
 PORT=${KVNODE_ITEST_PORT:-50151}
 MAX_KEY=1024
 MAX_VALUE=1048576
+# Above MAX_VALUE, so values only Upload can store (and Get must refuse)
+# exist in the suite's phases; within the default 64 MiB connection budget.
+MAX_UPLOAD=8388608
 WORK=$(mktemp -d)
 PID=
 LOG=
@@ -85,7 +103,9 @@ start_server() {
 }
 
 # stop_server — SIGTERM, then require exit status 0 within 15 s (the default
-# shutdown grace is 10 s).
+# shutdown grace is 10 s), and a stopped line reporting no pin left: after
+# every connection is gone, a Download pin still held — or a replaced record
+# still deferred to one — would be a leak of up to KVNODE_MAX_UPLOAD_BYTES.
 stop_server() {
   kill -TERM "$PID"
   local deadline=$((SECONDS + 15)) rc=0
@@ -97,6 +117,8 @@ stop_server() {
   PID=
   ((rc == 0)) || fail "server exited with status $rc after SIGTERM"
   grep -q 'msg="stopped"' "$LOG" || fail "no 'stopped' log line"
+  grep -q 'msg="stopped".* pinned=0 deferred=0' "$LOG" \
+    || fail "pins outlived their calls: $(grep 'msg="stopped"' "$LOG")"
 }
 
 # await_ready FILE LINE PID — wait until the client PID has written LINE into
@@ -125,45 +147,58 @@ refuse() {
   echo "  refused: $name (exit $rc)"
 }
 
-echo "itest: phase 1 — protocol, limits, pipelining, cancellation, concurrency"
+echo "itest: phase 1 — protocol, limits, pipelining, cancellation, concurrency, streaming"
 start_server main KVNODE_WORKERS=4 KVNODE_CAPACITY=200000 \
-  KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE
-"$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" || fail "itest_grpc suite"
+  KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE KVNODE_MAX_UPLOAD_BYTES=$MAX_UPLOAD
+grep -qF "max_upload_bytes=$MAX_UPLOAD crc32c=" "$LOG" || fail "upload settings not logged"
+"$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" "$MAX_UPLOAD" || fail "itest_grpc suite"
 
-echo "itest: phase 2 — graceful shutdown: idle client + in-flight request"
-# Both clients print "ready" once the server has answered a PING sent after
-# their connection (and, for the drain check, its stream) was set up; only
-# then is SIGTERM sent. A fixed sleep here lost the race on a busy host: the
-# stream arrived after the GOAWAY and was never accepted.
+echo "itest: phase 2 — graceful shutdown: idle client + in-flight unary and streaming calls"
+# The clients print "ready" once the server has answered a PING sent after
+# their connection (and, for the drain checks, their streams) was set up;
+# only then is SIGTERM sent. A fixed sleep here lost the race on a busy host:
+# the stream arrived after the GOAWAY and was never accepted.
 "$ITEST" --wait-goaway 127.0.0.1 "$PORT" 20 > "$WORK/hold.out" &
 HOLD=$!
 "$ITEST" --drain-check 127.0.0.1 "$PORT" 20 > "$WORK/drain.out" &
 DRAIN=$!
+"$ITEST" --drain-transfers 127.0.0.1 "$PORT" 20 > "$WORK/xfer.out" &
+XFER=$!
 await_ready "$WORK/hold.out" "wait-goaway: ready" "$HOLD"
 await_ready "$WORK/drain.out" "drain-check: ready" "$DRAIN"
+await_ready "$WORK/xfer.out" "drain-transfers: ready" "$XFER"
 stop_server
 wait "$HOLD" || { cat "$WORK/hold.out" >&2; fail "idle client did not get GOAWAY(NO_ERROR) and a clean close"; }
 wait "$DRAIN" || { cat "$WORK/drain.out" >&2; fail "in-flight request was not completed (NOT_SERVING) during drain"; }
-cat "$WORK/hold.out" "$WORK/drain.out"
+wait "$XFER" || { cat "$WORK/xfer.out" >&2; fail "in-flight Upload/Download were not completed during drain"; }
+cat "$WORK/hold.out" "$WORK/drain.out" "$WORK/xfer.out"
 
-echo "itest: phase 2b — the same suite through private L1/L2 caches and SWAR scans"
+echo "itest: phase 2b — the same suite through private L1/L2 caches, SWAR scans, table CRC-32C"
 # Tiny caches (L1 256, L2 4096 entries) so entries conflict and are reused
-# while the suite's writers invalidate them; SWAR because SSE2 is the default.
+# while the suite's writers invalidate them; SWAR because SSE2 is the default;
+# the table CRC-32C because auto picks SSE4.2 on any CPU this runs on.
 start_server cached KVNODE_WORKERS=4 KVNODE_CAPACITY=200000 \
-  KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE \
-  KVNODE_CACHE_L1_BITS=8 KVNODE_CACHE_L2_BITS=12 KVNODE_SCAN=swar
+  KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE KVNODE_MAX_UPLOAD_BYTES=$MAX_UPLOAD \
+  KVNODE_CACHE_L1_BITS=8 KVNODE_CACHE_L2_BITS=12 KVNODE_SCAN=swar KVNODE_CRC32C=table
 grep -qF 'scan=swar' "$LOG" || fail "scan mode not logged"
 grep -qF 'cache_l1_bits=8 cache_l2_bits=12' "$LOG" || fail "cache settings not logged"
-"$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" || fail "itest_grpc suite with private caches"
+grep -qF 'crc32c=table' "$LOG" || fail "crc32c mode not logged"
+"$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" "$MAX_UPLOAD" \
+  || fail "itest_grpc suite with private caches"
 stop_server
 
-echo "itest: phase 3 — idle timeout"
-start_server idle KVNODE_WORKERS=1 KVNODE_IDLE_TIMEOUT_SEC=1
+echo "itest: phase 3 — idle timeout: idle connections, stalled, slow and frozen transfers"
+# The memory limit lets --stall observe, from outside, when a stalled call's
+# pinned record or upload reservation is released (a 16 MiB reservation fits
+# again); the budget bounds uploads per connection as in production.
+start_server idle KVNODE_WORKERS=1 KVNODE_IDLE_TIMEOUT_SEC=1 KVNODE_MAX_MEMORY_MB=24 \
+  KVNODE_CONN_BUFFER_MB=16 KVNODE_MAX_UPLOAD_BYTES=16777216
 t0=$(date +%s%N)
 "$ITEST" --wait-goaway 127.0.0.1 "$PORT" 10 || fail "idle connection not closed with GOAWAY"
 ms=$((($(date +%s%N) - t0) / 1000000))
 ((ms >= 900)) || fail "idle close after ${ms} ms, before the 1 s timeout"
 echo "  idle connection closed after ${ms} ms"
+"$ITEST" --stall 127.0.0.1 "$PORT" || fail "idle timeout against transfers"
 stop_server
 
 echo "itest: phase 4 — snapshot as the data source"
@@ -186,6 +221,15 @@ refuse "capacity overflow" 2 'name=KVNODE_CAPACITY' KVNODE_CAPACITY=999999999999
 refuse "unknown scan mode" 2 'name=KVNODE_SCAN value=avx9 allowed=swar|sse2' KVNODE_SCAN=avx9
 refuse "empty scan name" 2 'name=KVNODE_SCAN value= allowed=swar|sse2' KVNODE_SCAN=
 refuse "cache too large" 2 'name=KVNODE_CACHE_L1_BITS value=25' KVNODE_CACHE_L1_BITS=25
+refuse "unknown crc32c mode" 2 'name=KVNODE_CRC32C value=fast allowed=auto|sse42|table' \
+  KVNODE_CRC32C=fast
+refuse "crc32c mode case" 2 'name=KVNODE_CRC32C value=SSE42 allowed=auto|sse42|table' \
+  KVNODE_CRC32C=SSE42
+refuse "upload above the budget" 2 \
+  'name=KVNODE_MAX_UPLOAD_BYTES value=2000000 allowed=0..1048576 reason="must not exceed KVNODE_CONN_BUFFER_MB' \
+  KVNODE_CONN_BUFFER_MB=1 KVNODE_MAX_UPLOAD_BYTES=2000000
+refuse "upload limit overflow" 2 'name=KVNODE_MAX_UPLOAD_BYTES value=2147483648 allowed=0..2147483647' \
+  KVNODE_MAX_UPLOAD_BYTES=2147483648
 
 # h2spec_check NAME BASELINE [VAR=VALUE...] — run h2spec against a fresh
 # server; the failures must be exactly BASELINE's (a new failure or skip
@@ -227,13 +271,26 @@ fi
 echo "itest: phase 7 — fuzzing the HTTP/2 input path, then the suite on the same server"
 if [[ -n "${FUZZ_BIN:-}" ]]; then
   start_server fuzz KVNODE_WORKERS=2 KVNODE_CAPACITY=200000 \
-    KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE
+    KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE KVNODE_MAX_UPLOAD_BYTES=$MAX_UPLOAD
   "$FUZZ_BIN" 127.0.0.1 "$PORT" "${FUZZ_ITERATIONS:-3000}" "${FUZZ_SEED:-1}" "$PID" \
     || fail "fuzz_h2 found a failure"
-  "$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" || fail "suite after fuzzing"
-  stop_server                              # exit status 0 required
+  "$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" "$MAX_UPLOAD" || fail "suite after fuzzing"
+  stop_server                              # exit status 0 and no pin left required
 else
   echo "  skipped: FUZZ_BIN not set (run through make itest)"
 fi
+
+echo "itest: phase 8 — streaming limits: memory, upload budget, capacity, releases"
+# Small limits so --stream-limits can hit each one and watch it recover;
+# the table CRC-32C here too (phase 2b already checks it logs).
+start_server limits KVNODE_WORKERS=2 KVNODE_CAPACITY=64 KVNODE_MAX_MEMORY_MB=24 \
+  KVNODE_CONN_BUFFER_MB=16 KVNODE_MAX_UPLOAD_BYTES=16777216 KVNODE_CRC32C=table
+"$ITEST" --stream-limits 127.0.0.1 "$PORT" || fail "streaming limits"
+stop_server
+
+echo "itest: phase 9 — one worker: unary calls beside bulk downloads"
+start_server fairness KVNODE_WORKERS=1
+"$ITEST" --fairness 127.0.0.1 "$PORT" || fail "unary calls starved by downloads"
+stop_server
 
 echo "itest: all phases passed"

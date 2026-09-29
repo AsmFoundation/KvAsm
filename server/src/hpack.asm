@@ -161,6 +161,8 @@ CSTR v_prefix,      "/kvnode.v1.KvNode/"
 CSTR v_get,         "Get"
 CSTR v_put,         "Put"
 CSTR v_delete,      "Delete"
+CSTR v_upload,      "Upload"            ; client streaming (grpc.asm consumes it as it arrives)
+CSTR v_download,    "Download"          ; server streaming (a generated body)
 
 ; hp_token[c] = 1 for characters legal in an HTTP/2 field name: RFC 9110
 ; tchar, lowercase only (RFC 9113 §8.2.1: uppercase names are malformed).
@@ -1061,6 +1063,12 @@ classify_value:
     je      .route
     mov     r10d, M_DELETE
     VALUEIS v_delete
+    je      .route
+    mov     r10d, M_UPLOAD
+    VALUEIS v_upload
+    je      .route
+    mov     r10d, M_DOWNLOAD
+    VALUEIS v_download
     je      .route
     xor     r10d, r10d                  ; M_UNKNOWN
 .route:

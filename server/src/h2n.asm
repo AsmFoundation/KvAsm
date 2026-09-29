@@ -19,6 +19,12 @@
 ;           response, HEADERS carry 2 bytes (:status 200 + content-type) and
 ;           the trailers 1 byte (grpc-status 0). A GET hit is copied from the
 ;           store record into its DATA frame with no intermediate buffer.
+;   streams Upload DATA is handed to grpc.asm as it arrives (never buffered
+;           here); a Download body is generated frame by frame by grpc.asm
+;           (ST_GEN) as windows and output room allow, so a value of any
+;           size costs a fixed amount of connection memory. A response that
+;           completes while the peer is still sending (an upload refused
+;           early) is followed by RST_STREAM(NO_ERROR), RFC 9113 §8.1.
 ;
 ; Protocol coverage: every RFC 9113 rule a server must enforce — connection
 ; preface, frame sizes, stream states (idle / open / half-closed / closed),
@@ -63,6 +69,8 @@ extern kv_grpc_dispatch
 extern kv_grpc_run_batch
 extern kv_grpc_stream_append
 extern kv_grpc_stream_release
+extern kv_grpc_upload_data
+extern kv_grpc_gen_fill
 
 ; ---- frame types, flags, error codes, settings (RFC 9113 §6, §7) -----------------
 %define FT_DATA             0
@@ -179,6 +187,7 @@ global kv_h2n_reply_parts
 global kv_h2n_reply_buf
 global kv_h2n_reply_static
 global kv_h2n_reply_headers
+global kv_h2n_reply_stream
 
 ; =============================================================================
 ; kv_h2n_open — set up HTTP/2 on an accepted connection.
@@ -795,6 +804,11 @@ h2_process:
     ja      .d_malformed
 .d_append:
     mov     rcx, [rsp + L_T1]
+    ; Upload: grpc.asm consumes the bytes as they arrive — it decodes the
+    ; message stream and writes the value straight into its record — so this
+    ; stream never buffers or borrows a body.
+    cmp     qword [rbp + Stream.method], M_UPLOAD
+    je      .d_upload
     test    rcx, rcx
     jz      .d_appended
     ; Zero copy: a whole body in this one frame (nothing buffered before,
@@ -848,6 +862,17 @@ h2_process:
     test    eax, eax
     js      .fatal
     jmp     .next
+.d_upload:
+    test    rcx, rcx
+    jz      .d_appended                 ; an empty DATA frame: nothing to decode
+    mov     rdi, rbx
+    mov     rsi, rbp
+    mov     rdx, [rsp + L_T0]
+    call    kv_grpc_upload_data wrt ..plt
+    test    eax, eax
+    js      .fatal                      ; out of memory: the connection ends
+    jnz     .next                       ; refused early: the stream is closed and freed
+    jmp     .d_appended                 ; END_STREAM check, stream window top-up
 .d_no_stream:
     mov     eax, [rsp + L_SID]
     cmp     rax, [rbx + Conn.h2 + H2.last_id]
@@ -2170,6 +2195,33 @@ stream_error:
     ret
 
 ; =============================================================================
+; response_done — our response is complete: close the stream. Internal.
+; @param  rdi  Conn*   @param rsi  Stream*
+; @returns eax = 0, or -1 when out of memory (queuing RST_STREAM).
+; @remarks The normal case — the peer ended its request before we answered,
+;          as every unary call does — is plain stream_close. A response that
+;          completes while the peer is still sending (an Upload refused
+;          early) must also ask the peer to stop: RFC 9113 §8.1 prescribes
+;          RST_STREAM(NO_ERROR) after the complete response. Without it the
+;          client would keep transmitting a body nobody reads, and its later
+;          DATA would draw STREAM_CLOSED errors. stream_error sends exactly
+;          that: the frame, the id into rst_ring (so DATA already in flight
+;          is ignored, not answered), and the close.
+; =============================================================================
+response_done:
+    test    qword [rsi + Stream.h2flags], SN_REMOTE_CLOSED
+    jz      .early
+    sub     rsp, 8                      ; aligned for the call
+    call    stream_close
+    add     rsp, 8
+    xor     eax, eax
+    ret
+.early:
+    mov     edx, [rsi + Stream.id]
+    mov     ecx, E_NO_ERROR
+    jmp     stream_error                ; tail call: 0 or -1
+
+; =============================================================================
 ; conn_error — queue GOAWAY(last_id, code) and stop the connection.
 ; Internal.
 ; @param  rdi  Conn*   @param esi  error code
@@ -2432,7 +2484,7 @@ kv_h2n_reply_static:
     test    eax, eax
     js      .out
     test    qword [rbp + Stream.h2flags], SN_HEAD
-    jnz     .drop                       ; HEAD: complete with the headers
+    jnz     .head_done                  ; HEAD: complete with the headers
     or      qword [rbp + Stream.h2flags], SN_RESP_HEADERS
     mov     qword [rbp + Stream.resp_off], 0
     mov     rdi, rbx
@@ -2441,6 +2493,11 @@ kv_h2n_reply_static:
     test    eax, eax
     js      .out
     xor     eax, eax
+    jmp     .out
+.head_done:
+    mov     rdi, rbx
+    mov     rsi, rbp
+    call    response_done               ; RST(NO_ERROR) too if the peer still sends
     jmp     .out
 .drop:
     mov     rdi, rbx
@@ -2474,6 +2531,12 @@ kv_h2n_reply_headers:
     call    put_nv_headers
     test    eax, eax
     js      .out
+    ; Complete: a streaming request refused before its end (Upload) also
+    ; gets RST_STREAM(NO_ERROR) so the peer stops sending (response_done).
+    mov     rdi, rbx
+    mov     rsi, rbp
+    call    response_done
+    jmp     .out
 .close:
     mov     rdi, rbx
     mov     rsi, rbp
@@ -2483,6 +2546,33 @@ kv_h2n_reply_headers:
     add     rsp, 8
     pop     rbp
     pop     rbx
+    ret
+
+; =============================================================================
+; kv_h2n_reply_stream — answer with HEADERS now and a generated body as the
+; windows allow (Download).
+;
+; @param  rdi  Conn*
+; @param  rsi  Stream* — ST_GEN set, resp_len = the body's exact length (all
+;              gRPC messages, prefixes included), resp_buf unused; the body
+;              comes from kv_grpc_gen_fill
+; @returns eax = 0, or -1 when out of memory (the caller ends the connection).
+; @remarks The body never exists as a whole: each DATA frame is filled from
+;          the source when window and output room allow (emit_progress), so
+;          a 2 GiB value costs its pinned record plus the connection's 64 KiB
+;          output buffer. The trailers follow the last byte and close the
+;          stream (its transfer state — the pin — is released with it). On a
+;          failing connection the call is simply dropped the same way.
+; =============================================================================
+kv_h2n_reply_stream:
+    test    qword [rdi + Conn.h2 + H2.flags], H2F_CLOSING
+    jnz     .drop
+    jmp     reply_slow                  ; tail call: HEADERS, then emit_progress
+.drop:
+    sub     rsp, 8                      ; aligned for the call
+    call    stream_close
+    add     rsp, 8
+    xor     eax, eax
     ret
 
 ; =============================================================================
@@ -2590,8 +2680,7 @@ reply_fast:
     mov     [rbx + Conn.out_len], rax   ; trim the reservation
     mov     rdi, rbx
     mov     rsi, rbp
-    call    stream_close
-    xor     eax, eax
+    call    response_done               ; 0, or -1 (out of memory for an RST)
     jmp     .out
 .later:
     mov     eax, 1
@@ -2661,7 +2750,11 @@ reply_slow:
 ;          window (both signed: SETTINGS may drive them negative), the
 ;          peer's max frame size and the remaining bytes. A gRPC body ends
 ;          with the trailers; a static HTTP body ends the stream on its last
-;          DATA frame.
+;          DATA frame. A generated body (ST_GEN, Download) is filled frame by
+;          frame by kv_grpc_gen_fill instead of copied from resp_buf, and each
+;          of its frames is also held to the output room below
+;          OUT_HIGH_WATER — a peer that allows 16 MiB frames must not grow
+;          one connection's buffer to 16 MiB.
 ; =============================================================================
 emit_progress:
     push    rbx
@@ -2689,6 +2782,8 @@ emit_progress:
     jle     .blocked                    ; a window is shut (or negative)
     cmp     qword [rbx + Conn.out_len], OUT_HIGH_WATER
     jae     .blocked
+    test    qword [rbp + Stream.flags], ST_GEN
+    jnz     .gen
     xor     edx, edx
     cmp     r12, r13
     jne     .flags
@@ -2703,6 +2798,23 @@ emit_progress:
     add     r8, [rbp + Stream.resp_off]
     mov     r9, r12
     call    write_frame
+    test    eax, eax
+    js      .nomem
+    add     [rbp + Stream.resp_off], r12
+    sub     [rbx + Conn.h2 + H2.send_window], r12
+    sub     [rbp + Stream.send_window], r12
+    jmp     .chunk
+.gen:
+    ; Generated body: at most the room left below OUT_HIGH_WATER (> 0, checked
+    ; above), filled in place by the gRPC layer.
+    mov     eax, OUT_HIGH_WATER
+    sub     rax, [rbx + Conn.out_len]
+    cmp     r12, rax
+    cmova   r12, rax
+    mov     rdi, rbx
+    mov     rsi, rbp
+    mov     rdx, r12
+    call    write_frame_gen
     test    eax, eax
     js      .nomem
     add     [rbp + Stream.resp_off], r12
@@ -2728,8 +2840,7 @@ emit_progress:
 .closed:
     mov     rdi, rbx
     mov     rsi, rbp
-    call    stream_close
-    xor     eax, eax
+    call    response_done               ; 0 (complete), or -1 (out of memory)
     jmp     .out
 .blocked:
     mov     rdi, rbx
@@ -3203,6 +3314,53 @@ write_frame:
     add     rsp, 8
     pop     r15
     pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; write_frame_gen — append one DATA frame whose payload the gRPC layer
+; generates in place (ST_GEN streams). Internal.
+; @param  rdi  Conn*   @param rsi  Stream*   @param rdx  payload length n
+;              (1 .. FRAME_MAX; the caller already bounded it by the windows)
+; @returns eax = 0, or -1 when out of memory.
+; @remarks kv_grpc_gen_fill writes exactly n bytes of the body — the next n
+;          after Stream.resp_off — straight into the output buffer: for a
+;          Download that is one copy from the pinned record, checksummed on
+;          the way (the caller advances resp_off and the windows afterwards).
+; =============================================================================
+write_frame_gen:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    sub     rsp, 8                      ; 4 pushes + 8: aligned for calls
+    mov     rbx, rdi
+    mov     rbp, rsi
+    mov     r12, rdx
+    lea     rsi, [r12 + FRAME_HDR]
+    call    out_reserve                 ; rdi = Conn*
+    test    rax, rax
+    jz      .nomem
+    mov     r13, rax
+    mov     rdi, rax
+    mov     esi, r12d
+    mov     edx, FT_DATA
+    xor     ecx, ecx
+    mov     r8d, [rbp + Stream.id]
+    call    put_hdr
+    mov     rdi, rbp
+    lea     rsi, [r13 + FRAME_HDR]
+    mov     rdx, r12
+    call    kv_grpc_gen_fill wrt ..plt
+    xor     eax, eax
+    jmp     .out
+.nomem:
+    mov     eax, -1
+.out:
+    add     rsp, 8
     pop     r13
     pop     r12
     pop     rbp

@@ -21,6 +21,7 @@ kv_abi_layout:
     dq Bucket_size, Bucket.ver, Bucket.tags, Bucket.slot
     dq Table_size, QsbrSlot_size
     dq HEntry_size, HCache_size     ; private cache (hcache.asm): 32 B, 2 lines
+    dq KvStats.pinned, KvStats.deferred ; pins (Download), appended to KvStats
     dq 0xABCDEF0123456789           ; sentinel: catches a short array
 
 ; Config layout for C tests that call kv_snapshot_load directly.

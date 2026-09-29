@@ -140,7 +140,29 @@ struc Table
     ; read-only; the array itself is bumped by writers under the mutex.
     .inval:         resq 1          ; u64[inval_mask + 1], or 0 when disabled
     .inval_mask:    resq 1
-    .pad7:          resb 48         ; keep Table_size a multiple of 64 (512)
+    .pad7:          resb 48         ; keep line 8 on its own cache line
+    ; line 8: record pins (store.asm kv_store_pin). A Download keeps its record
+    ; alive across the worker's quiescent states; QSBR alone would free a
+    ; replaced record at the next grace period. Lock-holder state, like lines
+    ; 4-6, on its own line so pin traffic never invalidates line 7, which
+    ; private-cache readers load on every lookup.
+    .pins:          resq 1          ; PinEnt[pin_mask + 1], or 0 before the first pin
+    .pin_mask:      resq 1
+    .pin_used:      resq 1          ; entries in use = distinct pinned records
+    .pin_deferred:  resq 1          ; entries whose record is retired and past its grace
+    .pad8:          resb 32         ; keep Table_size a multiple of 64 (576)
+endstruc
+
+; ---- PinEnt: one pinned record (store.asm pin table, 32 bytes) -------------------
+; Open addressing with linear probing and backward-shift deletion, keyed by
+; the record pointer. A record whose grace period ends while it is pinned is
+; not freed by reclamation: its entry is marked deferred and owns it, and the
+; last unpin frees it (so a deferred record lives in no list at all).
+struc PinEnt
+    .rec:       resq 1              ; Rec*, 0 = empty slot
+    .count:     resq 1              ; pins held (>= 1 while in use)
+    .deferred:  resq 1              ; 1 = retired and past its grace period: last unpin frees
+    .pad:       resq 1
 endstruc
 
 ; ---- HEntry: one private-cache entry (hcache.asm), half a cache line ------------
@@ -189,6 +211,11 @@ struc KvStats
     .moves:         resq 1
     .full:          resq 1
     .freed:         resq 1
+    ; appended with record pins (Download): both must be 0 once no stream
+    ; holds a pin — main logs them at shutdown and the end-to-end suite
+    ; checks that line, so a leaked pin fails the build.
+    .pinned:        resq 1          ; distinct records pinned now
+    .deferred:      resq 1          ; of those, retired and waiting for their last unpin
 endstruc
 
 %endif

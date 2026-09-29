@@ -41,7 +41,7 @@
 %define VC_OK               1           ; content-type application/grpc[+...|;...],
                                         ; te: trailers, grpc-encoding: identity
 ; :path classes are the route ids of server.inc: M_UNKNOWN 0, M_GET 1,
-; M_PUT 2, M_DELETE 3, M_HEALTH 4.
+; M_PUT 2, M_DELETE 3, M_HEALTH 4, M_UPLOAD 5, M_DOWNLOAD 6.
 
 ; ---- flags (bits 16+) ------------------------------------------------------------
 %define HF_VALUE_BAD        0x10000     ; value has NUL/CR/LF or edge whitespace

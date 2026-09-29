@@ -20,9 +20,16 @@
 ;   KVNODE_CONN_BUFFER_MB       1..4096           default 64 (per connection)
 ;   KVNODE_CACHE_L1_BITS        0..24             default 0 = no private L1 cache
 ;   KVNODE_CACHE_L2_BITS        0..24             default 0 = no private L2 cache
+;   KVNODE_MAX_UPLOAD_BYTES     0..2147483647     default 67108864 (64 MiB): the
+;                               largest value Upload stores; must not exceed
+;                               KVNODE_CONN_BUFFER_MB (checked: a larger upload
+;                               could never fit one connection's budget)
 ;   KVNODE_SNAPSHOT             path              optional snapshot to load
 ; Named choices (exact lowercase words; anything else refuses to start):
 ;   KVNODE_SCAN                 swar | sse2       default sse2 (docs/adr/0006)
+;   KVNODE_CRC32C               auto | sse42 | table   default auto: the SSE4.2
+;                               instruction when CPUID reports it, else tables
+;                               (main.asm refuses sse42 on a CPU without it)
 ; (KVNODE_H2_ENGINE is gone: HTTP/2 is always KvNode's own engine, ADR 0008;
 ; like any unknown variable it is ignored.)
 ; =============================================================================
@@ -89,6 +96,14 @@ n_scan:     db "KVNODE_SCAN", 0
 w_swar:     db "swar", 0
 w_sse2:     db "sse2", 0
 a_scan:     db "swar|sse2", 0
+n_maxup:    db "KVNODE_MAX_UPLOAD_BYTES", 0
+n_crc:      db "KVNODE_CRC32C", 0
+w_auto:     db "auto", 0
+w_sse42:    db "sse42", 0
+w_table:    db "table", 0
+a_crc:      db "auto|sse42|table", 0
+m_upbudget: db ' reason="must not exceed KVNODE_CONN_BUFFER_MB: a larger upload could never fit one connection', 39, 's budget"'
+m_upbudget_len equ $ - m_upbudget
 lvl_error:  db "ERROR", 0
 m_invalid:  db " msg=", 34, "invalid setting", 34, " name="
 m_invalid_len equ $ - m_invalid
@@ -117,14 +132,20 @@ settings:
     SETTING n_connbuf,  Config.conn_budget,     1, 4096,                64,      1048576
     SETTING n_cachel1,  Config.cache_l1_bits,   0, HCACHE_BITS_MAX,     0,       1
     SETTING n_cachel2,  Config.cache_l2_bits,   0, HCACHE_BITS_MAX,     0,       1
+    ; 2^31 - 1: a record's lengths are 32-bit, and the store refuses more.
+    SETTING n_maxup,    Config.max_upload,      0, 2147483647,          67108864, 1
 settings_end:
 
 ; Word lists, in the order of the values they stand for.
 words_scan:     dq w_swar, w_sse2, 0            ; = KV_SCAN_SWAR, KV_SCAN_SSE2
+words_crc:      dq w_auto, w_sse42, w_table, 0  ; = CRC_CFG_AUTO, _SSE42, _TABLE
 choices:
     ; SSE2 by default: faster in the batched GET path at every working set
     ; from L2 to DRAM (bench_store, ADR 0006); SWAR stays selectable.
     dq n_scan,   Config.scan_mode, 1,          words_scan,   a_scan
+    ; auto: the SSE4.2 instruction (~4.6x the tables, tests/test_crc32c.c)
+    ; wherever CPUID has it; the tables stay selectable and are the fallback.
+    dq n_crc,    Config.crc_mode,  CRC_CFG_AUTO, words_crc,  a_crc
 choices_end:
 
 section .text
@@ -243,6 +264,19 @@ kv_config_load:
     add     rax, [rbx + Config.max_value]
     add     rax, 64
     mov     [rbx + Config.max_request], rax
+    ; An upload holds its declared size in the connection's budget until it
+    ; completes (grpc.asm ensure_record), so a limit above the budget could
+    ; never be reached: refuse the combination now rather than refuse every
+    ; such upload later with a puzzling RESOURCE_EXHAUSTED.
+    mov     rax, [rbx + Config.max_upload]
+    cmp     rax, [rbx + Config.conn_budget]
+    jbe     .consistent
+    mov     rdi, rax
+    mov     rsi, [rbx + Config.conn_budget]
+    call    log_upload_budget
+    mov     rax, -EINVAL
+    jmp     .out
+.consistent:
     xor     eax, eax
     jmp     .out
 
@@ -334,6 +368,67 @@ log_invalid_choice:
     mov     rdi, rsp
     mov     rsi, [r12 + Choice.allowed]
     call    kv_logb_cstr
+    mov     rdi, rsp
+    call    kv_logb_emit
+    add     rsp, rbx
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
+; log_upload_budget — "invalid setting name=KVNODE_MAX_UPLOAD_BYTES value=V
+; allowed=0..B reason=..." for an upload limit above the connection budget.
+; Internal.
+; @param  rdi  KVNODE_MAX_UPLOAD_BYTES (bytes)   @param rsi  the budget (bytes)
+; @returns nothing.
+; @remarks Same shape as the range errors above, with the budget as the
+;          upper bound, so operators read every configuration error alike.
+; =============================================================================
+log_upload_budget:
+    push    rbx
+    push    r12
+    push    r13                         ; 3 pushes: rsp 16-aligned for calls
+    mov     r12, rdi
+    mov     r13, rsi
+    call    kv_logbuf_size
+    sub     rsp, rax                    ; LogBuf on the stack (size keeps alignment)
+    mov     rbx, rax
+    mov     rdi, rsp
+    lea     rsi, [lvl_error]
+    call    kv_logb_init
+    mov     rdi, rsp
+    lea     rsi, [m_invalid]
+    mov     edx, m_invalid_len
+    call    kv_logb_str
+    mov     rdi, rsp
+    lea     rsi, [n_maxup]
+    call    kv_logb_cstr
+    mov     rdi, rsp
+    lea     rsi, [m_value]
+    mov     edx, 7
+    call    kv_logb_str
+    mov     rdi, rsp
+    mov     rsi, r12
+    call    kv_logb_u64
+    mov     rdi, rsp
+    lea     rsi, [m_range]
+    mov     edx, 9
+    call    kv_logb_str
+    mov     rdi, rsp
+    xor     esi, esi
+    call    kv_logb_u64
+    mov     rdi, rsp
+    lea     rsi, [m_dots]
+    mov     edx, 2
+    call    kv_logb_str
+    mov     rdi, rsp
+    mov     rsi, r13
+    call    kv_logb_u64
+    mov     rdi, rsp
+    lea     rsi, [m_upbudget]
+    mov     edx, m_upbudget_len
+    call    kv_logb_str
     mov     rdi, rsp
     call    kv_logb_emit
     add     rsp, rbx
