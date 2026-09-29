@@ -1,0 +1,224 @@
+revision 5005a13; binary fuse filter 3e10fb185a0c51e5866518d13b403e07db63d8d8
+cpu 13th Gen Intel(R) Core(TM) i9-13900K
+thp [always] madvise never
+
+== golden_probe --keys 10000000 ==
+keys 10000000 in 2097152 buckets (load 79.5% of 12582912 slots), fill 2.2 s, cpu 4, reps 5
+
+THE BAR: exact lookups at 10000000 keys. "x" = ratio to the bar of the same regime
+(D = dependent chain, I = independent loop, B = batched pipeline); GOLD = within 10x.
+  get (100-byte value copied)    dependent chain: pure latency                      347.2 ns     1.00xD GOLD  bar D
+                                 independent loop                                   326.9 ns     1.00xI GOLD  bar I
+                                 batched pipeline (the server's GET path)            54.1 ns     1.00xB GOLD  bar B
+  exists (hit)                   dependent chain                                    342.8 ns     0.99xD GOLD  
+                                 independent loop                                   324.7 ns     0.99xI GOLD  
+                                 batched pipeline                                    52.8 ns     0.98xB GOLD  
+  exists (absent key)            independent loop                                   120.5 ns     0.37xI GOLD  both buckets read
+                                 batched pipeline                                    29.7 ns     0.55xB GOLD  
+  budget (10x): D 3.47 us, I 3269 ns, B 541 ns
+BARS dep=347.2 ind=326.9 bat=54.1 exists_dep=342.8
+  Rss:             2012668 kB
+  AnonHugePages:    432128 kB
+
+HASHING: per 20-21 byte key (keys in L1; throughput of independent hashes)
+  SipHash-2-4, 128-bit           the store's assembly (siphash.asm)                  12.7 ns     0.24xB GOLD  today's hash
+  SipHash-2-4, 64-bit            C reference                                          9.8 ns     0.18xB GOLD  
+  SipHash-1-3, 64-bit            C (Rust's and Python's default)                      6.6 ns     0.12xB GOLD  keyed PRF, fewer rounds
+  AES-NI, 3 rounds               AESENC x3                                            7.3 ns     0.14xB GOLD  keyed, not an analyzed PRF
+  CRC32C                         SSE4.2 CRC32                                         2.3 ns     0.04xB GOLD  unkeyed: fingerprints only
+  multiply-mix                   64x64->128 folding                                   4.8 ns     0.09xB GOLD  keyed, not an analyzed PRF
+  ASCII case folding             AVX2, 32 bytes per step                              4.9 ns     0.09xB GOLD  case-insensitive keys
+
+SAMPLING: a uniformly random key (RANDOMKEY), O(1) expected
+  random key                     rejection sampling over slots                       28.0 ns     0.09xI GOLD  fields 25.08/24.96/24.97/25.00% of 1M samples
+                                 batched: 32 slots prefetched per round              23.2 ns     0.43xB GOLD  
+
+COUNTERS: increment in place (lookup + atomic add; no allocation), totals checked exactly
+  increment, 1 thread            batched lookup + LOCK XADD                          57.8 ns     1.07xB GOLD  random keys
+  increment, random keys         LOCK XADD, per op per thread                        61.4 ns     1.14xB GOLD  1 threads: 16.3 M/s in total
+                                 LOCK XADD, per op per thread                        63.3 ns     1.17xB GOLD  2 threads: 31.6 M/s in total
+                                 LOCK XADD, per op per thread                        66.3 ns     1.23xB GOLD  4 threads: 60.3 M/s in total
+                                 LOCK XADD, per op per thread                        71.6 ns     1.32xB GOLD  7 threads: 97.8 M/s in total
+  increment, 1,000 hot keys      LOCK XADD, per op per thread                        35.8 ns     0.66xB GOLD  1 threads: 27.9 M/s in total
+                                 LOCK XADD, per op per thread                        35.3 ns     0.65xB GOLD  2 threads: 56.7 M/s in total
+                                 LOCK XADD, per op per thread                        34.9 ns     0.65xB GOLD  4 threads: 114.6 M/s in total
+                                 LOCK XADD, per op per thread                        40.7 ns     0.75xB GOLD  7 threads: 171.9 M/s in total
+  increment, one key             LOCK XADD, per op per thread                        23.8 ns     0.44xB GOLD  1 threads: 42.0 M/s in total
+                                 LOCK XADD, per op per thread                        40.5 ns     0.75xB GOLD  2 threads: 49.4 M/s in total
+                                 LOCK XADD, per op per thread                        60.2 ns     1.11xB GOLD  4 threads: 66.4 M/s in total
+                                 LOCK XADD, per op per thread                       108.4 ns     2.00xB GOLD  7 threads: 64.6 M/s in total
+                                 LOCK CMPXCHG loop, per op per thread                24.0 ns     0.44xB GOLD  1 threads: 41.6 M/s in total
+                                 LOCK CMPXCHG loop, per op per thread                43.2 ns     0.80xB GOLD  2 threads: 46.3 M/s in total
+                                 LOCK CMPXCHG loop, per op per thread                92.4 ns     1.71xB GOLD  4 threads: 43.3 M/s in total
+                                 LOCK CMPXCHG loop, per op per thread               160.9 ns     2.97xB GOLD  7 threads: 43.5 M/s in total
+                                 per-thread cells (no LOCK), per op                  19.8 ns     0.37xB GOLD  1 threads: 50.4 M/s in total
+                                 per-thread cells (no LOCK), per op                  20.5 ns     0.38xB GOLD  2 threads: 97.3 M/s in total
+                                 per-thread cells (no LOCK), per op                  20.4 ns     0.38xB GOLD  4 threads: 195.8 M/s in total
+                                 per-thread cells (no LOCK), per op                  22.6 ns     0.42xB GOLD  7 threads: 310.1 M/s in total
+
+FILTERS: "definitely absent" before touching the table (key hashing included)
+  absent test                    split-block Bloom, scalar                           31.0 ns     0.09xI GOLD  13.1 MB, 0.83% false positives, 37 ns/key to add
+                                 split-block Bloom, AVX2 (VPTEST)                    12.9 ns     0.04xI GOLD  
+                                 split-block Bloom, AVX2, batched                    14.2 ns     0.26xB GOLD  
+                                 binary fuse 8 (3 probes)                            52.3 ns     0.16xI GOLD  10.8 MB (9.02 bits/key), 0.38% false positives, static: 88 ns/key to build
+
+ORDER: a sorted snapshot (rebuilt off the hot path, published by RCU/QSBR; readers never lock)
+  build: sort 0.68 s, Eytzinger layout 0.03 s (common prefix 5 bytes, 24 levels); memory: inline keys 153 MB + Eytzinger 153 MB + ranks 38 MB
+  successor / rank               textbook binary search (ids -> arena keys)         959.4 ns     2.93xI GOLD  two dependent misses per level
+                                 branchless (CMOV), inline keys, prefetch           309.5 ns     0.95xI GOLD  
+                                 Eytzinger, prefetch 4 levels ahead                 263.3 ns     0.81xI GOLD  
+                                 Eytzinger, 16 descents interleaved                  70.7 ns     1.31xB GOLD  
+  count by prefix / range        2 interleaved Eytzinger descents                    75.3 ns     1.39xB GOLD  no iteration ("user:kalo" = 32000 keys, checked)
+  range scan: 100 keys           seek + 100 inline keys in order                    188.1 ns     3.48xB GOLD  per scan; keys only
+  range scan: 100 keys + values  seek + records, prefetched 16 ahead                 1.16 us    21.45xB       per scan; 11.6 ns per key+value
+  select (k-th key)              inline key array                                     2.8 ns     0.01xI GOLD  O(1)
+
+SKETCHES: O(1) updates, O(1) answers
+  distinct count: add            HyperLogLog p=14                                     0.6 ns     0.01xB GOLD  16 KB; estimate 10041450 of 10000000 (+0.41%); hash reused from the lookup
+  distinct count: estimate       kept harmonic sum                                    0.6 ns     0.01xB GOLD  O(1): no register pass
+  distinct count: union          PFMERGE into a new sketch + estimate, AVX2          1.06 us    19.67xB       p=14, 16 KB, 0.81% error; estimate 10895096 of 10856729 (+0.35%)
+                                 the same at p=12 (timed on 4,096 registers)        261.9 ns     4.84xB GOLD  4 KB, 1.63% error
+  frequency: count a key         Count-Min 4 x 2^21                                 111.2 ns     0.34xI GOLD  32 MB
+                                 Count-Min, batched prefetch                         21.4 ns     0.39xB GOLD  
+  frequency: estimate            Count-Min min of 4, batched                         21.2 ns     0.39xB GOLD  never under-counts (checked)
+
+TYPOS: every key within edit distance 1 (SymSpell), at 10000000 keys
+  build 9.9 s (988 ns/key), 21.5 variants/key, 2.19 GB = 235 B/key at 73% lane load
+  typo: substitution             SymSpell, probes in turn                           840.0 ns     2.57xI GOLD  1.39 matches per typo
+                                 SymSpell, probes + keys prefetched as groups       572.1 ns     1.75xI GOLD  
+  typo: deletion                 SymSpell, probes in turn                            1.06 us     3.26xI GOLD  4.29 matches per typo
+                                 SymSpell, probes + keys prefetched as groups       703.0 ns     2.15xI GOLD  
+  typo: insertion                SymSpell, probes in turn                           716.8 ns     2.19xI GOLD  1.00 matches per typo
+                                 SymSpell, probes + keys prefetched as groups       578.5 ns     1.77xI GOLD  
+
+THREADS: lock-free readers (QSBR; lookups never lock or retry) on distinct P-cores
+  exists, concurrent readers     batched pipeline, per op per thread                 55.1 ns     1.02xB GOLD  1 threads: 18.1 M lookups/s in total (1.00x one thread)
+                                 batched pipeline, per op per thread                 54.4 ns     1.01xB GOLD  2 threads: 36.7 M lookups/s in total (2.03x one thread)
+                                 batched pipeline, per op per thread                 60.3 ns     1.12xB GOLD  4 threads: 66.3 M lookups/s in total (3.65x one thread)
+                                 batched pipeline, per op per thread                 64.6 ns     1.20xB GOLD  7 threads: 108.3 M lookups/s in total (5.97x one thread)
+  readers next to a writer       batched pipeline, per op per reader                 57.4 ns     1.06xB GOLD  6 readers alone
+                                 batched pipeline, per op per reader                 64.4 ns     1.19xB GOLD  6 readers + 1 writer (2.75 M puts/s): 1.12x
+
+WRITES: the serialized writer path (one futex mutex, ADR 0003)
+  put (replace)                  one at a time (today's path)                       433.1 ns     1.32xI GOLD  
+                                 batched: buckets + old records prefetched          125.9 ns     2.33xB GOLD  the write-batching lead
+  delete                         one at a time                                      488.0 ns     1.49xI GOLD  
+                                 batched: buckets + records prefetched              148.8 ns     2.75xB GOLD  
+  put (create)                   one at a time (malloc + copy + insert)             212.5 ns     0.65xI GOLD  
+                                 batched: buckets prefetched                        124.6 ns     2.30xB GOLD  
+  put (replace), concurrent      writer mutex; per put per thread                   298.3 ns     0.91xI GOLD  1 writers: 3.35 M puts/s in total
+                                 writer mutex; per put per thread                   728.5 ns     2.23xI GOLD  2 writers: 2.75 M puts/s in total
+                                 writer mutex; per put per thread                    1.87 us     5.73xI GOLD  4 writers: 2.14 M puts/s in total
+                                 writer mutex; per put per thread                    3.11 us     9.50xI GOLD  7 writers: 2.25 M puts/s in total
+  Rss:             2157800 kB
+  AnonHugePages:    438272 kB
+
+all checks passed
+
+== block 1: the bar alone, default heap ==
+keys 10000000 in 2097152 buckets (load 79.5% of 12582912 slots), fill 2.0 s, cpu 4, reps 5
+
+THE BAR: exact lookups at 10000000 keys. "x" = ratio to the bar of the same regime
+(D = dependent chain, I = independent loop, B = batched pipeline); GOLD = within 10x.
+  get (100-byte value copied)    dependent chain: pure latency                      373.7 ns     1.00xD GOLD  bar D
+                                 independent loop                                   326.7 ns     1.00xI GOLD  bar I
+                                 batched pipeline (the server's GET path)            52.8 ns     1.00xB GOLD  bar B
+  exists (hit)                   dependent chain                                    344.0 ns     0.92xD GOLD  
+                                 independent loop                                   350.1 ns     1.07xI GOLD  
+                                 batched pipeline                                    62.7 ns     1.19xB GOLD  
+  exists (absent key)            independent loop                                   123.0 ns     0.38xI GOLD  both buckets read
+                                 batched pipeline                                    31.3 ns     0.59xB GOLD  
+  budget (10x): D 3.74 us, I 3267 ns, B 528 ns
+BARS dep=373.7 ind=326.7 bat=52.8 exists_dep=344.0
+  Rss:             2013656 kB
+  AnonHugePages:    434176 kB
+
+== block 1: the bar alone, huge heap ==
+keys 10000000 in 2097152 buckets (load 79.5% of 12582912 slots), fill 1.8 s, cpu 4, reps 5
+
+THE BAR: exact lookups at 10000000 keys. "x" = ratio to the bar of the same regime
+(D = dependent chain, I = independent loop, B = batched pipeline); GOLD = within 10x.
+  get (100-byte value copied)    dependent chain: pure latency                      294.6 ns     1.00xD GOLD  bar D
+                                 independent loop                                   276.2 ns     1.00xI GOLD  bar I
+                                 batched pipeline (the server's GET path)            49.0 ns     1.00xB GOLD  bar B
+  exists (hit)                   dependent chain                                    280.6 ns     0.95xD GOLD  
+                                 independent loop                                   265.0 ns     0.96xI GOLD  
+                                 batched pipeline                                    49.8 ns     1.02xB GOLD  
+  exists (absent key)            independent loop                                   118.1 ns     0.43xI GOLD  both buckets read
+                                 batched pipeline                                    27.4 ns     0.56xB GOLD  
+  budget (10x): D 2.95 us, I 2762 ns, B 490 ns
+BARS dep=294.6 ind=276.2 bat=49.0 exists_dep=280.6
+  Rss:             2017576 kB
+  AnonHugePages:   1996800 kB
+
+== block 2: the bar alone, huge heap ==
+keys 10000000 in 2097152 buckets (load 79.5% of 12582912 slots), fill 1.8 s, cpu 4, reps 5
+
+THE BAR: exact lookups at 10000000 keys. "x" = ratio to the bar of the same regime
+(D = dependent chain, I = independent loop, B = batched pipeline); GOLD = within 10x.
+  get (100-byte value copied)    dependent chain: pure latency                      294.7 ns     1.00xD GOLD  bar D
+                                 independent loop                                   269.0 ns     1.00xI GOLD  bar I
+                                 batched pipeline (the server's GET path)            47.2 ns     1.00xB GOLD  bar B
+  exists (hit)                   dependent chain                                    272.9 ns     0.93xD GOLD  
+                                 independent loop                                   263.6 ns     0.98xI GOLD  
+                                 batched pipeline                                    47.3 ns     1.00xB GOLD  
+  exists (absent key)            independent loop                                   117.0 ns     0.43xI GOLD  both buckets read
+                                 batched pipeline                                    27.4 ns     0.58xB GOLD  
+  budget (10x): D 2.95 us, I 2690 ns, B 472 ns
+BARS dep=294.7 ind=269.0 bat=47.2 exists_dep=272.9
+  Rss:             2017700 kB
+  AnonHugePages:   1996800 kB
+
+== block 2: the bar alone, default heap ==
+keys 10000000 in 2097152 buckets (load 79.5% of 12582912 slots), fill 2.0 s, cpu 4, reps 5
+
+THE BAR: exact lookups at 10000000 keys. "x" = ratio to the bar of the same regime
+(D = dependent chain, I = independent loop, B = batched pipeline); GOLD = within 10x.
+  get (100-byte value copied)    dependent chain: pure latency                      366.5 ns     1.00xD GOLD  bar D
+                                 independent loop                                   366.7 ns     1.00xI GOLD  bar I
+                                 batched pipeline (the server's GET path)            56.1 ns     1.00xB GOLD  bar B
+  exists (hit)                   dependent chain                                    346.8 ns     0.95xD GOLD  
+                                 independent loop                                   333.7 ns     0.91xI GOLD  
+                                 batched pipeline                                    53.2 ns     0.95xB GOLD  
+  exists (absent key)            independent loop                                   120.3 ns     0.33xI GOLD  both buckets read
+                                 batched pipeline                                    30.7 ns     0.55xB GOLD  
+  budget (10x): D 3.67 us, I 3667 ns, B 561 ns
+BARS dep=366.5 ind=366.7 bat=56.1 exists_dep=346.8
+  Rss:             2013588 kB
+  AnonHugePages:    434176 kB
+
+== block 3: the bar alone, default heap ==
+keys 10000000 in 2097152 buckets (load 79.5% of 12582912 slots), fill 2.0 s, cpu 4, reps 5
+
+THE BAR: exact lookups at 10000000 keys. "x" = ratio to the bar of the same regime
+(D = dependent chain, I = independent loop, B = batched pipeline); GOLD = within 10x.
+  get (100-byte value copied)    dependent chain: pure latency                      371.7 ns     1.00xD GOLD  bar D
+                                 independent loop                                   347.5 ns     1.00xI GOLD  bar I
+                                 batched pipeline (the server's GET path)            54.4 ns     1.00xB GOLD  bar B
+  exists (hit)                   dependent chain                                    354.6 ns     0.95xD GOLD  
+                                 independent loop                                   333.5 ns     0.96xI GOLD  
+                                 batched pipeline                                    56.2 ns     1.03xB GOLD  
+  exists (absent key)            independent loop                                   121.2 ns     0.35xI GOLD  both buckets read
+                                 batched pipeline                                    31.6 ns     0.58xB GOLD  
+  budget (10x): D 3.72 us, I 3475 ns, B 544 ns
+BARS dep=371.7 ind=347.5 bat=54.4 exists_dep=354.6
+  Rss:             2012652 kB
+  AnonHugePages:    432128 kB
+
+== block 3: the bar alone, huge heap ==
+keys 10000000 in 2097152 buckets (load 79.5% of 12582912 slots), fill 2.0 s, cpu 4, reps 5
+
+THE BAR: exact lookups at 10000000 keys. "x" = ratio to the bar of the same regime
+(D = dependent chain, I = independent loop, B = batched pipeline); GOLD = within 10x.
+  get (100-byte value copied)    dependent chain: pure latency                      316.9 ns     1.00xD GOLD  bar D
+                                 independent loop                                   272.8 ns     1.00xI GOLD  bar I
+                                 batched pipeline (the server's GET path)            49.4 ns     1.00xB GOLD  bar B
+  exists (hit)                   dependent chain                                    281.6 ns     0.89xD GOLD  
+                                 independent loop                                   264.4 ns     0.97xI GOLD  
+                                 batched pipeline                                    53.7 ns     1.09xB GOLD  
+  exists (absent key)            independent loop                                   121.1 ns     0.44xI GOLD  both buckets read
+                                 batched pipeline                                    31.7 ns     0.64xB GOLD  
+  budget (10x): D 3.17 us, I 2728 ns, B 494 ns
+BARS dep=316.9 ind=272.8 bat=49.4 exists_dep=281.6
+  Rss:             2018400 kB
+  AnonHugePages:   1996800 kB
