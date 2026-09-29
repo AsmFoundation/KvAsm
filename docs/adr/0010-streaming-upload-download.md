@@ -141,6 +141,21 @@ has it, else slicing-by-8 tables that NASM generates at assembly time;
   64 MiB value stored; +4 to +140 KiB during and after downloading it.
 - New startup settings `KVNODE_MAX_UPLOAD_BYTES`, `KVNODE_CRC32C`; new log
   fields `max_upload_bytes`, `crc32c`, `pinned`, `deferred`.
+- **For Export and Watch** ([proposal](../proposals/export-watch.md), §7
+  asks for one shared streaming layer). This one already provides: a
+  per-stream release run from `stream_free` whatever ends the stream
+  (`xfer_release`: reset, connection loss, drain, idle close); per-connection
+  flush budgets with EPOLLIN|EPOLLOUT interest; bytes sent as idle-timeout
+  activity and the close of peers that stop reading; the route pattern
+  (`M_UPLOAD`, `M_DOWNLOAD`); a resumable event decoder for message streams;
+  and record pins that reclamation honors at free time, whatever list the
+  record comes from. Not yet: bodies of unknown length (`ST_GEN` needs the
+  exact length up front, `download_body_len`) and a producer that can say
+  "nothing now" (WAIT); a non-OK status in trailers after a body; a worker
+  ready list and a per-worker (not only per-connection) budget; an idle
+  exemption for streams that are quiet by design. Export and Watch should
+  grow `ST_GEN` into that producer interface rather than add a second
+  mechanism.
 
 ## Verification
 

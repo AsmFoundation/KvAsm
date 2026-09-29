@@ -4330,29 +4330,44 @@ int main(int argc, char **argv) {
   Client cl;
   if (client_open(&cl, g_host, g_port, 65535) != 0) return 2;
   uint64_t t0 = now_ns();
-  test_crud(&cl);
-  test_large_value(&cl);
-  test_errors(&cl);
-  test_health(&cl);
-  test_pipelined(&cl);
-  test_cancel(&cl);
-  test_reset_in_batch(&cl);
-  test_upload_errors(&cl);
-  test_upload_forms(&cl);
-  test_upload_basic(&cl);
-  test_upload_splits(&cl);
-  test_upload_early(&cl);
-  test_upload_cancel(&cl);
-  test_download_errors(&cl);
-  test_download_ranges(&cl);
-  test_download_flow(&cl);
-  test_download_consistency(&cl);
-  test_download_cancel(&cl);
-  test_conformance_vectors(&cl);
-  test_get_too_big(&cl);
-  test_concurrency(&cl, 3000);
-  test_stream_concurrency(&cl, 2000);
-  CHECK(!cl.goaway && !cl.eof);                            /* never dropped by the server */
+  /* The main connection must never be dropped by the server: checked after
+   * every test, so a GOAWAY or a close is pinned to the test that caused it
+   * and reported with its error code and last stream id. */
+#define RUN_ON_MAIN(call)                                                            \
+  do {                                                                               \
+    call;                                                                            \
+    if (cl.goaway || cl.eof) {                                                       \
+      fprintf(stderr, "  main connection lost during %s: goaway=%d error=%u "        \
+                      "last_stream=%d eof=%d\n",                                     \
+              #call, cl.goaway, cl.goaway_error, cl.goaway_last_stream, cl.eof);     \
+      CHECK(!cl.goaway && !cl.eof);                                                  \
+      client_close(&cl);                                                             \
+      return test_finish("itest_grpc");                                              \
+    }                                                                                \
+  } while (0)
+  RUN_ON_MAIN(test_crud(&cl));
+  RUN_ON_MAIN(test_large_value(&cl));
+  RUN_ON_MAIN(test_errors(&cl));
+  RUN_ON_MAIN(test_health(&cl));
+  RUN_ON_MAIN(test_pipelined(&cl));
+  RUN_ON_MAIN(test_cancel(&cl));
+  RUN_ON_MAIN(test_reset_in_batch(&cl));
+  RUN_ON_MAIN(test_upload_errors(&cl));
+  RUN_ON_MAIN(test_upload_forms(&cl));
+  RUN_ON_MAIN(test_upload_basic(&cl));
+  RUN_ON_MAIN(test_upload_splits(&cl));
+  RUN_ON_MAIN(test_upload_early(&cl));
+  RUN_ON_MAIN(test_upload_cancel(&cl));
+  RUN_ON_MAIN(test_download_errors(&cl));
+  RUN_ON_MAIN(test_download_ranges(&cl));
+  RUN_ON_MAIN(test_download_flow(&cl));
+  RUN_ON_MAIN(test_download_consistency(&cl));
+  RUN_ON_MAIN(test_download_cancel(&cl));
+  RUN_ON_MAIN(test_conformance_vectors(&cl));
+  RUN_ON_MAIN(test_get_too_big(&cl));
+  RUN_ON_MAIN(test_concurrency(&cl, 3000));
+  RUN_ON_MAIN(test_stream_concurrency(&cl, 2000));
+#undef RUN_ON_MAIN
   client_close(&cl);
   printf("  %.2fs total\n", (double)(now_ns() - t0) / 1e9);
   return test_finish("itest_grpc");
