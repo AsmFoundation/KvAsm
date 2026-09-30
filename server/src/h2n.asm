@@ -392,7 +392,7 @@ kv_h2n_goaway:
 ;          memory).
 ; @remarks A partial frame from the previous read is copied in front of the
 ;          new bytes (at most one frame, <= 16,393 bytes, so READ_CHUNK still
-;          leaves room for ~48 KiB of fresh input). After the frames: the GETs
+;          leaves room for ~240 KiB of fresh input). After the frames: the GETs
 ;          they queued are answered as one prefetched batch (grpc.asm), and
 ;          the connection receive window is topped up with one WINDOW_UPDATE.
 ;          After a connection error, input is read and discarded until the

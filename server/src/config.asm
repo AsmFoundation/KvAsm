@@ -27,9 +27,11 @@
 ;   KVNODE_SNAPSHOT             path              optional snapshot to load
 ; Named choices (exact lowercase words; anything else refuses to start):
 ;   KVNODE_SCAN                 swar | sse2       default sse2 (docs/adr/0006)
-;   KVNODE_CRC32C               auto | sse42 | table   default auto: the SSE4.2
-;                               instruction when CPUID reports it, else tables
-;                               (main.asm refuses sse42 on a CPU without it)
+;   KVNODE_CRC32C               auto | vpclmul | pclmul | sse42 | table
+;                               default auto: the fastest the CPU has
+;                               (256-bit folding, 128-bit folding, the
+;                               crc32 instruction, tables — crc32c.asm);
+;                               main.asm refuses a forced mode the CPU lacks
 ; (KVNODE_H2_ENGINE is gone: HTTP/2 is always KvNode's own engine, ADR 0008;
 ; like any unknown variable it is ignored.)
 ; =============================================================================
@@ -101,7 +103,9 @@ n_crc:      db "KVNODE_CRC32C", 0
 w_auto:     db "auto", 0
 w_sse42:    db "sse42", 0
 w_table:    db "table", 0
-a_crc:      db "auto|sse42|table", 0
+w_pclmul:   db "pclmul", 0
+w_vpclmul:  db "vpclmul", 0
+a_crc:      db "auto|vpclmul|pclmul|sse42|table", 0
 m_upbudget: db ' reason="must not exceed KVNODE_CONN_BUFFER_MB: a larger upload could never fit one connection', 39, 's budget"'
 m_upbudget_len equ $ - m_upbudget
 lvl_error:  db "ERROR", 0
@@ -138,13 +142,16 @@ settings_end:
 
 ; Word lists, in the order of the values they stand for.
 words_scan:     dq w_swar, w_sse2, 0            ; = KV_SCAN_SWAR, KV_SCAN_SSE2
-words_crc:      dq w_auto, w_sse42, w_table, 0  ; = CRC_CFG_AUTO, _SSE42, _TABLE
+; = CRC_CFG_AUTO, _SSE42, _TABLE, _PCLMUL, _VPCLMUL (in that order)
+words_crc:      dq w_auto, w_sse42, w_table, w_pclmul, w_vpclmul, 0
 choices:
     ; SSE2 by default: faster in the batched GET path at every working set
     ; from L2 to DRAM (bench_store, ADR 0006); SWAR stays selectable.
     dq n_scan,   Config.scan_mode, 1,          words_scan,   a_scan
-    ; auto: the SSE4.2 instruction (~4.6x the tables, tests/test_crc32c.c)
-    ; wherever CPUID has it; the tables stay selectable and are the fallback.
+    ; auto: the fastest path CPUID reports (tests/test_crc32c.c on a 16 KiB
+    ; chunk in cache: 256-bit folding ~6x the crc32 instruction, 128-bit
+    ; ~3x, the instruction ~4.6x the tables); every path stays selectable,
+    ; and the tables are the fallback that runs everywhere.
     dq n_crc,    Config.crc_mode,  CRC_CFG_AUTO, words_crc,  a_crc
 choices_end:
 

@@ -4298,8 +4298,16 @@ int main(int argc, char **argv) {
     g_port = argv[3];
     return bench_transfer(atol(argv[4]));
   }
+  /* --streaming: only the Upload/Download tests of the main suite, for the
+   * phase that repeats them under each CRC-32C path (run.sh phase 2c). */
+  int streaming_only = 0;
+  if (argc >= 2 && strcmp(argv[1], "--streaming") == 0) {
+    streaming_only = 1;
+    argc--;
+    argv++;
+  }
   if (argc != 5 && argc != 6) {
-    fprintf(stderr, "usage: %s HOST PORT MAX_KEY MAX_VALUE [MAX_UPLOAD]\n"
+    fprintf(stderr, "usage: %s [--streaming] HOST PORT MAX_KEY MAX_VALUE [MAX_UPLOAD]\n"
                     "       %s --wait-goaway HOST PORT SECS\n"
                     "       %s --expect-snapshot HOST PORT COUNT\n"
                     "       %s --drain-check HOST PORT SECS\n"
@@ -4345,13 +4353,15 @@ int main(int argc, char **argv) {
       return test_finish("itest_grpc");                                              \
     }                                                                                \
   } while (0)
-  RUN_ON_MAIN(test_crud(&cl));
-  RUN_ON_MAIN(test_large_value(&cl));
-  RUN_ON_MAIN(test_errors(&cl));
-  RUN_ON_MAIN(test_health(&cl));
-  RUN_ON_MAIN(test_pipelined(&cl));
-  RUN_ON_MAIN(test_cancel(&cl));
-  RUN_ON_MAIN(test_reset_in_batch(&cl));
+  if (!streaming_only) {
+    RUN_ON_MAIN(test_crud(&cl));
+    RUN_ON_MAIN(test_large_value(&cl));
+    RUN_ON_MAIN(test_errors(&cl));
+    RUN_ON_MAIN(test_health(&cl));
+    RUN_ON_MAIN(test_pipelined(&cl));
+    RUN_ON_MAIN(test_cancel(&cl));
+    RUN_ON_MAIN(test_reset_in_batch(&cl));
+  }
   RUN_ON_MAIN(test_upload_errors(&cl));
   RUN_ON_MAIN(test_upload_forms(&cl));
   RUN_ON_MAIN(test_upload_basic(&cl));
@@ -4364,8 +4374,10 @@ int main(int argc, char **argv) {
   RUN_ON_MAIN(test_download_consistency(&cl));
   RUN_ON_MAIN(test_download_cancel(&cl));
   RUN_ON_MAIN(test_conformance_vectors(&cl));
-  RUN_ON_MAIN(test_get_too_big(&cl));
-  RUN_ON_MAIN(test_concurrency(&cl, 3000));
+  if (!streaming_only) {
+    RUN_ON_MAIN(test_get_too_big(&cl));
+    RUN_ON_MAIN(test_concurrency(&cl, 3000));
+  }
   RUN_ON_MAIN(test_stream_concurrency(&cl, 2000));
 #undef RUN_ON_MAIN
   client_close(&cl);

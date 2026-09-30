@@ -16,7 +16,14 @@
 
 %include "hpack.inc"                    ; HpackDec, embedded in the HTTP/2 engine's H2
 
-%define READ_CHUNK          65536       ; bytes per recv() into the worker buffer
+; Bytes per read() into the worker's buffer. 256 KiB, measured (2026-09-30,
+; benchmarks/results/2026-09-30-streaming): against 64 KiB it lets one read
+; complete several uploads, whose responses then leave in one send instead
+; of one each (upload of 64 KiB values 1.87x; the partial-frame carry and
+; the reads per byte shrink 4x too), while 512 KiB and 1 MiB lost 7-17% on
+; large uploads (the buffer no longer stays in L2 beside the socket data the
+; kernel copies in); GETs are flat across all four sizes.
+%define READ_CHUNK          262144
 %define OUT_INITIAL         65536       ; initial per-connection output buffer
 %define OUT_HIGH_WATER      65536       ; stop producing output above this
 ; Fairness of long responses (Download): bytes one connection may frame from
@@ -55,13 +62,16 @@ struc Config
     .cache_l1_bits:     resq 1          ; KVNODE_CACHE_L1_BITS: 0 = no private L1
     .cache_l2_bits:     resq 1          ; KVNODE_CACHE_L2_BITS: 0 = no private L2
     .max_upload:        resq 1          ; KVNODE_MAX_UPLOAD_BYTES: largest value Upload stores
-    .crc_mode:          resq 1          ; KVNODE_CRC32C: 0 = auto, 1 = sse42, 2 = table
+    .crc_mode:          resq 1          ; KVNODE_CRC32C: a CRC_CFG_* word index
 endstruc
 
 ; KVNODE_CRC32C words (config.asm) — the index stored in Config.crc_mode.
+; New words go at the end: the indices are what main.asm maps to modes.
 %define CRC_CFG_AUTO        0
 %define CRC_CFG_SSE42       1
 %define CRC_CFG_TABLE       2
+%define CRC_CFG_PCLMUL      3
+%define CRC_CFG_VPCLMUL     4
 
 %define INVAL_BITS_DEFAULT  16          ; generation slots when private caches are on
 

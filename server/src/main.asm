@@ -43,7 +43,7 @@ extern clock_gettime
 extern kv_config_load
 extern kv_set_scan_mode
 extern kv_crc32c_set_mode
-extern kv_crc32c_hw_available
+extern kv_crc32c_best_mode
 extern kv_store_enable_inval
 extern kv_store_create
 extern kv_store_destroy
@@ -105,10 +105,14 @@ k_maxup:    db " max_upload_bytes="
 k_crc:      db " crc32c="
 v_sse42:    db "sse42", 0
 v_table:    db "table", 0
+v_pclmul:   db "pclmul", 0
+v_vpclmul:  db "vpclmul", 0
 k_pinned:   db " pinned="
 k_deferred: db " deferred="
-m_f_crc:    db ' msg="invalid setting" name=KVNODE_CRC32C value=sse42 reason="this CPU has no SSE4.2 crc32 instruction"'
+m_f_crc:    db ' msg="invalid setting" name=KVNODE_CRC32C value='
 L_f_crc     equ $ - m_f_crc
+m_f_crc2:   db ' reason="this CPU lacks the instructions it needs"'
+L_f_crc2    equ $ - m_f_crc2
 m_listen:   db ' msg="listening" transport=h2c'
 L_listen    equ $ - m_listen
 m_loaded:   db ' msg="snapshot loaded" records='
@@ -202,10 +206,12 @@ main:
     lea     r15, [g_cfg]
 
     ; CRC-32C implementation (Upload/Download checksums), before any thread:
-    ; auto takes SSE4.2 where CPUID reports it; a forced sse42 on a CPU
-    ; without it is a configuration error (exit 2) — kv_crc32c_set_mode's
-    ; refusal — instead of a #UD crash in a worker at the first upload.
-    ; r14 keeps the mode in force for the "starting" line.
+    ; auto takes the fastest path CPUID reports (kv_crc32c_best_mode); a
+    ; forced mode whose instructions the CPU lacks is a configuration error
+    ; (exit 2) — kv_crc32c_set_mode's refusal — instead of a #UD crash in a
+    ; worker at the first upload. Config words map to crc32c.asm's modes
+    ; 0 table, 1 sse42, 2 pclmul, 3 vpclmul. r14 keeps the mode in force for
+    ; the "starting" line.
     mov     rax, [r15 + Config.crc_mode]
     xor     edi, edi                    ; table
     cmp     rax, CRC_CFG_TABLE
@@ -213,7 +219,13 @@ main:
     mov     edi, 1                      ; sse42
     cmp     rax, CRC_CFG_SSE42
     je      .crc_set
-    call    kv_crc32c_hw_available wrt ..plt   ; auto
+    mov     edi, 2                      ; pclmul
+    cmp     rax, CRC_CFG_PCLMUL
+    je      .crc_set
+    mov     edi, 3                      ; vpclmul
+    cmp     rax, CRC_CFG_VPCLMUL
+    je      .crc_set
+    call    kv_crc32c_best_mode wrt ..plt   ; auto
     mov     edi, eax
 .crc_set:
     mov     r14d, edi                   ; the mode requested = the mode in force on success
@@ -222,6 +234,12 @@ main:
     jns     .crc_ok
     LOGBEGIN lvl_error
     LOGLIT  m_f_crc, L_f_crc
+    mov     edi, r14d
+    call    crc_mode_name
+    lea     rdi, [rsp + F_LOG]
+    mov     rsi, rax
+    call    kv_logb_cstr wrt ..plt
+    LOGLIT  m_f_crc2, L_f_crc2
     LOGEND
     mov     eax, 2
     jmp     .return
@@ -257,11 +275,10 @@ main:
     LOGLIT  k_maxup, 18
     LOGNUM  [r15 + Config.max_upload]
     LOGLIT  k_crc, 8
+    mov     edi, r14d
+    call    crc_mode_name
     lea     rdi, [rsp + F_LOG]
-    lea     rsi, [v_table]
-    lea     rax, [v_sse42]
-    test    r14d, r14d
-    cmovnz  rsi, rax
+    mov     rsi, rax
     call    kv_logb_cstr wrt ..plt
     LOGLIT  k_snapshot, 10
     lea     rdi, [rsp + F_LOG]
@@ -551,6 +568,27 @@ now_ms:
     pop     rcx
     add     rax, rcx
     add     rsp, 24
+    ret
+
+; =============================================================================
+; crc_mode_name — the KVNODE_CRC32C word naming a crc32c.asm mode. Internal.
+; @param  edi  mode: 0 table, 1 sse42, 2 pclmul, 3 vpclmul
+; @returns rax = its NUL-terminated name ("table" for anything else, which
+;          kv_crc32c_set_mode never leaves in force).
+; @remarks Used by the "starting" line and the refusal of a forced mode, so
+;          both always name the mode exactly as the setting spells it.
+; =============================================================================
+crc_mode_name:
+    lea     rax, [v_table]
+    lea     rdx, [v_sse42]
+    cmp     edi, 1
+    cmove   rax, rdx
+    lea     rdx, [v_pclmul]
+    cmp     edi, 2
+    cmove   rax, rdx
+    lea     rdx, [v_vpclmul]
+    cmp     edi, 3
+    cmove   rax, rdx
     ret
 
 section .note.GNU-stack noalloc noexec nowrite progbits

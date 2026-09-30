@@ -24,6 +24,9 @@
 #      Download must complete, and the server must exit 0 after SIGTERM
 #  2b. phase 1's suite again through per-worker private L1/L2 record caches
 #      (hcache.asm) with SWAR tag scans and the table CRC-32C (no SSE4.2)
+#  2c. the suite's Upload/Download tests under each hardware CRC-32C path
+#      forced in turn (sse42, pclmul, vpclmul — phase 1 ran auto); a path
+#      the CPU lacks must be refused at startup (exit 2) instead
 #   3. idle timeout: an idle connection is closed with GOAWAY after ~1 s;
 #      stalled transfers end (and give their memory back), slow ones do not,
 #      and a reader frozen at the TCP level is dropped without the GOAWAY it
@@ -134,6 +137,30 @@ await_ready() {
   done
 }
 
+# crc_mode_refused MODE — true when kvnode refuses KVNODE_CRC32C=MODE at
+# startup the way a CPU without that path must be refused (exit 2 naming the
+# mode and the missing instructions); false when it starts (the probe server
+# is stopped again at once). Any other outcome fails the run.
+crc_mode_refused() {
+  local rlog="$WORK/crc-probe.log" pid rc=0 deadline=$((SECONDS + 10))
+  : > "$rlog"
+  env KVNODE_PORT="$PORT" KVNODE_WORKERS=1 KVNODE_CRC32C="$1" "$KVNODE" 2> "$rlog" &
+  pid=$!
+  while ! grep -q 'msg="listening"' "$rlog"; do
+    if ! alive "$pid"; then
+      wait "$pid" || rc=$?
+      ((rc == 2)) && grep -qF "value=$1 reason=\"this CPU lacks the instructions it needs\"" "$rlog" \
+        && return 0
+      fail "crc32c=$1: startup ended with status $rc" "$rlog"
+    fi
+    ((SECONDS < deadline)) || { kill -9 "$pid"; fail "crc32c=$1 probe not listening after 10 s" "$rlog"; }
+    sleep 0.02
+  done
+  kill -TERM "$pid"
+  wait "$pid" || true
+  return 1
+}
+
 # refuse NAME EXPECTED_STATUS LOG_PATTERN [VAR=VALUE...] — run kvnode in the
 # foreground; it must exit by itself with EXPECTED_STATUS and log the pattern.
 # Uses its own log file: LOG keeps pointing at a server that may still be
@@ -176,7 +203,7 @@ cat "$WORK/hold.out" "$WORK/drain.out" "$WORK/xfer.out"
 echo "itest: phase 2b — the same suite through private L1/L2 caches, SWAR scans, table CRC-32C"
 # Tiny caches (L1 256, L2 4096 entries) so entries conflict and are reused
 # while the suite's writers invalidate them; SWAR because SSE2 is the default;
-# the table CRC-32C because auto picks SSE4.2 on any CPU this runs on.
+# the table CRC-32C because auto picks a hardware path on any CPU this runs on.
 start_server cached KVNODE_WORKERS=4 KVNODE_CAPACITY=200000 \
   KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE KVNODE_MAX_UPLOAD_BYTES=$MAX_UPLOAD \
   KVNODE_CACHE_L1_BITS=8 KVNODE_CACHE_L2_BITS=12 KVNODE_SCAN=swar KVNODE_CRC32C=table
@@ -186,6 +213,24 @@ grep -qF 'crc32c=table' "$LOG" || fail "crc32c mode not logged"
 "$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" "$MAX_UPLOAD" \
   || fail "itest_grpc suite with private caches"
 stop_server
+
+echo "itest: phase 2c — the streaming tests under each hardware CRC-32C path"
+# Phase 1 ran auto (the fastest path the CPU has) and 2b the tables; here
+# every hardware path is forced in turn, so a CPU that has them all checks
+# them all end to end (every DATA split, ranges, the conformance vectors).
+for mode in sse42 pclmul vpclmul; do
+  if crc_mode_refused "$mode"; then
+    echo "  crc32c=$mode: refused at startup (this CPU lacks it)"
+    continue
+  fi
+  start_server "crc-$mode" KVNODE_WORKERS=2 KVNODE_CAPACITY=200000 \
+    KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE \
+    KVNODE_MAX_UPLOAD_BYTES=$MAX_UPLOAD KVNODE_CRC32C=$mode
+  grep -qF "crc32c=$mode snapshot=" "$LOG" || fail "crc32c=$mode not logged as the mode in force"
+  "$ITEST" --streaming 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" "$MAX_UPLOAD" \
+    || fail "streaming suite with crc32c=$mode"
+  stop_server
+done
 
 echo "itest: phase 3 — idle timeout: idle connections, stalled, slow and frozen transfers"
 # The memory limit lets --stall observe, from outside, when a stalled call's
@@ -221,9 +266,9 @@ refuse "capacity overflow" 2 'name=KVNODE_CAPACITY' KVNODE_CAPACITY=999999999999
 refuse "unknown scan mode" 2 'name=KVNODE_SCAN value=avx9 allowed=swar|sse2' KVNODE_SCAN=avx9
 refuse "empty scan name" 2 'name=KVNODE_SCAN value= allowed=swar|sse2' KVNODE_SCAN=
 refuse "cache too large" 2 'name=KVNODE_CACHE_L1_BITS value=25' KVNODE_CACHE_L1_BITS=25
-refuse "unknown crc32c mode" 2 'name=KVNODE_CRC32C value=fast allowed=auto|sse42|table' \
+refuse "unknown crc32c mode" 2 'name=KVNODE_CRC32C value=fast allowed=auto|vpclmul|pclmul|sse42|table' \
   KVNODE_CRC32C=fast
-refuse "crc32c mode case" 2 'name=KVNODE_CRC32C value=SSE42 allowed=auto|sse42|table' \
+refuse "crc32c mode case" 2 'name=KVNODE_CRC32C value=SSE42 allowed=auto|vpclmul|pclmul|sse42|table' \
   KVNODE_CRC32C=SSE42
 refuse "upload above the budget" 2 \
   'name=KVNODE_MAX_UPLOAD_BYTES value=2000000 allowed=0..1048576 reason="must not exceed KVNODE_CONN_BUFFER_MB' \

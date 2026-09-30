@@ -75,6 +75,15 @@ bits 64
 %define DL_CHUNK_DEFAULT        65536
 %define DL_CHUNK_MAX            1048576
 
+; Uploads of at least this many bytes are copied into their record with
+; non-temporal stores (kv_crc32c_copy_nt): such a record is cold memory that
+; nobody reads until a later Get or Download, and the NT copy skips reading
+; each destination line first (1.9x on that copy, tests/test_crc32c.c) and
+; leaves the cache to data that is used again — the table, other requests.
+; Smaller records may be read back while still cached, and their copies
+; are a few calls long.
+%define UPLOAD_NT_MIN           65536
+
 ; UploadRequest tags (proto/kvnode/v1/kvnode.proto): field << 3 | wire type.
 %define UP_TAG_KEY              0x0A    ; 1: bytes
 %define UP_TAG_SIZE             0x10    ; 2: varint (optional uint64 total_size)
@@ -186,6 +195,7 @@ extern kv_pb_stream_idle
 extern kv_pb_write_varint
 extern kv_pb_varint_len
 extern kv_crc32c_copy
+extern kv_crc32c_copy_nt
 extern kv_h2n_reply_parts
 extern kv_h2n_reply_static
 extern kv_h2n_reply_headers
@@ -1485,7 +1495,8 @@ upload_event:
     add     [rbp + Xfer.key_off], r14
     jmp     .ok
 .data:
-    ; The value's bytes: straight into the record, checksummed in the same pass.
+    ; The value's bytes: straight into the record, checksummed in the same
+    ; pass — with non-temporal stores for a large record (UPLOAD_NT_MIN).
     mov     rax, [rbp + Xfer.off]
     add     rax, r14
     cmp     rax, [rbp + Xfer.size]
@@ -1495,7 +1506,15 @@ upload_event:
     add     rsi, [rbp + Xfer.off]
     mov     rdx, r13
     mov     rcx, r14
+    cmp     qword [rbp + Xfer.size], UPLOAD_NT_MIN
+    jae     .data_nt
     call    kv_crc32c_copy wrt ..plt
+    jmp     .data_done
+.data_nt:
+    ; Every NT store is drained (sfence) before this returns, so the
+    ; publish that follows the last chunk orders after all of them.
+    call    kv_crc32c_copy_nt wrt ..plt
+.data_done:
     mov     [rbp + Xfer.crc], rax
     add     [rbp + Xfer.off], r14
     jmp     .ok
