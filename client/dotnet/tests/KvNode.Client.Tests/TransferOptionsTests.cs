@@ -23,6 +23,10 @@ public sealed class TransferOptionsTests
     [InlineData("TransferTimeout")]
     [InlineData("TransferIdleTimeoutZero")]
     [InlineData("TransferIdleTimeoutHuge")]
+    [InlineData("StreamReceiveWindowSmall")]
+    [InlineData("StreamReceiveWindowHuge")]
+    [InlineData("Connections0")]
+    [InlineData("ConnectionsHuge")]
     public void InvalidTransferSettingsAreRefused(string option)
     {
         KvNodeClientOptions options = option switch
@@ -34,9 +38,17 @@ public sealed class TransferOptionsTests
             "DownloadChunkBytesHuge" => new() { DownloadChunkBytes = (1024 * 1024) + 1 },
             "TransferTimeout" => new() { TransferTimeout = TimeSpan.Zero },
             "TransferIdleTimeoutZero" => new() { TransferIdleTimeout = TimeSpan.FromTicks(-5) },
+            "StreamReceiveWindowSmall" => new() { StreamReceiveWindowBytes = 65534 },
+            "StreamReceiveWindowHuge" => new() { StreamReceiveWindowBytes = (16 * 1024 * 1024) + 1 },
+            "Connections0" => new() { Connections = 0 },
+            "ConnectionsHuge" => new() { Connections = 65 },
             _ => new() { TransferIdleTimeout = TimeSpan.FromDays(30) },
         };
         Assert.Throws<ArgumentOutOfRangeException>(() => new KvNodeClient(new Uri("http://localhost:1"), options));
+
+        // The channel settings refuse them too: a channel built from them
+        // would fail later, farther from the mistake.
+        Assert.Throws<ArgumentOutOfRangeException>(() => KvNodeClient.CreateChannelOptions(options));
     }
 
     /// <summary>The boundary values and the infinite timeouts are accepted.</summary>
@@ -50,10 +62,61 @@ public sealed class TransferOptionsTests
             DownloadChunkBytes = 1024 * 1024,
             TransferTimeout = Timeout.InfiniteTimeSpan,
             TransferIdleTimeout = Timeout.InfiniteTimeSpan,
+            StreamReceiveWindowBytes = 16 * 1024 * 1024,
+            Connections = 64,
         };
         using var client = new KvNodeClient(new Uri("http://localhost:1"), options);
         using var smallest = new KvNodeClient(
-            new Uri("http://localhost:1"), new KvNodeClientOptions { MaxUploadBytes = 0, UploadChunkBytes = 1, DownloadChunkBytes = 0 });
+            new Uri("http://localhost:1"),
+            new KvNodeClientOptions { MaxUploadBytes = 0, UploadChunkBytes = 1, DownloadChunkBytes = 0, StreamReceiveWindowBytes = 65535, Connections = 1 });
+    }
+
+    /// <summary>
+    /// The client builds one lane (channel, connection) per configured
+    /// connection — 4 by default, the measured choice — and a client given a
+    /// channel has exactly that one, whatever the option says; nothing is
+    /// connected by either constructor.
+    /// </summary>
+    /// <param name="connections">The configured connection count; 0 = the default options.</param>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(4)]
+    [InlineData(64)]
+    public void ClientBuildsOneLanePerConnection(int connections)
+    {
+        KvNodeClientOptions options = connections == 0 ? KvNodeClientOptions.Default : new() { Connections = connections };
+        using (var owned = new KvNodeClient(new Uri("http://localhost:1"), options))
+        {
+            Assert.Equal(connections == 0 ? 4 : connections, owned.LaneCount);
+        }
+
+        using GrpcChannel channel = GrpcChannel.ForAddress("http://localhost:1");
+        using var given = new KvNodeClient(channel, options);
+        Assert.Equal(1, given.LaneCount);
+    }
+
+    /// <summary>
+    /// The channel's HTTP/2 handler starts every call with the configured
+    /// receive window — the setting that decides download speed — and the
+    /// default stays the measured one.
+    /// </summary>
+    /// <param name="window">The configured window; 0 = the default options.</param>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(65535)]
+    [InlineData(1024 * 1024)]
+    [InlineData(16 * 1024 * 1024)]
+    public void ChannelStartsCallsWithTheReceiveWindow(int window)
+    {
+        KvNodeClientOptions options = window == 0 ? KvNodeClientOptions.Default : new() { StreamReceiveWindowBytes = window };
+        var handler = Assert.IsType<SocketsHttpHandler>(KvNodeClient.CreateChannelOptions(options).HttpHandler);
+        Assert.Equal(options.StreamReceiveWindowBytes, handler.InitialHttp2StreamWindowSize);
+        if (window == 0)
+        {
+            // The 2026-09-30 measurements chose it (benchmarks/results/2026-09-30-streaming).
+            Assert.Equal(16 * 1024 * 1024, handler.InitialHttp2StreamWindowSize);
+        }
     }
 
     /// <summary>

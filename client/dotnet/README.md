@@ -8,7 +8,8 @@ The .NET client for [KvNode](../../README.md). Targets .NET 8 (LTS) and
 ```csharp
 using KvNode.Client;
 
-// One long-lived client per server: it multiplexes all calls over HTTP/2.
+// One long-lived client per server: it multiplexes all calls over HTTP/2
+// (4 connections by default, taken in turn).
 using var kv = new KvNodeClient(new Uri("http://kvnode:50051"));
 
 await kv.PutAsync("greeting", "hello");                    // true = created
@@ -75,6 +76,19 @@ uint mine = Crc32C.Compute(bytes);                                  // == up.Crc
   bytes and more, the server's own algorithm, and falls back to the CRC32
   instruction (x64 SSE4.2, Arm64 CRC) and then to the runtime's software
   path. All give identical results; measured 9% less client CPU per GB.
+- **Several connections:** a client spreads its calls over 4 HTTP/2
+  connections (`Connections`), each opened by the first call that takes
+  it. One connection pushes every frame through .NET's single reader and
+  writer loop and is served by one server worker thread; four measured
+  2.8x (1 MiB uploads), 1.3-1.4x (downloads) and 1.4x (Gets, 64 in
+  flight) against one, with one call at a time unchanged.
+- **A receive window that fits the transfer:** every call starts with a
+  16 MiB HTTP/2 receive window (`StreamReceiveWindowBytes`) instead of
+  .NET's 64 KiB, so the server never waits for credit within a transfer of
+  a few MiB and .NET sends a fraction of its WINDOW_UPDATE frames. The
+  price: a call whose data you read slower than it arrives may hold up to
+  that much in memory — lower it for many concurrent downloads into slow
+  destinations.
 
 ### Options
 
@@ -89,6 +103,8 @@ var options = new KvNodeClientOptions
     TransferIdleTimeout = TimeSpan.FromSeconds(30),     // no chunk moved for this long: fail
     UploadChunkBytes = 1 << 20,     // 1 byte..4 MiB per upload message (fewer messages: faster)
     DownloadChunkBytes = 0,         // 0 = server default (64 KiB); up to 1 MiB
+    StreamReceiveWindowBytes = 16 << 20, // HTTP/2 receive window per call: download speed vs memory held for slow readers
+    Connections = 4,                // HTTP/2 connections calls take in turn (1..64); 1 = a single connection
     ReadAttempts = 3,               // Get/Download/health retried on UNAVAILABLE; Put/Delete/Upload never
     CompactLongKeys = true,         // the contract; keep it on in every client
 };

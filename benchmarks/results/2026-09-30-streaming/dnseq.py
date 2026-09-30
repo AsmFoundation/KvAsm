@@ -6,7 +6,11 @@ Usage (inside kvnode-dev):
   dnseq.py OUT.jsonl ROUNDS CONFIG...
   CONFIG = MODE:SIZE:CONCURRENCY[:CHUNK[:WINDOW]]   (as abdotnet.py)
 Env: A_BENCH, B_BENCH, A_ARGS, B_ARGS, SERVER, DN_ENV, WARMUP (2), SECONDS (6)
-     as abdotnet.py.
+     as abdotnet.py; SERVER_CPUS ("2") and WORKERS ("1") place the server,
+     e.g. "2,4,6,8" and 4 to see what spreading connections over server
+     workers buys (KvNode pins each connection to one worker).
+MODE get (unary Get of SIZE-byte values) uses at most 10,000 keys, as does
+every mode: the server holds 100,000.
 
 Why a second method: two .NET clients running at once each keep 4-5 cores
 busy, much of it thread-pool spinning, and disturb each other through the
@@ -32,8 +36,11 @@ BENCH = {"A": os.environ["A_BENCH"], "B": os.environ["B_BENCH"]}
 DN_ENV = os.environ.get("DN_ENV", "")
 WARMUP = os.environ.get("WARMUP", "2")
 SECONDS = os.environ.get("SECONDS", "6")
-SERVER_CPU, CLIENT_CPUS, PORT = "2", "16-31", 50223
+SERVER_CPU = os.environ.get("SERVER_CPUS", "2")
+WORKERS = os.environ.get("WORKERS", "1")
+CLIENT_CPUS, PORT = "16-31", 50223
 RECORD_BYTES = 64 << 20
+MAX_KEYS = 10000
 
 
 def parse_cfg(text):
@@ -44,7 +51,7 @@ def parse_cfg(text):
 
 def run(variant, cfg):
     """One run of one variant against a fresh pinned server; returns the bench's JSON."""
-    env = dict(os.environ, KVNODE_PORT=str(PORT), KVNODE_WORKERS="1", KVNODE_CAPACITY="100000",
+    env = dict(os.environ, KVNODE_PORT=str(PORT), KVNODE_WORKERS=WORKERS, KVNODE_CAPACITY="100000",
                KVNODE_MAX_UPLOAD_BYTES="67108864")
     log = open("/tmp/dnseq.server.log", "w")
     server = subprocess.Popen(["taskset", "-c", SERVER_CPU, SERVER], env=env, stderr=log)
@@ -53,7 +60,9 @@ def run(variant, cfg):
             break
         time.sleep(0.02)
     mode, size, conc, chunk, window = cfg
-    keys = max(8, RECORD_BYTES // max(size, 1))
+    # 64 MiB of values (a working set beyond the caches), but never more keys
+    # than the server's capacity comfortably holds or a preload takes long.
+    keys = min(MAX_KEYS, max(8, RECORD_BYTES // max(size, 1)))
     cenv = dict(os.environ, DOTNET_gcServer="0")
     for kv in DN_ENV.split():
         k, val = kv.split("=", 1)

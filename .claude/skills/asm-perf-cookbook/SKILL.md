@@ -642,6 +642,32 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     compare .NET builds sequentially in ABBA order, one client alone on
     all E-cores; allocation counts (`GC.GetTotalAllocatedBytes(true)`) are
     exact and need no statistics.
+  - *The peer's flow control can be the bottleneck of a fast server:*
+    .NET's HTTP/2 client starts every stream with a 64 KiB receive window
+    and returns credit every eighth of it, only as the data is read; its
+    RTT-based growth restarts per stream. A 1 MiB download paid dozens of
+    WINDOW_UPDATEs and a credit stall at its end. Setting
+    `SocketsHttpHandler.InitialHttp2StreamWindowSize` to 16 MiB (the
+    maximum; a window at least the transfer's size) made .NET downloads
+    **1.50x (1 MiB values) and 1.20x (16 MiB) faster, 6/6 p=0.031, client
+    CPU/GB −30%/−20%**, with no server change (uploads 1.00: the window
+    only paces what the client receives). Screens found it step by step:
+    default→4 MiB 1.42x, 1→4 MiB 1.24x, 4→16 MiB 1.10x, 8→16 MiB 1.00x on
+    1 MiB values but 1.07x on 16 MiB. Read the peer's flow-control code
+    before tuning your own send path.
+  - *One connection is one lane on both ends:* a .NET HTTP/2 connection
+    has one reader and one writer loop, and KvNode serves a connection
+    from the worker that accepted it, for life — so a client multiplexing
+    everything over one connection is capped by both. Four connections
+    that calls take in turn (`Connections`, an `Interlocked` round-robin
+    over channels with their own handlers — channels sharing a handler
+    share its one connection): 1 MiB uploads **2.82x**, downloads 1.32-1.41x
+    (one server worker then saturated), Gets with 64 in flight 1.38x, one
+    call at a time unchanged; against 4 workers 11.4 GB/s of downloads
+    instead of 4.1. Server benchmarks with many connections (kvbench) never
+    see this cap; a single-client benchmark does. With both transport
+    fixes and the codec, one .NET client moved 3.89x (uploads) and 2.47x
+    (downloads) of the original client's bytes on half its CPU per byte.
   - *Screen, then confirm:* 2-block screens of four read sizes found the
     optimum (and that bigger lost on large uploads) before one 6-block
     confirmation — cheaper than confirming every candidate.

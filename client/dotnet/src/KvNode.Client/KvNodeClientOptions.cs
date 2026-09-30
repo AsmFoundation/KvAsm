@@ -78,6 +78,89 @@ public sealed record KvNodeClientOptions
     public int DownloadChunkBytes { get; init; }
 
     /// <summary>
+    /// HTTP/2 receive window each call starts with (default 16 MiB, .NET's
+    /// maximum; 65,535..16 MiB): how many bytes of a Download — or of a large
+    /// Get — the server may send before this process has consumed them. It
+    /// decides download speed on a fast link. .NET returns credit with a
+    /// WINDOW_UPDATE frame every eighth of the window and only as the data is
+    /// read, so a window smaller than the transfer makes the server wait for
+    /// credit — at the end of every transfer, and whenever .NET is slow to
+    /// return it — and every update costs a frame each way; .NET's own
+    /// default (64 KiB, grown per call from a round-trip estimate) pays both
+    /// many times per MiB. With 16 MiB a transfer of up to 2 MiB needs no
+    /// stream-level update at all. Measured (2026-09-30, one host; 4
+    /// concurrent downloads of 1 MiB / 2 of 16 MiB): 16 MiB against .NET's
+    /// default 1.50x / 1.20x the throughput with 30% / 20% less client CPU
+    /// per GB (6 alternating rounds, all agreeing); the screens that chose it
+    /// (3-4 rounds): 4 MiB against .NET's default 1.42x / 1.12x, 1 MiB against
+    /// 4 MiB 0.81x / 0.85x, 16 MiB against 4 MiB 1.10x / 1.06x and against
+    /// 8 MiB 1.00x / 1.07x. Uploads are unaffected: this window only paces
+    /// what the client receives.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The price is memory whenever the application consumes a download
+    /// slower than the network delivers it: .NET then holds up to this many
+    /// received bytes for each such call (never more than the transfer
+    /// itself). Nothing caps the sum — .NET returns connection-level credit
+    /// as data arrives, not as it is read — so 100 concurrent downloads into
+    /// slow destinations may hold 100 windows, 1,600 MiB at the default.
+    /// Lower it for that pattern (8 MiB lost nothing on 1 MiB values; 1 MiB
+    /// and less cost the speed above). .NET's own window grows to the same
+    /// 16 MiB on a long fast path, so the default adds no new worst case there.
+    /// </para>
+    /// <para>
+    /// A channel setting: it applies to the channel the client creates and to
+    /// <see cref="KvNodeClient.CreateChannelOptions"/>; a channel passed to the
+    /// <see cref="KvNodeClient(Grpc.Core.ChannelBase, KvNodeClientOptions?)"/>
+    /// constructor keeps its own. When the process caps the window lower
+    /// (<c>DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_FLOWCONTROL_MAXSTREAMWINDOWSIZE</c>),
+    /// that cap wins and .NET's default window stays in force.
+    /// </para>
+    /// </remarks>
+    public int StreamReceiveWindowBytes { get; init; } = MaxStreamReceiveWindowBytes;
+
+    /// <summary>
+    /// HTTP/2 connections the client opens to the server and spreads its calls
+    /// over, each call taking the next one in turn (default 4; 1..64). One
+    /// connection runs every frame of every concurrent call through .NET's
+    /// single reader and single writer loop, and it is served by one server
+    /// worker thread for its whole life (KvNode pins a connection to the
+    /// worker that accepted it), so it caps what one client can move.
+    /// Measured (2026-09-30, one server worker, 6 alternating rounds, 4
+    /// connections against 1): 4 concurrent 1 MiB uploads 2.82x the
+    /// throughput with 41% less client CPU per GB, 2 concurrent 16 MiB uploads
+    /// 1.73x, downloads 1.32x / 1.41x (then bound by the one server core),
+    /// unary Gets with 64 in flight 1.38x (5% more client CPU each); one call
+    /// at a time is unchanged. Against a 4-worker server (8 concurrent 1 MiB
+    /// transfers, screens of 3 rounds) 4 connections moved 7.7 GB/s up and
+    /// 11.4 GB/s down against one's 3.0 and 4.1; 8 added 1.26x on uploads,
+    /// nothing on downloads, 1.12x on Gets — raise it toward the number of
+    /// concurrent transfers for more.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The price: one TCP connection and HTTP/2 session each (opened lazily,
+    /// by the first call that takes it), with its own keep-alive pings, and
+    /// the server's per-connection state; 5% (one server worker) to 27% (four)
+    /// more client CPU per Get, the cost of keeping more connections busy at
+    /// once. Which server worker takes a connection is the kernel's choice
+    /// (<c>SO_REUSEPORT</c> hashing), so a few connections may share one
+    /// worker — more connections spread more evenly. Set 1 for a client
+    /// that makes one call at a time and must hold a single connection.
+    /// Concurrent calls on different connections are unordered, exactly as
+    /// concurrent calls on one connection already are; a call that completed
+    /// is visible to every later call on any connection.
+    /// </para>
+    /// <para>
+    /// A channel setting: it applies when the client creates its own channels
+    /// (the <see cref="Uri"/> constructor); a client given a channel uses that
+    /// one channel.
+    /// </para>
+    /// </remarks>
+    public int Connections { get; init; } = 4;
+
+    /// <summary>
     /// Deadline of a whole upload or download (default 10 minutes);
     /// <see cref="Timeout.InfiniteTimeSpan"/> disables it. Separate from
     /// <see cref="Timeout"/>, which suits unary calls, not a 64 MiB transfer
@@ -141,6 +224,21 @@ public sealed record KvNodeClientOptions
                 nameof(DownloadChunkBytes), DownloadChunkBytes, $"Must be 0 (server default) or 1..{MaxDownloadChunkBytes}.");
         }
 
+        // The range SocketsHttpHandler.InitialHttp2StreamWindowSize accepts in
+        // a process that leaves .NET's maximum at its default: checked here so
+        // a bad value fails when the client is created, not on first use.
+        if (StreamReceiveWindowBytes is < MinStreamReceiveWindowBytes or > MaxStreamReceiveWindowBytes)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(StreamReceiveWindowBytes), StreamReceiveWindowBytes,
+                $"Must be {MinStreamReceiveWindowBytes}..{MaxStreamReceiveWindowBytes} (.NET's HTTP/2 window limits).");
+        }
+
+        if (Connections is < 1 or > MaxConnections)
+        {
+            throw new ArgumentOutOfRangeException(nameof(Connections), Connections, $"Must be 1..{MaxConnections}.");
+        }
+
         if (TransferTimeout <= TimeSpan.Zero && TransferTimeout != System.Threading.Timeout.InfiniteTimeSpan)
         {
             throw new ArgumentOutOfRangeException(nameof(TransferTimeout), TransferTimeout, "Must be positive or infinite.");
@@ -160,4 +258,17 @@ public sealed record KvNodeClientOptions
 
     /// <summary>Largest <see cref="DownloadChunkBytes"/>: the server never sends larger chunks.</summary>
     internal const int MaxDownloadChunkBytes = 1024 * 1024;
+
+    /// <summary>Smallest <see cref="StreamReceiveWindowBytes"/>: HTTP/2's own initial window (RFC 9113 §6.9.2), below which .NET refuses.</summary>
+    internal const int MinStreamReceiveWindowBytes = 65535;
+
+    /// <summary>Largest <see cref="StreamReceiveWindowBytes"/>: .NET's default maximum stream window.</summary>
+    internal const int MaxStreamReceiveWindowBytes = 16 * 1024 * 1024;
+
+    /// <summary>
+    /// Largest <see cref="Connections"/>: far above what one client process
+    /// can use (the gains come from spreading work over cores), and a bound
+    /// on what one client may hold open against a server.
+    /// </summary>
+    internal const int MaxConnections = 64;
 }

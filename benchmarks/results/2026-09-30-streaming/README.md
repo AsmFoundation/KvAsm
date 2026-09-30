@@ -11,8 +11,8 @@ at a time, each change proven by a paired A/B before it was kept.
 |---|---|
 | `kvbench --upload / --download` ([benchmarks/kvbench](../../kvbench)) | streaming workloads: every request moves one whole value of `--value-size` bytes in `--chunk`-byte messages; uploads generated straight into the output buffer (nghttp2 `NO_COPY`), downloads parsed and compared with the expected bytes in place; the server's CRC-32C checked against an O(1) CRC combination per key. `--server-pid` reads the server's CPU from its threads' `schedstat` (ns-exact) |
 | `abstream.py` | concurrent paired A/B of two server binaries: both run AT THE SAME TIME on pinned P-core vCPUs 2 and 6, clients on E-core sets 16-23 / 24-31, slots swapped every block; value MB/s, server CPU ns per byte, p50/p99; also unary GET configs as a guard for the small-request path |
-| `client/dotnet/bench/KvNode.Client.Bench` | the .NET client's Upload/Download throughput, client CPU, bytes allocated per transfer, GC counts; published self-contained for linux-x64 so it runs next to the pinned server inside the VM |
-| `abdotnet.py` / `dnseq.py` | .NET client A/Bs: concurrent pairs (as abstream), and sequential ABBA rounds with one client alone on all E-cores, which the noisy .NET runs needed |
+| `client/dotnet/bench/KvNode.Client.Bench` | the .NET client's Upload/Download throughput (and unary Get, `--mode get`, as the guard), client CPU, bytes allocated per transfer, GC counts; `--window` / `--connections` set the library's options, `--clients N` runs N separate clients; published self-contained for linux-x64 so it runs next to the pinned server inside the VM |
+| `abdotnet.py` / `dnseq.py` | .NET client A/Bs: concurrent pairs (as abstream), and sequential ABBA rounds with one client alone on all E-cores, which the noisy .NET runs needed; `dnseq.py` also places the server (`SERVER_CPUS`, `WORKERS`) |
 
 ## Profiles (one server worker, perf cpu-clock by PID, kernel symbols)
 
@@ -86,30 +86,39 @@ samples on the thread pool's spin-wait when spinning is on.
 | **Folding CRC-32C in `Crc32C`** (Pclmulqdq[.V256], chain fallback) | client CPU per GB **−9% (1 MiB uploads, 6/6, p=0.031)**, −8% (64 KiB uploads, 6/6), downloads −9% / −11% (5/6, 4/6); throughput +12.8% upload (5/6) | `ab-dotnet-crc.*` (concurrent pairs) |
 | **Zero-alloc streaming codec** (`StreamingCodec`: one reused Upload frame, pooled Download frames with ArrayPool data) | 1 MiB download: allocated **1,072 KB → 23 KB per transfer (−97.9%)**, gen0 111 → 2.6 per s, **throughput +14.9%, client CPU/GB −14.6%, p50 −12.2% (all 6/6, p=0.031)**; 16 MiB download: **17.0 MB → 152 KB (−99.1%)**; uploads: −1..−4% allocation (gRPC's own per-write state remains), timing neutral | `seq-dotnet-codec.*` (sequential ABBA, spinning off) |
 | **Upload chunks 64 KiB → 1 MiB** (`UploadChunkBytes` default; screens, 4 rounds each) | 256 KiB vs 64 KiB: 1 MiB uploads **1.34x** (4/4), CPU/GB −24%, allocation −41%; 16 MiB uploads 1.22x (3/4). 1 MiB vs 256 KiB: 1 MiB uploads another **1.15x** (4/4), CPU/GB −11%, allocation −17%; 16 MiB 1.03x (3/4). Download chunks of 256 KiB were **slower** (0.91x, 0/4; gRPC reads a whole message before handing it over): the download default stays the server's 64 KiB | `screens/seq-dotnet-chunk-*` |
+| **16 MiB HTTP/2 receive window** (`StreamReceiveWindowBytes`; .NET starts every stream at 64 KiB, returns credit every eighth of the window and only as data is read, and restarts its RTT-based growth per stream) | 1 MiB downloads **1.50x** (6/6, p=0.031), client CPU/GB −30%, allocation −24%, p50 −32%, p99 −49%; 16 MiB downloads **1.20x** (6/6), CPU/GB −20%, p50 −15%, server CPU −22%; uploads 1.00 / 1.01 (the window only paces what the client receives). Screens (3-4 rounds, one build with `--window`): 64 KiB→4 MiB 1.42x / 1.12x (4/4), 1→4 MiB 1.24x / 1.18x (3/3), 4→16 MiB 1.10x / 1.06x (3/3), 8→16 MiB 1.00x / 1.07x (1/3, 3/3) — the window should hold the whole transfer | `seq-dotnet-window.*` (the library change, 6 rounds), `screens/seq-dotnet-window-*` |
+| **4 HTTP/2 connections per client** (`Connections`; calls take them in turn, lock-free). One connection runs every frame of every call through .NET's single reader and writer loop, and KvNode serves it from one worker thread for life | one server worker, 4 against 1 connection (6/6, p=0.031): 1 MiB uploads **2.82x** (2.54 → 7.29 GB/s, client CPU/GB −41%, p50 −66%), 16 MiB uploads **1.73x**, 1 MiB downloads **1.32x**, 16 MiB **1.41x** (the one server core saturated), Gets of 100 B with 64 in flight **1.38x** (client CPU per Get +5%), one Get at a time 1.005 (neutral). A 4-worker server, 8 concurrent 1 MiB transfers (3 rounds): 1→4 connections uploads 3.0 → 7.7 GB/s, downloads 4.1 → **11.4 GB/s**, Gets 1.22x (CPU per Get +27%); 4→8 uploads 1.26x, downloads 1.03x, Gets 1.12x (`screens/seq-dotnet-connections-w4-*`). The first screen used 4 separate clients (`--clients 4`, `screens/seq-dotnet-connections-1-4.*`): 2.90x / 1.34x | `seq-dotnet-connections.*` (the library pool, 6 rounds), `screens/seq-dotnet-connections-*` |
 
 **The whole client effect — the original client (A) against the final one
 (B)**, sequential ABBA rounds on a quiet host, one client alone on all
-E-cores with spinning off, the same optimized server, 6 rounds. With each
-build's own defaults every cell is 6/6 (p = 0.031); with equal chunks a
-cell names its count when fewer rounds agreed:
+E-cores with spinning off, the same optimized server (one worker), 6
+rounds, each build with its own defaults (A: 64 KiB upload chunks, .NET's
+receive window, one connection; B: 1 MiB chunks, a 16 MiB window, 4
+connections). Every cell 6/6, p = 0.031 (`seq-dotnet-final.*`):
 
-| Config | Throughput | Client CPU per GB | Allocated per transfer | p50 |
-|---|---|---|---|---|
-| each build's own defaults (A: 64 KiB upload chunks, B: 1 MiB) — `seq-dotnet-final-defaults.*` | | | | |
-| upload, 1 MiB, 4 concurrent | 1.78 → **2.48 GB/s (+39.4%)** | −29.8% | 39.5 → 20.2 KB (−48.8%) | −26.7% |
-| download, 1 MiB, 4 concurrent | 2.06 → **2.45 GB/s (+20.4%)** | −23.1% | 1,073 → 22.5 KB (−97.9%) | −16.2% |
-| upload, 16 MiB, 2 concurrent | 1.51 → **2.13 GB/s (+38.0%)** | −28.5% | 526 → 199 KB (−62.2%) | −28.2% |
-| download, 16 MiB, 2 concurrent | 2.39 → **3.15 GB/s (+28.8%)** | −29.9% | 17.0 MB → 159 KB (−99.0%) | −23.2% |
-| equal 64 KiB upload chunks (the code changes alone) — `seq-dotnet-final-equal-chunks.*` | | | | |
-| upload, 1 MiB / 16 MiB | +2.0% (4/6) / +6.2% (5/6) | −6.4% (5/6) / −7.6% | +1.5% / +1.6% (the write race: 34-38 B per write) | −2.0% (4/6) / −5.3% (5/6) |
-| download, 1 MiB / 16 MiB | +21.7% / +28.5% | −22.8% / −28.9% | −97.9% / −99.1% | −14.7% / −22.9% |
+| Config | Throughput | Client CPU per GB | Allocated per transfer | p50 | p99 |
+|---|---|---|---|---|---|
+| upload, 1 MiB, 4 concurrent | 1.83 → **7.23 GB/s (3.89x)** | −58.3% | 39.5 → 20.2 KB (−48.8%) | −74.4% | −73.4% |
+| download, 1 MiB, 4 concurrent | 2.11 → **5.24 GB/s (2.47x)** | −49.0% | 1,073 → 17.6 KB (−98.4%) | −56.9% | −69.0% |
+| upload, 16 MiB, 2 concurrent | 1.60 → **4.17 GB/s (2.59x)** | −50.9% | 525 → 196 KB (−62.5%) | −61.3% | −62.9% |
+| download, 16 MiB, 2 concurrent | 2.42 → **5.91 GB/s (2.46x)** | −45.9% | 17.0 MB → 141 KB (−99.2%) | −59.3% | −63.0% |
 
-So the .NET client does the same work on 23-30% less CPU, and its code no
-longer allocates in proportion to the bytes it moves. It remains the
-slower end of a transfer: one server core takes ~11 GB/s of uploads from
-`kvbench`, while the .NET client sends ~2.5 GB/s keeping ~2.3 cores busy
-(the server core sits half idle) — most of the client's remaining CPU is
-the HTTP/2 stack's cross-thread wakeups per frame, outside the client's
+The way there, the same A/B at each stage: with the codec, CRC and chunks
+only (`seq-dotnet-final-defaults.*`) uploads 1.39x / 1.38x, downloads
+1.20x / 1.29x; plus the receive window (`seq-dotnet-final-window.*`)
+uploads 1.35x / 1.40x, downloads 1.82x / 1.60x; plus 4 connections (the
+table). The code changes alone, with equal 64 KiB upload chunks and .NET's
+window (`seq-dotnet-final-equal-chunks.*`): downloads +21.7% / +28.5%
+(6/6), CPU/GB −23% / −29%; uploads +2.0% (4/6) / +6.2% (5/6), allocation
++1.5% (the write race: 34-38 B per write).
+
+So one .NET client now moves 2.5-3.9x the data on half the CPU per byte,
+and its code no longer allocates in proportion to the bytes it moves. The
+server's one worker is the limit on downloads now (saturated at ~5.3-5.9
+GB/s); with 4 server workers one client reached 11.4 GB/s of downloads
+(`screens/seq-dotnet-connections-w4-*`). What the client itself still
+spends is mostly the HTTP/2 stack's per-frame work (16 KiB DATA frames,
+fixed in .NET, and a cross-thread wakeup per flush), outside the client's
 code.
 
 **A hang the bigger chunks exposed, and its fix.** With 1 MiB chunks the

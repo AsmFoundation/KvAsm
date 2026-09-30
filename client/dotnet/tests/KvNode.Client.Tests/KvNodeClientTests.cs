@@ -109,15 +109,21 @@ public sealed class KvNodeClientTests(KvNodeServer server)
     }
 
     /// <summary>
-    /// 64 concurrent tasks share one client (HTTP/2 multiplexing): every
-    /// private key sequence keeps exact flags, and readers of a shared key
-    /// only ever see complete values.
+    /// 64 concurrent tasks share one client — multiplexed on one HTTP/2
+    /// connection, or spread over four (the default pool), where a Put and
+    /// the Get after it usually travel on different connections: every
+    /// private key sequence keeps exact flags, a read after an acknowledged
+    /// write sees it, and readers of a shared key only ever see complete
+    /// values.
     /// </summary>
+    /// <param name="connections">The client's <see cref="KvNodeClientOptions.Connections"/>.</param>
     /// <returns>A task that completes when the test finishes.</returns>
-    [Fact]
-    public async Task ConcurrentCallsOverOneClientStayConsistent()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(4)]
+    public async Task ConcurrentCallsOverOneClientStayConsistent(int connections)
     {
-        using KvNodeClient client = NewClient();
+        using KvNodeClient client = NewClient(new KvNodeClientOptions { Connections = connections });
         string shared = Unique("shared");
         await client.PutAsync(shared, new string('a', 1000), Ct);
 

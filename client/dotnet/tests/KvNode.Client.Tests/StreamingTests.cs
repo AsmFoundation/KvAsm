@@ -98,6 +98,108 @@ public sealed class StreamingTests(KvNodeServer server)
     }
 
     /// <summary>
+    /// Receive windows from HTTP/2's minimum (a WINDOW_UPDATE every 8 KiB
+    /// received, the window grown by .NET's own round-trip estimate) to .NET's
+    /// maximum (no update at all within a transfer of a few MiB) change the
+    /// pacing, never the bytes: both Download forms and a Get of the largest
+    /// unary value — the server's flow control has to honor each of them.
+    /// </summary>
+    /// <param name="window">The client's receive window.</param>
+    /// <returns>A task that completes when the test finishes.</returns>
+    [Theory]
+    [InlineData(65535)]
+    [InlineData(1024 * 1024)]
+    [InlineData(16 * 1024 * 1024)]
+    public async Task ReceiveWindowsDoNotChangeTheBytes(int window)
+    {
+        using KvNodeClient client = NewClient(new KvNodeClientOptions { StreamReceiveWindowBytes = window });
+        byte[] key = Key("window");
+        byte[] value = RandomBytes(3_000_001, window);
+        Assert.Equal(Crc32C.Compute(value), (await client.UploadAsync(key, value, Ct)).Crc32C);
+        Assert.True((await client.DownloadAsync(key, cancellationToken: Ct)).AsSpan().SequenceEqual(value));
+        using var sink = new MemoryStream();
+        DownloadResult? result = await client.DownloadToAsync(key, sink, cancellationToken: Ct);
+        Assert.Equal(new DownloadResult(value.Length, 0, value.Length, Crc32C.Compute(value)), result);
+        Assert.True(sink.ToArray().AsSpan().SequenceEqual(value));
+
+        byte[] unaryKey = Key("window-get");
+        byte[] largest = RandomBytes(ServerMaxValue, window + 1);
+        Assert.True(await client.PutAsync(unaryKey, largest, Ct));
+        Assert.True((await client.GetAsync(unaryKey, Ct))?.Span.SequenceEqual(largest));
+        Assert.True(await client.DeleteAsync(key, Ct));
+        Assert.True(await client.DeleteAsync(unaryKey, Ct));
+    }
+
+    /// <summary>
+    /// A client with 4 connections opens exactly 4 — lazily, one per lane, in
+    /// turn — and keeps using them: concurrent uploads and downloads, and unary
+    /// calls, all round-trip exactly whichever connection carries them; once
+    /// disposed, every lane's channel refuses calls.
+    /// </summary>
+    /// <returns>A task that completes when the test finishes.</returns>
+    [Fact]
+    public async Task CallsSpreadOverTheConfiguredConnections()
+    {
+        await using var proxy = new FaultProxy(server.RequireAddress());
+        var client = new KvNodeClient(proxy.Address, new KvNodeClientOptions { Connections = 4 });
+        byte[][] keys = [.. Enumerable.Range(0, 8).Select(i => Key($"lanes{i}"))];
+        try
+        {
+            Assert.Equal(0, proxy.Connections);
+
+            // Sequential calls take the lanes in turn: each opens its lane's
+            // connection, one at a time, so the count is exact.
+            for (int i = 0; i < 4; i++)
+            {
+                Assert.True(await client.PutAsync(keys[i], "x"u8.ToArray(), Ct));
+                await WaitForAsync(() => proxy.Connections == i + 1);
+            }
+
+            byte[][] values = [.. Enumerable.Range(0, keys.Length).Select(i => RandomBytes(300_000 + i, i))];
+            await Task.WhenAll(keys.Select((k, i) => client.UploadAsync(k, values[i], Ct)));
+            byte[]?[] read = await Task.WhenAll(keys.Select(k => client.DownloadAsync(k, cancellationToken: Ct)));
+            for (int i = 0; i < keys.Length; i++)
+            {
+                Assert.True(read[i].AsSpan().SequenceEqual(values[i]));
+                Assert.Equal(values[i].Length, (await client.GetAsync(keys[i], Ct))?.Length);
+            }
+
+            Assert.Equal(4, proxy.Connections);
+            foreach (byte[] key in keys)
+            {
+                Assert.True(await client.DeleteAsync(key, Ct));
+            }
+        }
+        finally
+        {
+            client.Dispose();
+        }
+
+        // Four calls reach all four lanes: each channel must have been disposed.
+        for (int i = 0; i < 4; i++)
+        {
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => client.GetAsync(keys[0], Ct));
+        }
+    }
+
+    /// <summary>Polls a condition the proxy's accept loop makes true shortly after a call (it counts asynchronously).</summary>
+    /// <param name="condition">The condition.</param>
+    /// <returns>A task that completes when the condition holds.</returns>
+    /// <exception cref="TimeoutException">It did not hold within 10 s.</exception>
+    private static async Task WaitForAsync(Func<bool> condition)
+    {
+        for (int i = 0; i < 1000 && !condition(); i++)
+        {
+            await Task.Delay(10, Ct);
+        }
+
+        if (!condition())
+        {
+            throw new TimeoutException("condition not met within 10 s");
+        }
+    }
+
+    /// <summary>
     /// Stream sources: a seekable stream uploads from its position to its end;
     /// a non-seekable one needs its length; a source shorter than announced
     /// throws EndOfStreamException and stores nothing — the old value stands.

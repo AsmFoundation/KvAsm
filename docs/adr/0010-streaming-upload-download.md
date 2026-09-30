@@ -136,18 +136,32 @@ co-located client — a topology cost a remote client does not cause
 
 The .NET client was the bottleneck by several times (the original build:
 2.0 GB/s of uploads on 4.7 client cores against a half-idle server core)
-and got three changes: the same folding CRC (`Crc32C`), allocation-free
+and got five changes: the same folding CRC (`Crc32C`), allocation-free
 Upload/Download marshallers (`StreamingCodec`: a 1 MiB download allocated
-1,072 KB — a message and a copy of every chunk — now 23 KB), and 1 MiB
-upload chunks by default (download chunks stay 64 KiB: bigger ones were
-slower). Original against final, each with its defaults (6/6 everywhere):
-uploads +39% / +38% (1 MiB / 16 MiB values), downloads +20% / +29%,
-client CPU per GB −23..−30%. What the client still spends is mostly inside
-the HTTP/2 stack (cross-thread wakeups per frame). The bigger chunks
-exposed a hang — an upload the server refused at once could wait forever
-for flow-control credit (a first message larger than the stream window) —
-fixed by a small first message and by racing pending writes against the
-response.
+1,072 KB — a message and a copy of every chunk — now 17 KB), 1 MiB upload
+chunks by default (download chunks stay 64 KiB: bigger ones were slower),
+a 16 MiB HTTP/2 receive window per call (`StreamReceiveWindowBytes`), and
+4 HTTP/2 connections per client that calls take in turn (`Connections`).
+The last two fix transport behavior, not our code. .NET starts every
+stream at a 64 KiB window and returns credit every eighth of it, so the
+server stalled at the end of each transfer and handled dozens of
+WINDOW_UPDATEs per MiB — the window alone made downloads 1.50x (1 MiB
+values) and 1.20x (16 MiB) faster. And one connection runs every frame of
+every call through .NET's single reader and writer loop and is served by
+one server worker for life (KvNode pins a connection to its worker):
+4 connections against 1 made 1 MiB uploads 2.82x faster, downloads
+1.32-1.41x (then bound by the one server core), Gets with 64 in flight
+1.38x; against a 4-worker server one .NET client then moved 11.4 GB/s of
+downloads instead of 4.1. Original against final client, each with its
+defaults, one server worker (6/6 everywhere): uploads **3.89x** (1.83 →
+7.23 GB/s, 1 MiB values) and 2.59x (16 MiB), downloads 2.47x / 2.46x (to
+5.2-5.9 GB/s, the one worker saturated), client CPU per GB −46..−58%,
+allocation per download −98..−99%. What the client still
+spends is mostly inside the HTTP/2 stack (16 KiB frames and a cross-thread
+wakeup per flush). The bigger chunks exposed a hang — an upload the server
+refused at once could wait forever for flow-control credit (a first
+message larger than the stream window) — fixed by a small first message
+and by racing pending writes against the response.
 
 ## Alternatives considered
 

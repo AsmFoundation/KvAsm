@@ -44,8 +44,10 @@ internal sealed record Faults
 /// <remarks>
 /// HTTP/2 cleartext is plain TCP, so the proxy works at the byte level and the
 /// client and server see nothing but the fault. Each connection gets its own
-/// two pumps; set <see cref="Faults"/> BEFORE the client opens its connection
-/// (a new <see cref="KvNodeClient"/> opens a new one).
+/// two pumps and its own byte counts; set <see cref="Faults"/> BEFORE the
+/// client opens its connections (a new <see cref="KvNodeClient"/> opens new
+/// ones, one per <see cref="KvNodeClientOptions.Connections"/> lane, each on
+/// the first call that takes it).
 /// </remarks>
 internal sealed class FaultProxy : IAsyncDisposable
 {

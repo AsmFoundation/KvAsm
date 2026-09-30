@@ -242,7 +242,8 @@ public sealed partial class KvNodeClient
         using var watch = new TransferWatch(_options.TransferIdleTimeout, cancellationToken);
         try
         {
-            using AsyncClientStreamingCall<UploadFrame, UploadResponse> call = _invoker.AsyncClientStreamingCall(
+            // The whole transfer stays on the lane (connection) it starts on.
+            using AsyncClientStreamingCall<UploadFrame, UploadResponse> call = NextLane().Invoker.AsyncClientStreamingCall(
                 StreamingCodec.UploadMethod, host: null, new CallOptions(deadline: TransferDeadline(), cancellationToken: watch.Token));
             uint crc = 0;
             long sent = 0;
@@ -462,7 +463,8 @@ public sealed partial class KvNodeClient
         bool complete = false;
         try
         {
-            using AsyncServerStreamingCall<DownloadFrame> call = _invoker.AsyncServerStreamingCall(
+            // The whole transfer stays on the lane (connection) it starts on.
+            using AsyncServerStreamingCall<DownloadFrame> call = NextLane().Invoker.AsyncServerStreamingCall(
                 StreamingCodec.DownloadMethod, host: null, new CallOptions(deadline: TransferDeadline(), cancellationToken: watch.Token), request);
             IAsyncStreamReader<DownloadFrame> reader = call.ResponseStream;
             while (await reader.MoveNext(watch.Token).ConfigureAwait(false))

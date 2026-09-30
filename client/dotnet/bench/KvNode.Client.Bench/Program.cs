@@ -1,7 +1,7 @@
 // KvNode.Client.Bench — measures the .NET client's streaming calls against a
-// running server: N concurrent loops of UploadAsync (from memory) or
-// DownloadToAsync (into Stream.Null) over a fixed key set, a warm-up, then a
-// measured window. Prints one JSON object:
+// running server: N concurrent loops of UploadAsync (from memory),
+// DownloadToAsync (into Stream.Null) or — as a guard — unary GetAsync over a
+// fixed key set, a warm-up, then a measured window. Prints one JSON object:
 //   transfers, value MB/s, p50/p99 per transfer, client CPU (the whole
 //   process: thread pool, gRPC, GC), bytes the process allocated per transfer
 //   and per MiB moved, GC collections, and — with --server-pid, when the
@@ -13,13 +13,17 @@
 // megabytes of gen0 churn. This tool is how that is counted, before and
 // after, with the server and the client pinned to their own CPUs.
 //
-// Usage: KvNode.Client.Bench --address http://127.0.0.1:PORT --mode upload|download
+// Usage: KvNode.Client.Bench --address http://127.0.0.1:PORT --mode upload|download|get
 //          [--size BYTES] [--concurrency N] [--keys K] [--warmup S] [--seconds S]
-//          [--chunk BYTES] [--server-pid PID] [--window BYTES]
+//          [--chunk BYTES] [--server-pid PID] [--window BYTES] [--connections N]
+//          [--clients N]
+//   --mode get measures unary GetAsync of --size-byte values (Put first), the
+//   guard for changes aimed at transfers.
 //   --chunk 0 (the default) keeps the client library's own chunk defaults.
-//   --window sets the HTTP/2 stream receive window (SocketsHttpHandler.
-//   InitialHttp2StreamWindowSize) on a channel built here, to measure it
-//   without changing the library.
+//   --window / --connections set KvNodeClientOptions.StreamReceiveWindowBytes
+//   / Connections; 0 (the default) keeps the library's own.
+//   --clients N spreads the loops over N separate clients (loop i uses
+//   client i % N), each with its own connections.
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
@@ -33,7 +37,11 @@ internal static class Bench
     /// <summary>Largest number of latency samples kept per loop (preallocated: no garbage while measuring).</summary>
     private const int SampleCap = 1 << 18;
 
-    /// <summary>Parses the options, runs the phases and prints the JSON report.</summary>
+    /// <summary>
+    /// Parses the options, builds the clients (each with its own
+    /// <c>--connections</c> HTTP/2 connections), runs the phases and prints the
+    /// JSON report; disposes every client however the run ends.
+    /// </summary>
     /// <param name="args">Command line (see the file header).</param>
     /// <returns>0 on success, 1 when a transfer failed or returned wrong data, 2 for bad usage.</returns>
     public static async Task<int> RunAsync(string[] args)
@@ -43,8 +51,9 @@ internal static class Bench
         {
             o = Options.Parse(args);
         }
-        catch (ArgumentException e)
+        catch (Exception e) when (e is ArgumentException or FormatException or OverflowException)
         {
+            // A bad option or a number that does not parse: usage, not a crash.
             Console.Error.WriteLine($"KvNode.Client.Bench: {e.Message}");
             return 2;
         }
@@ -54,25 +63,47 @@ internal static class Bench
         var defaults = new KvNodeClientOptions();
         var clientOptions = new KvNodeClientOptions
         {
-            // Uploads above the default 64 MiB would be refused client-side.
+            // Uploads above the default 64 MiB would be refused client-side;
+            // get mode Puts its values, which MaxValueBytes must admit.
             MaxUploadBytes = Math.Max(64 * 1024 * 1024, o.Size),
+            MaxValueBytes = Math.Max(defaults.MaxValueBytes, o.Mode == "get" ? o.Size : 0),
             UploadChunkBytes = o.Chunk > 0 ? o.Chunk : defaults.UploadChunkBytes,
             DownloadChunkBytes = o.Chunk > 0 ? Math.Min(o.Chunk, 1024 * 1024) : defaults.DownloadChunkBytes,
             TransferIdleTimeout = TimeSpan.FromSeconds(30),
+            StreamReceiveWindowBytes = o.Window > 0 ? o.Window : defaults.StreamReceiveWindowBytes,
+            Connections = o.Connections > 0 ? o.Connections : defaults.Connections,
         };
 
-        // The client's own channel settings, except (--window) the HTTP/2
-        // stream receive window, to measure its effect without changing the
-        // library: the channel is then built here and passed in.
-        Grpc.Net.Client.GrpcChannelOptions channelOptions = KvNodeClient.CreateChannelOptions(clientOptions);
-        if (o.Window > 0 && channelOptions.HttpHandler is SocketsHttpHandler handler)
+        // The library builds its own channels (the Uri constructor), exactly
+        // as an application would; each client owns and disposes them.
+        var clients = new KvNodeClient[o.Clients];
+        try
         {
-            handler.InitialHttp2StreamWindowSize = o.Window;
+            for (int i = 0; i < clients.Length; i++)
+            {
+                clients[i] = new KvNodeClient(new Uri(o.Address), clientOptions);
+            }
+
+            return await RunLoopsAsync(o, clients).ConfigureAwait(false);
         }
+        finally
+        {
+            foreach (KvNodeClient? c in clients)
+            {
+                c?.Dispose();
+            }
+        }
+    }
 
-        using var channel = Grpc.Net.Client.GrpcChannel.ForAddress(o.Address, channelOptions);
-        using var client = new KvNodeClient(channel, clientOptions);
-
+    /// <summary>Preloads the keys (downloads), runs the loops through warm-up and the measured window, reports.</summary>
+    /// <param name="o">Options.</param>
+    /// <param name="clients">The clients; loop i uses <c>clients[i % clients.Length]</c>.</param>
+    /// <returns>0 on success, 1 when a transfer failed or returned wrong data.</returns>
+    private static async Task<int> RunLoopsAsync(Options o, KvNodeClient[] clients)
+    {
+        // The preload goes through the first client: which connection stored
+        // a key makes no difference to the server's store.
+        KvNodeClient client = clients[0];
         byte[] value = new byte[o.Size];
         for (int i = 0; i < value.Length; i++)
         {
@@ -93,13 +124,22 @@ internal static class Bench
                 await client.UploadAsync(key, value).ConfigureAwait(false);
             }
         }
+        else if (o.Mode == "get")
+        {
+            // Unary values go in with Put, as Get's own path would see them.
+            foreach (byte[] key in keys)
+            {
+                await client.PutAsync(key, value).ConfigureAwait(false);
+            }
+        }
 
         var state = new RunState(o.Concurrency, SampleCap);
         Task[] loops = new Task[o.Concurrency];
         for (int i = 0; i < loops.Length; i++)
         {
             int id = i;
-            loops[i] = Task.Run(() => LoopAsync(client, o, keys, value, state, id));
+            KvNodeClient mine = clients[i % clients.Length];
+            loops[i] = Task.Run(() => LoopAsync(mine, o, keys, value, state, id));
         }
 
         await Task.Delay(TimeSpan.FromSeconds(o.Warmup)).ConfigureAwait(false);
@@ -130,29 +170,38 @@ internal static class Bench
     /// <param name="state">Shared counters and this loop's sample buffer.</param>
     /// <param name="id">Loop index (its sample buffer and random stream).</param>
     /// <returns>A task that completes when the loop stops.</returns>
-    /// <exception cref="InvalidDataException">A download returned the wrong length.</exception>
+    /// <exception cref="InvalidDataException">A download or get returned no value or the wrong length.</exception>
     private static async Task LoopAsync(KvNodeClient client, Options o, byte[][] keys, byte[] value, RunState state, int id)
     {
         var rng = new Random(id + 1);
         long[] samples = state.Samples[id];
-        bool upload = o.Mode == "upload";
         try
         {
             while (!state.Stop)
             {
                 byte[] key = keys[rng.Next(keys.Length)];
                 long t0 = Stopwatch.GetTimestamp();
-                if (upload)
+                switch (o.Mode)
                 {
-                    await client.UploadAsync(key, value).ConfigureAwait(false);
-                }
-                else
-                {
-                    DownloadResult? r = await client.DownloadToAsync(key, Stream.Null).ConfigureAwait(false);
-                    if (r is null || r.Length != value.Length)
-                    {
-                        throw new InvalidDataException($"download of {Encoding.ASCII.GetString(key)} returned {r?.Length.ToString(CultureInfo.InvariantCulture) ?? "no value"}");
-                    }
+                    case "upload":
+                        await client.UploadAsync(key, value).ConfigureAwait(false);
+                        break;
+                    case "download":
+                        DownloadResult? r = await client.DownloadToAsync(key, Stream.Null).ConfigureAwait(false);
+                        if (r is null || r.Length != value.Length)
+                        {
+                            throw new InvalidDataException($"download of {Encoding.ASCII.GetString(key)} returned {r?.Length.ToString(CultureInfo.InvariantCulture) ?? "no value"}");
+                        }
+
+                        break;
+                    default:
+                        ReadOnlyMemory<byte>? v = await client.GetAsync(key).ConfigureAwait(false);
+                        if (v is not { } got || got.Length != value.Length)
+                        {
+                            throw new InvalidDataException($"get of {Encoding.ASCII.GetString(key)} returned {(v is { } g ? g.Length.ToString(CultureInfo.InvariantCulture) : "no value")}");
+                        }
+
+                        break;
                 }
 
                 long elapsed = Stopwatch.GetTimestamp() - t0;
@@ -196,7 +245,7 @@ internal static class Bench
         double serverCpu = a.ServerCpuNs >= 0 && b.ServerCpuNs >= 0 ? (b.ServerCpuNs - a.ServerCpuNs) / 1e9 : -1;
         var s = new StringBuilder();
         s.Append(CultureInfo.InvariantCulture, $"{{\"tool\":\"KvNode.Client.Bench\",\"mode\":\"{o.Mode}\",\"size\":{o.Size},\"concurrency\":{o.Concurrency},");
-        s.Append(CultureInfo.InvariantCulture, $"\"chunk\":{o.Chunk},\"window\":{o.Window},\"keys\":{o.Keys},\"seconds\":{secs:F3},\"transfers\":{transfers},");
+        s.Append(CultureInfo.InvariantCulture, $"\"chunk\":{o.Chunk},\"window\":{o.Window},\"connections\":{o.Connections},\"clients\":{o.Clients},\"keys\":{o.Keys},\"seconds\":{secs:F3},\"transfers\":{transfers},");
         s.Append(CultureInfo.InvariantCulture, $"\"value_bytes_per_sec\":{bytes / secs:F0},\"p50_us\":{Pct(50):F1},\"p99_us\":{Pct(99):F1},");
         s.Append(CultureInfo.InvariantCulture, $"\"client_cpu_s\":{(b.ClientCpu - a.ClientCpu).TotalSeconds:F3},\"server_cpu_s\":{serverCpu:F3},");
         s.Append(CultureInfo.InvariantCulture, $"\"alloc_bytes\":{b.Allocated - a.Allocated},\"alloc_per_transfer\":{(transfers > 0 ? (b.Allocated - a.Allocated) / (double)transfers : 0):F0},");
@@ -208,16 +257,18 @@ internal static class Bench
 }
 
 /// <summary>Command-line options (see the file header).</summary>
-internal sealed record Options(string Address, string Mode, int Size, int Concurrency, int Keys, double Warmup, double Seconds, int Chunk, int ServerPid, int Window)
+internal sealed record Options(string Address, string Mode, int Size, int Concurrency, int Keys, double Warmup, double Seconds, int Chunk, int ServerPid, int Window, int Connections, int Clients)
 {
     /// <summary>Parses the command line.</summary>
     /// <param name="args">Arguments.</param>
     /// <returns>The options.</returns>
     /// <exception cref="ArgumentException">A missing, unknown or out-of-range option.</exception>
+    /// <exception cref="FormatException">A numeric option's value is not a number.</exception>
+    /// <exception cref="OverflowException">A numeric option's value does not fit its type.</exception>
     public static Options Parse(string[] args)
     {
         string? address = null, mode = null;
-        int size = 1 << 20, concurrency = 4, keys = 64, chunk = 0, serverPid = 0, window = 0;
+        int size = 1 << 20, concurrency = 4, keys = 64, chunk = 0, serverPid = 0, window = 0, connections = 0, clients = 1;
         double warmup = 2, seconds = 6;
         for (int i = 0; i < args.Length; i++)
         {
@@ -234,21 +285,37 @@ internal sealed record Options(string Address, string Mode, int Size, int Concur
                 case "--chunk": chunk = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                 case "--server-pid": serverPid = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                 case "--window": window = int.Parse(Next(), CultureInfo.InvariantCulture); break;
+                case "--connections": connections = int.Parse(Next(), CultureInfo.InvariantCulture); break;
+                case "--clients": clients = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                 default: throw new ArgumentException($"unknown option {args[i]}");
             }
         }
 
-        if (address is null || mode is not ("upload" or "download"))
+        if (address is null || mode is not ("upload" or "download" or "get"))
         {
-            throw new ArgumentException("--address and --mode upload|download are required");
+            throw new ArgumentException("--address and --mode upload|download|get are required");
         }
 
-        if (size < 0 || concurrency < 1 || keys < 1 || seconds <= 0 || warmup < 0 || chunk < 0 || window < 0)
+        if (size < 0 || concurrency < 1 || keys < 1 || seconds <= 0 || warmup < 0 || chunk < 0 || clients < 1)
         {
-            throw new ArgumentException("size, chunk, window >= 0; concurrency, keys >= 1; seconds > 0");
+            throw new ArgumentException("size, chunk >= 0; concurrency, keys, clients >= 1; seconds > 0");
         }
 
-        return new Options(address, mode, size, concurrency, keys, warmup, seconds, chunk, serverPid, window);
+        // 0 keeps the library's default; other values must be ones the
+        // library accepts, or the client constructor would throw mid-run.
+        if (connections is < 0 or > 64)
+        {
+            throw new ArgumentException("--connections is 0 (the library's) or 1..64");
+        }
+
+        // .NET's handler refuses other windows with an exception at channel
+        // creation; say so here, as a usage error.
+        if (window != 0 && window is < 65535 or > 16 * 1024 * 1024)
+        {
+            throw new ArgumentException("--window is 0 (the library's) or 65535..16777216");
+        }
+
+        return new Options(address, mode, size, concurrency, keys, warmup, seconds, chunk, serverPid, window, connections, clients);
     }
 }
 

@@ -78,4 +78,6 @@ unpredictable to clients, which defeats hash-flooding attacks.
   written concurrently by other connections.
 - .NET `ConcurrentCallsOverOneClientStayConsistent`: 64 tasks multiplexed on
   one HTTP/2 connection, flipping a shared key between two uniform values;
-  any torn read would mix letters.
+  any torn read would mix letters. Since the client spreads calls over 4
+  connections by default (2026-09-30, ADR 0010), it also runs over four,
+  where a Put and the Get after it usually travel on different connections.
