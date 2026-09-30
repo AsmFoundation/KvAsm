@@ -287,6 +287,43 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     <0.5%.
   - ✗ wider tag scans: one SSE2 compare already covers both buckets'
     12 slots; AVX2 has nothing more to compare.
+- **Carry-less folding for CRCs (PCLMULQDQ / VPCLMULQDQ)**
+  - *What:* replace a chain of `crc32` instructions (3-cycle latency: ONE
+    dependency chain, ~2.7 bytes/cycle) by folding 128-bit blocks forward
+    with two 64x32 carry-less multiplies per block and precomputed
+    x^e mod P constants; eight independent lanes (four YMM or eight XMM)
+    hide the multiplier's latency; finish the last block with two `crc32`
+    instructions from a zero register (no Barrett step). Constants from
+    the NASM preprocessor (bit-reflected x^(D+63), x^(D-1) mod P for fold
+    distance D); prove the math in a scripting language first (the
+    2026-09-30 Python prototype had it right before any assembly).
+  - *KvNode:* ✅ `crc32c.asm` (Upload/Download, ADR 0010), dispatch
+    vpclmul > pclmul > sse42 > table by CPUID + XGETBV. On a 16 KiB chunk
+    in cache, fused with the copy: 88 GB/s (vpclmul), 45 (pclmul), 14.8
+    (crc32 chain), 3.2 (tables); memcpy 70-210. **Server A/B, 6/6 blocks
+    each, p=0.031: uploads +7..+13%, downloads +22..+25%** — the chain had
+    been 49% (upload) and 34% (download) of a worker's CPU. The .NET
+    client got the same algorithm (Pclmulqdq[.V256]): client CPU/GB −9%.
+  - *Catch:* where both sides stream from DRAM every variant hits the
+    same ~12-13 GB/s wall — the gain is in cache, and the transfer paths
+    always have one side hot (the read buffer, the output buffer).
+- **Non-temporal stores into a cold, not-soon-read destination**
+  - *What:* `vmovntdq`/`movntdq` skip the read-for-ownership of every
+    destination line; the copy streams to memory instead of reading it
+    first. `sfence` before publishing (NT stores are weakly ordered).
+  - *Why:* a copy into cold lines is bounded by those reads, not by the
+    copy: memcpy 16K hot → 64 MiB span measured 16-18 GB/s.
+  - *KvNode:* ✅ `kv_crc32c_copy_nt` for uploads of ≥ 64 KiB (the record
+    is cold and nobody reads it until a later Get/Download). Microbench
+    (16 KiB calls, hot source, 64 MiB of destinations): **40-44 GB/s vs
+    16-18 temporal (2.4x)**; server A/B 6/6, p=0.031: **uploads +13%
+    (64 KiB values), +31% (1 MiB), +25% (16 MiB)**; download control
+    0.997. **Align NT stores to whole cache lines**: 32-byte-aligned
+    blocks straddling lines ran 32-39 GB/s, 64-byte-aligned 40-44 (a
+    write-combining buffer only streams out cheaply when full).
+  - *Catch:* into a HOT destination NT is 2x slower (42 vs 88 GB/s), and
+    the data leaves the cache: never for the download's output buffer
+    (measured: 16.7 vs 18.8 GB/s from cold records into a hot buffer).
 
 ## 5. Allocation
 
@@ -332,7 +369,14 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Batch syscalls**
   - *What:* one `send` per connection per loop pass (coalesced frames), big
     `recv` chunks.
-  - *KvNode:* ✅ output coalescing; 64 KiB reads.
+  - *KvNode:* ✅ output coalescing; 256 KiB reads (`READ_CHUNK`, was 64
+    KiB). A read that completes several uploads sends their responses in
+    one `sendto` (one client wakeup) instead of one each, and the
+    partial-frame carry is copied 4x less per byte: **uploads of 64 KiB
+    values 1.88x (6/6, p=0.031; server CPU/byte −47%), 1 MiB +13%, 16 MiB
+    +5%**; GETs flat. 512 KiB and 1 MiB reads lost 7-17% on large uploads
+    — the buffer stops fitting in L2 beside the socket data the kernel
+    copies in — so the size is a measured optimum, not "bigger is better".
 - **Flush once per event-loop pass, after all of its input** (Redis's
   `beforeSleep` writes)
   - *What:* phase 1 reads and processes every ready connection and frames
@@ -575,6 +619,32 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   The instrument that proved the mechanism was the within-run profile
   share (`memmove` 4.2% → 1.05%); a single run's throughput is not
   evidence.
+- **Lessons of the streaming session (2026-09-30,
+  `benchmarks/results/2026-09-30-streaming`):**
+  - *Exact per-process CPU:* `/proc/PID/task/*/schedstat` (first field,
+    ns) instead of 10 ms ticks (`kvbench --server-pid`). Under WSL2 it
+    reads a pinned busy loop as 104.4% of a CPU: the scheduler clock runs
+    fast against wall time, which cancels in ratios but not in absolute
+    CPU %.
+  - *A process stuck in D state poisons every tool that reads all of
+    /proc:* `ps`, `top`, `pgrep -f` and `perf record -a` (which reads
+    every process's maps at start) hang forever on its mmap lock and
+    become D-state themselves. Profile by PID (`perf record -p`), list
+    processes from `/proc/*/stat` only (the probe scripts do), and let the
+    user restart the VM.
+  - *.NET clients:* by default the thread pool spin-waits for work — 40%
+    of a client's samples sat on one spin address, and a download was
+    FASTER with `DOTNET_ThreadPool_UnfairSemaphoreSpinLimit=0` because the
+    spinners took the cores. Symbolize JIT code with
+    `DOTNET_PerfMapEnabled=1` plus `DOTNET_EnableWriteXorExecute=0` (the
+    W^X double mapping hides JIT frames from perf maps). Two .NET clients
+    run concurrently disturbed each other (pairs swung 0.83-1.15):
+    compare .NET builds sequentially in ABBA order, one client alone on
+    all E-cores; allocation counts (`GC.GetTotalAllocatedBytes(true)`) are
+    exact and need no statistics.
+  - *Screen, then confirm:* 2-block screens of four read sizes found the
+    optimum (and that bigger lost on large uploads) before one 6-block
+    confirmation — cheaper than confirming every candidate.
 
 ## Beyond this cookbook
 

@@ -34,7 +34,9 @@ flowchart LR
    `SO_REUSEPORT` listener. The connection stays on that thread for life,
    so connection state needs no locks.
 2. **Read.** The worker's `epoll` loop hands the connection to the HTTP/2
-   engine (`h2n.asm`), which reads up to 64 KiB, parses frames, applies
+   engine (`h2n.asm`), which reads up to 256 KiB (`READ_CHUNK`: measured
+   against 64 KiB-1 MiB, [ADR 0010](adr/0010-streaming-upload-download.md)),
+   parses frames, applies
    HPACK and flow control and enforces stream limits. Frames are parsed in
    place in the read buffer, and a partial frame is carried to the next
    read. Header blocks are decoded by `hpack.asm`, whose per-field
@@ -170,10 +172,18 @@ flowchart LR
   marked deferred instead of freed, and the last `kv_store_unpin` frees it.
   Its bytes stay counted in `mem_used` until then, so a pinned 64 MiB
   record keeps holding 64 MiB of `KVNODE_MAX_MEMORY_MB`.
-- **CRC-32C** (`crc32c.asm`): the SSE4.2 `crc32` instruction when CPUID has
-  it, else slicing-by-8 tables that NASM generates at assembly time;
-  `KVNODE_CRC32C` forces either. Fused with the copy it runs at ~16 GB/s
-  (SSE4.2) or ~3.3 GB/s (tables) on the development machine.
+- **CRC-32C** (`crc32c.asm`), fused with the copy that moves the bytes
+  anyway (an upload chunk into its record, a download chunk into the
+  output buffer). Four paths, the fastest the CPU has chosen at startup
+  (`KVNODE_CRC32C` forces one): carry-less folding on eight 128-bit lanes
+  held in four 256-bit registers (VPCLMULQDQ + AVX2) or eight SSE registers
+  (PCLMULQDQ), the `crc32` instruction, and slicing-by-8 tables; NASM
+  computes the tables and the fold constants at assembly time. On a 16 KiB
+  chunk in cache: ~88, ~45, ~15 and ~3.2 GB/s. A large upload's record is
+  written with non-temporal stores (`kv_crc32c_copy_nt`, uploads of 64 KiB
+  and more): its lines are cold and not read soon, so skipping the
+  read-for-ownership doubles that copy (2.4x measured), and the cache keeps
+  what is used again.
 - **Idle timeout and stalled transfers.** Bytes the server manages to send
   count as activity, so a long Download whose client never needs to speak is
   not cut. A peer that stops reading at the TCP level is different: the idle

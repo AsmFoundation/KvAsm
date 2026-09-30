@@ -400,8 +400,16 @@ kvbench also works on its own, against any server:
 kvbench --protocol resp|memcache|grpc --port P [--threads 16] [--connections 64]
         [--depth 16] [--keys 1000000] [--value-size 100] [--read-ratio 1.0]
         [--zipf 0.99] [--rate OPS] [--load] [--warmup 5] [--duration 10]
-        [--busy-poll]
+        [--busy-poll] [--upload | --download [--chunk BYTES]] [--server-pid PID]
 ```
+
+`--upload` / `--download` (gRPC, KvNode's streaming calls) make every
+request move one whole `--value-size` value, in `--chunk`-byte messages;
+`--load` then preloads with uploads, and every byte and the server's
+CRC-32C are verified. `--server-pid` reads the server's CPU from its
+threads' `schedstat` when it runs in kvbench's PID namespace (ns-exact,
+instead of a cgroup file). The streaming A/B drivers and their results
+are in `results/2026-09-30-streaming`.
 
 `--busy-poll` is a diagnostic. Client threads never sleep, so a server's
 send finds no one to wake. On one machine that removes the cost the server

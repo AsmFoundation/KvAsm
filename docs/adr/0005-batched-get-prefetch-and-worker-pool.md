@@ -128,7 +128,9 @@ Medians of 8 runs. "Paired" is the median over repetitions of each build
   read-then-write order must wait for the read's response, as it already
   had to. GETs among themselves are answered in arrival order.
 - **Latency.** A GET is answered once the rest of its read has been
-  parsed, not immediately. That delay is bounded by one 64 KiB read, and
+  parsed, not immediately. That delay is bounded by one 64 KiB read (256
+  KiB since 2026-09-30: `READ_CHUNK` was raised for streaming uploads,
+  GET throughput and latency measured unchanged — ADR 0010), and
   a read that carries a single request sees no change. E3 (one request in
   flight per connection) and E4 (open-loop latency) measure the effect.
 - **Memory.** Batched Streams live until the end of their read, which

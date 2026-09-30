@@ -16,6 +16,7 @@
 // Usage: KvNode.Client.Bench --address http://127.0.0.1:PORT --mode upload|download
 //          [--size BYTES] [--concurrency N] [--keys K] [--warmup S] [--seconds S]
 //          [--chunk BYTES] [--server-pid PID] [--window BYTES]
+//   --chunk 0 (the default) keeps the client library's own chunk defaults.
 //   --window sets the HTTP/2 stream receive window (SocketsHttpHandler.
 //   InitialHttp2StreamWindowSize) on a channel built here, to measure it
 //   without changing the library.
@@ -48,12 +49,15 @@ internal static class Bench
             return 2;
         }
 
+        // --chunk 0 keeps the library's own defaults, so two builds of the
+        // client compare as a user would run them (their defaults differ).
+        var defaults = new KvNodeClientOptions();
         var clientOptions = new KvNodeClientOptions
         {
             // Uploads above the default 64 MiB would be refused client-side.
             MaxUploadBytes = Math.Max(64 * 1024 * 1024, o.Size),
-            UploadChunkBytes = o.Chunk > 0 ? o.Chunk : 64 * 1024,
-            DownloadChunkBytes = Math.Min(o.Chunk, 1024 * 1024),
+            UploadChunkBytes = o.Chunk > 0 ? o.Chunk : defaults.UploadChunkBytes,
+            DownloadChunkBytes = o.Chunk > 0 ? Math.Min(o.Chunk, 1024 * 1024) : defaults.DownloadChunkBytes,
             TransferIdleTimeout = TimeSpan.FromSeconds(30),
         };
 

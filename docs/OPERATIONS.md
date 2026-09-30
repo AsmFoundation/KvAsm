@@ -23,7 +23,7 @@ never silently falls back to a default.
 | `KVNODE_IDLE_TIMEOUT_SEC` | 0–86400 | 300 | connections with no byte received or sent get GOAWAY and are closed; one whose peer does not even read that is dropped at the next expiry; 0 = never |
 | `KVNODE_SHUTDOWN_GRACE_SEC` | 0–3600 | 10 | time in-flight requests get after SIGTERM |
 | `KVNODE_CONN_BUFFER_MB` | 1–4096 | 64 | request bytes one connection may buffer (the excess stream is reset with `ENHANCE_YOUR_CALM`), and the total declared size of one connection's uploads in progress (the excess upload is refused, `RESOURCE_EXHAUSTED`) |
-| `KVNODE_CRC32C` | `auto` \| `sse42` \| `table` | `auto` | CRC-32C of Upload/Download: `auto` uses the SSE4.2 instruction when the CPU has it (~16 GB/s), else tables (~3.3 GB/s); `sse42` on a CPU without it refuses to start (exit 2) |
+| `KVNODE_CRC32C` | `auto` \| `vpclmul` \| `pclmul` \| `sse42` \| `table` | `auto` | CRC-32C of Upload/Download: `auto` takes the fastest path the CPU has — `vpclmul` (256-bit carry-less folding, AVX2 + VPCLMULQDQ: Ice Lake, Zen 3 and later; ~88 GB/s fused with a 16 KiB copy in cache), `pclmul` (128-bit folding, any x86-64 since 2010; ~45 GB/s), `sse42` (the `crc32` instruction, one dependency chain; ~15 GB/s), `table` (slicing-by-8; ~3.2 GB/s). Forcing a mode the CPU lacks refuses to start (exit 2). All give identical checksums |
 | `KVNODE_SNAPSHOT` | path | unset | snapshot to load at startup (see Snapshots) |
 | `KVNODE_SCAN` | `swar` \| `sse2` | `sse2` | how lookups match tags. `sse2` matches both candidate buckets in one compare: 2–6% faster per batched lookup, and SSE2 is part of every x86-64 CPU. `swar` is the scalar path. Results are identical ([ADR 0006](adr/0006-store-memory-levels-simd-and-private-caches.md)) |
 | `KVNODE_CACHE_L1_BITS` | 0–24 | 0 | per-worker private L1 record cache of 2^bits entries (32 bytes each); 0 = off. Measured slower than the CPU's own caches except for tiny hot sets, so off by default (ADR 0006) |
@@ -62,7 +62,7 @@ One line per event on stderr, written with a single `write(2)`, so lines from
 different threads never interleave:
 
 ```
-ts=1790373017.207 level=INFO msg="starting" version=0.1.0 port=50051 workers=2 capacity=1000000 ... max_upload_bytes=67108864 crc32c=sse42 snapshot=none
+ts=1790373017.207 level=INFO msg="starting" version=0.1.0 port=50051 workers=2 capacity=1000000 ... max_upload_bytes=67108864 crc32c=vpclmul snapshot=none
 ts=1790373017.208 level=INFO msg="listening" transport=h2c port=50051 workers=2
 ts=1790373019.575 level=INFO msg="shutdown requested" signal=15
 ts=1790373019.575 level=INFO msg="stopped" connections=2 requests=1 errors=0 keys=0 pinned=0 deferred=0
@@ -70,7 +70,8 @@ ts=1790373019.575 level=INFO msg="stopped" connections=2 requests=1 errors=0 key
 
 `ts` is Unix time with milliseconds. Errors carry a `reason`, and `record`
 or `errno` where one applies. Failure lines use `level=ERROR`. The starting
-line reports the CRC-32C implementation in force (`crc32c=sse42|table`).
+line reports the CRC-32C implementation in force
+(`crc32c=vpclmul|pclmul|sse42|table`).
 `pinned` and `deferred` in the stopped line count Download pins still held,
 and replaced records still waiting for one, after every connection closed:
 both are always 0 — anything else is a leak worth a bug report.

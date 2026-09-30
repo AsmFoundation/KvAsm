@@ -83,10 +83,20 @@ to be 0.
 
 ### 4. CRC-32C
 
-Castagnoli CRC (`crc32c.asm`): the SSE4.2 `crc32` instruction where CPUID
-has it, else slicing-by-8 tables that NASM generates at assembly time;
-`KVNODE_CRC32C=auto|sse42|table`. Fused with the copy: ~16 GB/s (SSE4.2),
-~3.3 GB/s (tables) on the development machine.
+Castagnoli CRC (`crc32c.asm`), always fused with the copy the bytes need
+anyway, in four implementations chosen once at startup
+(`KVNODE_CRC32C=auto|vpclmul|pclmul|sse42|table`; `auto` = the fastest the
+CPU has): carry-less folding on eight 128-bit lanes in four 256-bit
+registers (VPCLMULQDQ + AVX2) or in eight SSE registers (PCLMULQDQ), the
+SSE4.2 `crc32` instruction, and slicing-by-8 tables. NASM computes the
+tables and the fold constants (x^e mod P, bit-reflected) at assembly time;
+the folded block is finished by two `crc32` instructions, so no Barrett
+reduction is needed. Fused with a 16 KiB copy in cache: ~88, ~45, ~15 and
+~3.2 GB/s. The first version had only the `crc32` chain (3-cycle latency,
+~2.7 bytes per cycle): a profile showed it was 49% of an upload worker's
+CPU and 34% of a download worker's, which is why the folding paths exist
+(see Performance below). Uploads of 64 KiB and more write their record with
+non-temporal stores (`kv_crc32c_copy_nt`).
 
 ### 5. What the engine and the worker had to learn
 
@@ -101,6 +111,43 @@ has it, else slicing-by-8 tables that NASM generates at assembly time;
   its socket cannot even receive the idle GOAWAY; such a connection is now
   destroyed at the next expiry (`CONN_IDLE_CLOSING`). Before this, it held
   its streams — a pinned record, a reservation — forever.
+
+### 6. Performance (measured 2026-09-30)
+
+Measured with `kvbench --upload/--download` and profiled with perf by PID
+(`benchmarks/results/2026-09-30-streaming`). Every change was kept only
+after a concurrent paired A/B (6 blocks, both binaries running at once on
+separate pinned cores, slots swapped per block; 6/6 = sign test p = 0.031):
+
+| Change | Why (profile) | Effect |
+|---|---|---|
+| Folding CRC-32C (VPCLMULQDQ / PCLMULQDQ, section 4) | the one-chain `crc32` copy was 49% of an upload worker and 34% of a download worker | uploads +7..+13%, downloads +22..+25% |
+| Non-temporal stores into records of uploads ≥ 64 KiB (`UPLOAD_NT_MIN`, cache-line aligned) | the faster copy was then bound by reading every cold destination line first | uploads +13% (64 KiB values), +31% (1 MiB), +25% (16 MiB); downloads unchanged |
+| 256 KiB reads (`READ_CHUNK`, was 64 KiB) | one read completed at most one small upload, so every response went out in its own `sendto`; the partial-frame carry cost 5.6% | uploads of 64 KiB values 1.88x, 1 MiB +13%, 16 MiB +5%; GETs and downloads unchanged (512 KiB and 1 MiB lost 7-17% on large uploads) |
+
+All three together, the original build against the final one (same A/B,
+6/6 everywhere): uploads **2.30x** (64 KiB values), **1.70x** (1 MiB),
+**1.56x** (16 MiB); downloads **1.24x / 1.28x / 1.22x**; GETs unchanged
+(1.000). One server core now takes ~11 GB/s of 1 MiB uploads and ~6 GB/s
+of 1 MiB downloads from `kvbench` over loopback. What remains of a download
+worker is mostly the kernel: the send copy and, on one machine, waking the
+co-located client — a topology cost a remote client does not cause
+(ADR 0009).
+
+The .NET client was the bottleneck by several times (the original build:
+2.0 GB/s of uploads on 4.7 client cores against a half-idle server core)
+and got three changes: the same folding CRC (`Crc32C`), allocation-free
+Upload/Download marshallers (`StreamingCodec`: a 1 MiB download allocated
+1,072 KB — a message and a copy of every chunk — now 23 KB), and 1 MiB
+upload chunks by default (download chunks stay 64 KiB: bigger ones were
+slower). Original against final, each with its defaults (6/6 everywhere):
+uploads +39% / +38% (1 MiB / 16 MiB values), downloads +20% / +29%,
+client CPU per GB −23..−30%. What the client still spends is mostly inside
+the HTTP/2 stack (cross-thread wakeups per frame). The bigger chunks
+exposed a hang — an upload the server refused at once could wait forever
+for flow-control credit (a first message larger than the stream window) —
+fixed by a small first message and by racing pending writes against the
+response.
 
 ## Alternatives considered
 

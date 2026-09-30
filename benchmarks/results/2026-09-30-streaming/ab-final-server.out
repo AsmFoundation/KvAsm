@@ -1,0 +1,92 @@
+block 1 upload:65536:8:4           A     3487 MB/s  0.303 ns/B p50      569 | B     8091 MB/s  0.131 ns/B p50      196 | B/A 2.320 (slot0=A)
+block 1 upload:1048576:4:1         A     6469 MB/s  0.163 ns/B p50      618 | B    11064 MB/s  0.095 ns/B p50      358 | B/A 1.710 (slot0=A)
+block 1 upload:16777216:2:1        A     5961 MB/s  0.173 ns/B p50     5407 | B     9202 MB/s  0.109 ns/B p50     3260 | B/A 1.544 (slot0=A)
+block 1 download:65536:8:4         A     4176 MB/s  0.254 ns/B p50      489 | B     5396 MB/s  0.196 ns/B p50      371 | B/A 1.292 (slot0=A)
+block 1 download:1048576:4:1       A     4665 MB/s  0.227 ns/B p50      864 | B     6321 MB/s  0.167 ns/B p50      635 | B/A 1.355 (slot0=A)
+block 1 download:16777216:2:1      A     5648 MB/s  0.188 ns/B p50     5865 | B     6937 MB/s  0.153 ns/B p50     4751 | B/A 1.228 (slot0=A)
+block 1 get:100:64:16              A     2481 kGET/s 428.235 ns/GET p50      350 | B     2510 kGET/s 423.318 ns/GET p50      350 | B/A 1.012 (slot0=A)
+block 2 upload:65536:8:4           A     3529 MB/s  0.300 ns/B p50      561 | B     8101 MB/s  0.131 ns/B p50      196 | B/A 2.296 (slot0=B)
+block 2 upload:1048576:4:1         A     6412 MB/s  0.164 ns/B p50      627 | B    10915 MB/s  0.097 ns/B p50      362 | B/A 1.702 (slot0=B)
+block 2 upload:16777216:2:1        A     5906 MB/s  0.177 ns/B p50     5407 | B     9225 MB/s  0.110 ns/B p50     3326 | B/A 1.562 (slot0=B)
+block 2 download:65536:8:4         A     4367 MB/s  0.243 ns/B p50      473 | B     5205 MB/s  0.204 ns/B p50      387 | B/A 1.192 (slot0=B)
+block 2 download:1048576:4:1       A     4867 MB/s  0.217 ns/B p50      823 | B     5914 MB/s  0.179 ns/B p50      684 | B/A 1.215 (slot0=B)
+block 2 download:16777216:2:1      A     5500 MB/s  0.192 ns/B p50     5997 | B     6568 MB/s  0.161 ns/B p50     5014 | B/A 1.194 (slot0=B)
+block 2 get:100:64:16              A     2560 kGET/s 414.020 ns/GET p50      346 | B     2521 kGET/s 420.227 ns/GET p50      346 | B/A 0.985 (slot0=B)
+block 3 upload:65536:8:4           A     3512 MB/s  0.302 ns/B p50      569 | B     8067 MB/s  0.131 ns/B p50      196 | B/A 2.297 (slot0=A)
+block 3 upload:1048576:4:1         A     6400 MB/s  0.165 ns/B p50      627 | B    10922 MB/s  0.097 ns/B p50      362 | B/A 1.707 (slot0=A)
+block 3 upload:16777216:2:1        A     5774 MB/s  0.179 ns/B p50     5538 | B     9211 MB/s  0.109 ns/B p50     3359 | B/A 1.595 (slot0=A)
+block 3 download:65536:8:4         A     4084 MB/s  0.259 ns/B p50      498 | B     5443 MB/s  0.195 ns/B p50      367 | B/A 1.333 (slot0=A)
+block 3 download:1048576:4:1       A     4424 MB/s  0.239 ns/B p50      913 | B     6063 MB/s  0.175 ns/B p50      668 | B/A 1.370 (slot0=A)
+block 3 download:16777216:2:1      A     5584 MB/s  0.190 ns/B p50     5931 | B     6837 MB/s  0.155 ns/B p50     4817 | B/A 1.224 (slot0=A)
+block 3 get:100:64:16              A     2503 kGET/s 424.117 ns/GET p50      350 | B     2503 kGET/s 424.069 ns/GET p50      350 | B/A 1.000 (slot0=A)
+block 4 upload:65536:8:4           A     3495 MB/s  0.303 ns/B p50      561 | B     8027 MB/s  0.132 ns/B p50      198 | B/A 2.296 (slot0=B)
+block 4 upload:1048576:4:1         A     6093 MB/s  0.173 ns/B p50      651 | B    10394 MB/s  0.102 ns/B p50      375 | B/A 1.706 (slot0=B)
+block 4 upload:16777216:2:1        A     5883 MB/s  0.176 ns/B p50     5472 | B     9082 MB/s  0.111 ns/B p50     3391 | B/A 1.544 (slot0=B)
+block 4 download:65536:8:4         A     4148 MB/s  0.256 ns/B p50      494 | B     4751 MB/s  0.223 ns/B p50      428 | B/A 1.145 (slot0=B)
+block 4 download:1048576:4:1       A     4736 MB/s  0.223 ns/B p50      848 | B     5675 MB/s  0.187 ns/B p50      709 | B/A 1.198 (slot0=B)
+block 4 download:16777216:2:1      A     5520 MB/s  0.191 ns/B p50     5997 | B     6716 MB/s  0.157 ns/B p50     4948 | B/A 1.217 (slot0=B)
+block 4 get:100:64:16              A     2516 kGET/s 423.339 ns/GET p50      346 | B     2510 kGET/s 424.321 ns/GET p50      350 | B/A 0.998 (slot0=B)
+block 5 upload:65536:8:4           A     3542 MB/s  0.300 ns/B p50      561 | B     8123 MB/s  0.131 ns/B p50      194 | B/A 2.293 (slot0=A)
+block 5 upload:1048576:4:1         A     6305 MB/s  0.167 ns/B p50      627 | B    10637 MB/s  0.099 ns/B p50      367 | B/A 1.687 (slot0=A)
+block 5 upload:16777216:2:1        A     5886 MB/s  0.177 ns/B p50     5472 | B     9093 MB/s  0.111 ns/B p50     3424 | B/A 1.545 (slot0=A)
+block 5 download:65536:8:4         A     3958 MB/s  0.267 ns/B p50      514 | B     5191 MB/s  0.204 ns/B p50      387 | B/A 1.311 (slot0=A)
+block 5 download:1048576:4:1       A     4494 MB/s  0.236 ns/B p50      889 | B     6136 MB/s  0.173 ns/B p50      651 | B/A 1.365 (slot0=A)
+block 5 download:16777216:2:1      A     5520 MB/s  0.191 ns/B p50     5997 | B     6789 MB/s  0.156 ns/B p50     4817 | B/A 1.230 (slot0=A)
+block 5 get:100:64:16              A     2465 kGET/s 430.801 ns/GET p50      354 | B     2485 kGET/s 427.216 ns/GET p50      350 | B/A 1.008 (slot0=A)
+block 6 upload:65536:8:4           A     3544 MB/s  0.300 ns/B p50      561 | B     8151 MB/s  0.130 ns/B p50      196 | B/A 2.300 (slot0=B)
+block 6 upload:1048576:4:1         A     6314 MB/s  0.167 ns/B p50      618 | B    10685 MB/s  0.099 ns/B p50      362 | B/A 1.692 (slot0=B)
+block 6 upload:16777216:2:1        A     6017 MB/s  0.172 ns/B p50     5341 | B     9362 MB/s  0.109 ns/B p50     3293 | B/A 1.556 (slot0=B)
+block 6 download:65536:8:4         A     4160 MB/s  0.256 ns/B p50      489 | B     4800 MB/s  0.222 ns/B p50      424 | B/A 1.154 (slot0=B)
+block 6 download:1048576:4:1       A     4720 MB/s  0.224 ns/B p50      848 | B     5586 MB/s  0.190 ns/B p50      725 | B/A 1.183 (slot0=B)
+block 6 download:16777216:2:1      A     5531 MB/s  0.191 ns/B p50     5931 | B     6633 MB/s  0.159 ns/B p50     4948 | B/A 1.199 (slot0=B)
+block 6 get:100:64:16              A     2470 kGET/s 430.366 ns/GET p50      346 | B     2470 kGET/s 430.360 ns/GET p50      350 | B/A 1.000 (slot0=B)
+
+== upload:65536:8:4
+   value MB/s                 A   3520.303  B   8095.816  B/A geomean 2.300 [2.293-2.320]  B better in 6/6, sign p=0.031
+   server CPU ns per byte     A      0.301  B      0.131  B/A geomean 0.435 [0.431-0.436]  B better in 6/6, sign p=0.031
+   server CPU utilization     A      1.060  B      1.060  B/A geomean 1.000 [1.000-1.000]
+   client CPUs busy           A      0.842  B      1.107  B/A geomean 1.314 [1.298-1.336]
+   p50 us per transfer        A    561.150  B    195.580  B/A geomean 0.347 [0.344-0.352]  B better in 6/6, sign p=0.031
+   p99 us per transfer        A    909.310  B    585.730  B/A geomean 0.636 [0.579-0.681]  B better in 6/6, sign p=0.031
+== upload:1048576:4:1
+   value MB/s                 A   6357.019  B  10799.877  B/A geomean 1.701 [1.687-1.710]  B better in 6/6, sign p=0.031
+   server CPU ns per byte     A      0.166  B      0.098  B/A geomean 0.588 [0.584-0.592]  B better in 6/6, sign p=0.031
+   server CPU utilization     A      1.054  B      1.055  B/A geomean 1.000 [0.999-1.001]
+   client CPUs busy           A      0.759  B      1.184  B/A geomean 1.556 [1.520-1.580]
+   p50 us per transfer        A    626.690  B    362.500  B/A geomean 0.580 [0.575-0.586]  B better in 6/6, sign p=0.031
+   p99 us per transfer        A   1163.260  B    798.720  B/A geomean 0.691 [0.661-0.725]  B better in 6/6, sign p=0.031
+== upload:16777216:2:1
+   value MB/s                 A   5895.738  B   9206.394  B/A geomean 1.557 [1.544-1.595]  B better in 6/6, sign p=0.031
+   server CPU ns per byte     A      0.177  B      0.109  B/A geomean 0.624 [0.609-0.630]  B better in 6/6, sign p=0.031
+   server CPU utilization     A      1.038  B      1.007  B/A geomean 0.971 [0.967-0.979]
+   client CPUs busy           A      0.860  B      1.235  B/A geomean 1.439 [1.407-1.470]
+   p50 us per transfer        A   5439.490  B   3342.335  B/A geomean 0.614 [0.603-0.626]  B better in 6/6, sign p=0.031
+   p99 us per transfer        A   8585.220  B   7143.425  B/A geomean 0.812 [0.782-0.844]  B better in 6/6, sign p=0.031
+== download:65536:8:4
+   value MB/s                 A   4153.768  B   5197.950  B/A geomean 1.236 [1.145-1.333]  B better in 6/6, sign p=0.031
+   server CPU ns per byte     A      0.256  B      0.204  B/A geomean 0.809 [0.750-0.873]  B better in 6/6, sign p=0.031
+   server CPU utilization     A      1.060  B      1.060  B/A geomean 1.000 [0.999-1.000]
+   client CPUs busy           A      0.691  B      0.772  B/A geomean 1.117 [1.067-1.177]
+   p50 us per transfer        A    491.520  B    387.070  B/A geomean 0.798 [0.737-0.867]  B better in 6/6, sign p=0.031
+   p99 us per transfer        A    892.925  B    737.280  B/A geomean 0.892 [0.803-1.072]  B better in 5/6, sign p=0.219
+== download:1048576:4:1
+   value MB/s                 A   4692.357  B   5988.540  B/A geomean 1.279 [1.183-1.370]  B better in 6/6, sign p=0.031
+   server CPU ns per byte     A      0.226  B      0.177  B/A geomean 0.782 [0.730-0.845]  B better in 6/6, sign p=0.031
+   server CPU utilization     A      1.058  B      1.059  B/A geomean 1.000 [1.000-1.002]
+   client CPUs busy           A      0.649  B      0.761  B/A geomean 1.162 [1.101-1.224]
+   p50 us per transfer        A    856.065  B    675.840  B/A geomean 0.785 [0.731-0.855]  B better in 6/6, sign p=0.031
+   p99 us per transfer        A   1302.530  B   1056.770  B/A geomean 0.821 [0.772-0.898]  B better in 6/6, sign p=0.031
+== download:16777216:2:1
+   value MB/s                 A   5525.250  B   6752.757  B/A geomean 1.215 [1.194-1.230]  B better in 6/6, sign p=0.031
+   server CPU ns per byte     A      0.191  B      0.157  B/A geomean 0.823 [0.813-0.837]  B better in 6/6, sign p=0.031
+   server CPU utilization     A      1.057  B      1.057  B/A geomean 1.000 [0.999-1.000]
+   client CPUs busy           A      0.864  B      1.006  B/A geomean 1.158 [1.134-1.186]
+   p50 us per transfer        A   5963.775  B   4882.435  B/A geomean 0.820 [0.803-0.836]  B better in 6/6, sign p=0.031
+   p99 us per transfer        A   7602.175  B   6422.530  B/A geomean 0.866 [0.823-0.905]  B better in 6/6, sign p=0.031
+== get:100:64:16
+   kGET/s                     A   2491.981  B   2506.708  B/A geomean 1.000 [0.985-1.012]  B better in 4/6, sign p=0.688
+   server CPU ns per GET      A    426.176  B    424.195  B/A geomean 1.000 [0.989-1.015]  B better in 4/6, sign p=0.688
+   server CPU utilization     A      1.062  B      1.062  B/A geomean 1.000 [1.000-1.000]
+   client CPUs busy           A      3.256  B      3.244  B/A geomean 0.998 [0.979-1.025]
+   p50 us per transfer        A    348.160  B    350.210  B/A geomean 1.002 [0.988-1.012]  B better in 1/6, sign p=0.219
+   p99 us per transfer        A    864.255  B    851.965  B/A geomean 0.988 [0.953-1.040]  B better in 3/6, sign p=1.000
