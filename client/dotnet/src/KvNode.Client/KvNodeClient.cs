@@ -48,6 +48,13 @@ public sealed partial class KvNodeClient : IDisposable
 
     private readonly GrpcKvNode.KvNodeClient _kv;
     private readonly Health.HealthClient _health;
+
+    /// <summary>
+    /// The channel's call invoker, for the streaming calls' allocation-free
+    /// methods (<see cref="StreamingCodec"/>): the same channel and settings
+    /// as <see cref="_kv"/>, other marshallers.
+    /// </summary>
+    private readonly CallInvoker _invoker;
     private readonly GrpcChannel? _ownedChannel;
     private readonly KvNodeClientOptions _options;
 
@@ -68,6 +75,7 @@ public sealed partial class KvNodeClient : IDisposable
         _ownedChannel = GrpcChannel.ForAddress(address, CreateChannelOptions(_options));
         _kv = new GrpcKvNode.KvNodeClient(_ownedChannel);
         _health = new Health.HealthClient(_ownedChannel);
+        _invoker = _ownedChannel.CreateCallInvoker();
     }
 
     /// <summary>Uses an existing channel (custom TLS, interceptors, test servers).</summary>
@@ -86,6 +94,7 @@ public sealed partial class KvNodeClient : IDisposable
         _options.Validate();
         _kv = new GrpcKvNode.KvNodeClient(channel);
         _health = new Health.HealthClient(channel);
+        _invoker = channel.CreateCallInvoker();
     }
 
     /// <summary>

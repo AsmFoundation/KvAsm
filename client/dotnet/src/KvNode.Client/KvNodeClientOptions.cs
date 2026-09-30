@@ -57,17 +57,23 @@ public sealed record KvNodeClientOptions
     public int MaxUploadBytes { get; init; } = 64 * 1024 * 1024;
 
     /// <summary>
-    /// Value bytes per upload message (default 64 KiB, 1 byte..4 MiB). Larger
-    /// chunks mean fewer messages (less per-message overhead), smaller ones
+    /// Value bytes per upload message (default 1 MiB, 1 byte..4 MiB). Larger
+    /// chunks mean fewer messages — and each message costs a gRPC/HTTP/2
+    /// write with its own bookkeeping and allocations — smaller ones
     /// smoother flow control; the server copies each chunk straight into the
-    /// stored record either way.
+    /// stored record either way. Measured (2026-09-30, 1 MiB values): 256 KiB
+    /// chunks 1.34x the throughput of 64 KiB, 1 MiB another 1.15x, with 41%
+    /// and then 17% fewer bytes allocated per upload. The memory it costs is
+    /// one chunk per upload in progress (a pooled buffer for stream sources).
     /// </summary>
-    public int UploadChunkBytes { get; init; } = 64 * 1024;
+    public int UploadChunkBytes { get; init; } = 1024 * 1024;
 
     /// <summary>
     /// Value bytes per download message the server is asked for (default 0 =
     /// the server's choice, 64 KiB; otherwise 1 byte..1 MiB, the server's
-    /// maximum).
+    /// maximum). Unlike uploads, bigger is not faster here: gRPC reads a whole
+    /// message before handing it over, so 256 KiB messages pipelined worse and
+    /// measured 4-10% slower than the default.
     /// </summary>
     public int DownloadChunkBytes { get; init; }
 

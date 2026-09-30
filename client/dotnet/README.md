@@ -63,6 +63,18 @@ uint mine = Crc32C.Compute(bytes);                                  // == up.Crc
   whole transfer is bounded by `TransferTimeout` (10 minutes).
 - `GetAsync` of a value above the server's `KVNODE_MAX_VALUE_BYTES` fails
   with `RESOURCE_EXHAUSTED` ("read it with Download").
+- **No garbage per chunk:** Upload refills one message object for the whole
+  call and serializes it straight into gRPC's write buffer; Download parses
+  every message into a pooled frame whose bytes sit in an `ArrayPool`
+  buffer until they are checksummed and written. A 1 MiB download used to
+  allocate ~1.07 MB (a message and a copy of every 64 KiB chunk); what is
+  left per call is gRPC's own per-call state (benchmarks/results/
+  2026-09-30-streaming).
+- **Fast checksums:** `Crc32C` folds with carry-less multiplies — 256-bit
+  (VPCLMULQDQ + AVX2, .NET 9+) or 128-bit (PCLMULQDQ) — for buffers of 256
+  bytes and more, the server's own algorithm, and falls back to the CRC32
+  instruction (x64 SSE4.2, Arm64 CRC) and then to the runtime's software
+  path. All give identical results; measured 9% less client CPU per GB.
 
 ### Options
 
@@ -75,7 +87,7 @@ var options = new KvNodeClientOptions
     Timeout = TimeSpan.FromSeconds(2),                  // unary calls
     TransferTimeout = TimeSpan.FromMinutes(10),         // a whole upload/download
     TransferIdleTimeout = TimeSpan.FromSeconds(30),     // no chunk moved for this long: fail
-    UploadChunkBytes = 64 * 1024,   // 1 byte..4 MiB per upload message
+    UploadChunkBytes = 1 << 20,     // 1 byte..4 MiB per upload message (fewer messages: faster)
     DownloadChunkBytes = 0,         // 0 = server default (64 KiB); up to 1 MiB
     ReadAttempts = 3,               // Get/Download/health retried on UNAVAILABLE; Put/Delete/Upload never
     CompactLongKeys = true,         // the contract; keep it on in every client
@@ -137,8 +149,15 @@ dotnet test --solution KvNode.Client.slnx
 
 - Unit tests: all 64 SipHash reference vectors, key compaction, the
   snapshot writer (its output must match the server tool's file byte for
-  byte), CRC-32C (published vectors, every split, a bitwise reference) and
-  the transfer options.
+  byte), CRC-32C (published vectors, every split, a bitwise reference,
+  each implementation forced in turn at every length to 1,200), the
+  streaming codecs (byte-identical to the generated messages, payloads cut
+  into random buffer segments, unknown fields, malformed input, pool reuse)
+  and the transfer options.
+- Benchmark: `bench/KvNode.Client.Bench` measures Upload/Download
+  throughput, client CPU, bytes allocated per transfer and GC counts
+  against a running server (see its header; the A/B drivers are in
+  benchmarks/results/2026-09-30-streaming).
 - Integration tests: Testcontainers starts the real image. They run
   without Docker too, but are then skipped. Set `KVNODE_REQUIRE_DOCKER=1`
   to fail instead (use it in CI), and `KVNODE_IMAGE` to test another tag.

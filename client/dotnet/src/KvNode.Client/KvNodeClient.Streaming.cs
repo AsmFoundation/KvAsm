@@ -224,46 +224,58 @@ public sealed partial class KvNodeClient
     /// <exception cref="RpcException">The server refused, the transport failed, or a transfer timeout ran out.</exception>
     /// <exception cref="EndOfStreamException">The source ended early.</exception>
     /// <remarks>
+    /// <para>
     /// The first message carries key, total_size and the first chunk (one
     /// message fewer); the last carries the CRC-32C, so the server verifies
     /// before it stores anything. Disposing the call on any failure resets the
     /// stream (RST_STREAM), and the server then discards the partial record.
+    /// </para>
+    /// <para>
+    /// Allocation-free per chunk: one <see cref="UploadFrame"/> is refilled
+    /// for every message and serialized straight into gRPC's write buffer
+    /// (<see cref="StreamingCodec.UploadMethod"/>) — the chunk is copied once,
+    /// by that serialization, and nothing else is created per message.
+    /// </para>
     /// </remarks>
     private async Task<UploadResult> UploadCoreAsync(ByteString wireKey, long length, IChunkSource chunks, CancellationToken cancellationToken)
     {
         using var watch = new TransferWatch(_options.TransferIdleTimeout, cancellationToken);
         try
         {
-            using AsyncClientStreamingCall<UploadRequest, UploadResponse> call =
-                _kv.Upload(deadline: TransferDeadline(), cancellationToken: watch.Token);
+            using AsyncClientStreamingCall<UploadFrame, UploadResponse> call = _invoker.AsyncClientStreamingCall(
+                StreamingCodec.UploadMethod, host: null, new CallOptions(deadline: TransferDeadline(), cancellationToken: watch.Token));
             uint crc = 0;
             long sent = 0;
-            UploadRequest? first = new() { Key = wireKey, TotalSize = (ulong)length };
+            var frame = new UploadFrame();
+            frame.SetFirst(wireKey.Memory, length);
             try
             {
                 do
                 {
-                    int n = (int)Math.Min(_options.UploadChunkBytes, length - sent);
+                    // The first message stays small (FirstChunkBytes): the
+                    // server decides every early refusal from its key and
+                    // total_size, and a first message larger than the
+                    // stream's flow-control window would leave the write
+                    // waiting for credit the refusing server never grants.
+                    int limit = sent == 0 ? Math.Min(_options.UploadChunkBytes, FirstChunkBytes) : _options.UploadChunkBytes;
+                    int n = (int)Math.Min(limit, length - sent);
                     ReadOnlyMemory<byte> chunk = n == 0
                         ? ReadOnlyMemory<byte>.Empty
                         : await chunks.NextAsync(n, watch.Token).ConfigureAwait(false);
                     crc = Crc32C.Append(crc, chunk.Span);
                     sent += n;
-                    UploadRequest message = first ?? new UploadRequest();
-                    first = null;
-                    if (n > 0)
-                    {
-                        // No copy: gRPC serializes the message before WriteAsync
-                        // completes, so a pooled chunk may be reused right after.
-                        message.Data = UnsafeByteOperations.UnsafeWrap(chunk);
-                    }
 
+                    // No copy: gRPC serializes the frame before WriteAsync
+                    // completes, so the frame — and a pooled chunk — may be
+                    // refilled right after the await.
+                    frame.SetData(chunk);
                     if (sent == length)
                     {
-                        message.Crc32C = crc;
+                        frame.SetCrc32C(crc);
                     }
 
-                    await SendAsync(call, message, watch).ConfigureAwait(false);
+                    await SendAsync(call, frame, watch).ConfigureAwait(false);
+                    frame.Clear();
                     watch.Progress();
                 }
                 while (sent < length);
@@ -304,21 +316,59 @@ public sealed partial class KvNodeClient
         }
     }
 
+    /// <summary>
+    /// Data bytes of an upload's first message at most: small enough for any
+    /// server's initial stream window (KvNode's is 1 MiB), so the message
+    /// that carries key and total_size — the one every early refusal is
+    /// decided on — never waits for flow-control credit.
+    /// </summary>
+    private const int FirstChunkBytes = 64 * 1024;
+
     /// <summary>Sends one upload message; a failed write surfaces as the call's real status.</summary>
     /// <param name="call">The upload call.</param>
-    /// <param name="message">The message.</param>
+    /// <param name="message">The message (serialized before the returned task completes).</param>
     /// <param name="watch">The transfer's watch (its token cancels the write).</param>
     /// <returns>A task that completes when gRPC accepted the message.</returns>
     /// <exception cref="RpcException">The server's refusal, or the transport's failure.</exception>
     /// <exception cref="OperationCanceledException">The watch's token was cancelled (translated by the caller).</exception>
-    private static async Task SendAsync(AsyncClientStreamingCall<UploadRequest, UploadResponse> call, UploadRequest message, TransferWatch watch)
+    /// <remarks>
+    /// A write that waits for HTTP/2 flow-control credit is raced against the
+    /// call's response. A server that answers early (a refusal) sends its
+    /// status and RST_STREAM(NO_ERROR) and never credits the stream again —
+    /// and a .NET write already waiting for that credit was observed to stay
+    /// parked even after the reset and after its token was cancelled
+    /// (2026-09-30, with 1 MiB messages: a hang, not an error). Once the
+    /// response is in, the answer is known: the write is abandoned (the
+    /// call's disposal ends it; its eventual fault is observed so it is never
+    /// reported as unobserved) and the server's status is thrown. Only a
+    /// pending write pays for the race (one small task).
+    /// </remarks>
+    private static async Task SendAsync(AsyncClientStreamingCall<UploadFrame, UploadResponse> call, UploadFrame message, TransferWatch watch)
     {
         try
         {
-            await call.RequestStream.WriteAsync(message, watch.Token).ConfigureAwait(false);
+            Task write = call.RequestStream.WriteAsync(message, watch.Token);
+            if (!write.IsCompleted)
+            {
+                Task response = call.ResponseAsync;
+                if (await Task.WhenAny(write, response).ConfigureAwait(false) == response && !write.IsCompleted)
+                {
+                    // The server answered while the write still waits: stop
+                    // waiting. The abandoned write ends with the call; observe
+                    // its fault so it is never reported as unobserved.
+                    _ = write.ContinueWith(
+                        static t => _ = t.Exception, CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                    throw new IOException("The server answered the upload before this message could be sent.");
+                }
+            }
+
+            await write.ConfigureAwait(false);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
+            // The response is complete (or completes within ResponseGrace):
+            // UploadFailureAsync returns the server's own status.
             throw await UploadFailureAsync(call, e).ConfigureAwait(false);
         }
     }
@@ -351,7 +401,7 @@ public sealed partial class KvNodeClient
     /// indefinitely, whatever the transport does.
     /// </para>
     /// </remarks>
-    private static async Task<Exception> UploadFailureAsync(AsyncClientStreamingCall<UploadRequest, UploadResponse> call, Exception writeError)
+    private static async Task<Exception> UploadFailureAsync(AsyncClientStreamingCall<UploadFrame, UploadResponse> call, Exception writeError)
     {
         Task<UploadResponse> response = call.ResponseAsync;
         try
@@ -391,6 +441,12 @@ public sealed partial class KvNodeClient
     /// <param name="cancellationToken">The caller's token.</param>
     /// <returns>The verified result, or null when the key does not exist.</returns>
     /// <exception cref="RpcException">A server, transport, protocol (INTERNAL) or checksum (DATA_LOSS) failure, or a timeout.</exception>
+    /// <remarks>
+    /// Allocation-free per chunk: each message is parsed into a pooled
+    /// <see cref="DownloadFrame"/> whose data sits in an <see cref="ArrayPool{T}"/>
+    /// buffer (<see cref="StreamingCodec.DownloadMethod"/>); the frame goes
+    /// back to its pool as soon as its bytes are checksummed and written.
+    /// </remarks>
     private async Task<DownloadResult?> DownloadCoreAsync(
         ByteString wireKey, long offset, long? length, IDownloadSink sink, CancellationToken cancellationToken)
     {
@@ -406,67 +462,77 @@ public sealed partial class KvNodeClient
         bool complete = false;
         try
         {
-            using AsyncServerStreamingCall<DownloadResponse> call =
-                _kv.Download(request, deadline: TransferDeadline(), cancellationToken: watch.Token);
-            IAsyncStreamReader<DownloadResponse> reader = call.ResponseStream;
+            using AsyncServerStreamingCall<DownloadFrame> call = _invoker.AsyncServerStreamingCall(
+                StreamingCodec.DownloadMethod, host: null, new CallOptions(deadline: TransferDeadline(), cancellationToken: watch.Token), request);
+            IAsyncStreamReader<DownloadFrame> reader = call.ResponseStream;
             while (await reader.MoveNext(watch.Token).ConfigureAwait(false))
             {
                 watch.Progress();
-                DownloadResponse message = reader.Current;
-                if (complete)
+                DownloadFrame message = reader.Current;
+                try
                 {
-                    throw Violation("a message followed the one that carried crc32c");
+                    if (complete)
+                    {
+                        throw Violation("a message followed the one that carried crc32c");
+                    }
+
+                    if (total < 0)
+                    {
+                        // The first message: learn the value's size, fix the range.
+                        if (!message.HasTotalSize || message.TotalSize > long.MaxValue)
+                        {
+                            throw Violation("the first message lacks a valid total_size");
+                        }
+
+                        total = (long)message.TotalSize;
+                        if (offset > total)
+                        {
+                            throw Violation("a range past the end of the value was not refused");
+                        }
+
+                        expected = length is { } l && l < total - offset ? l : total - offset;
+                        sink.Start(expected);
+                    }
+                    else if (message.HasTotalSize)
+                    {
+                        throw Violation("total_size arrived after the first message");
+                    }
+
+                    ReadOnlyMemory<byte> data = message.Data;
+                    if (!data.IsEmpty)
+                    {
+                        if (data.Length > expected - received)
+                        {
+                            throw Violation("more data than the requested range");
+                        }
+
+                        crc = Crc32C.Append(crc, data.Span);
+                        await sink.WriteAsync(data, watch.Token).ConfigureAwait(false);
+                        received += data.Length;
+                    }
+
+                    if (message.HasCrc32C)
+                    {
+                        if (received != expected)
+                        {
+                            throw Violation($"crc32c arrived after {received} of {expected} bytes");
+                        }
+
+                        if (message.Crc32C != crc)
+                        {
+                            throw new RpcException(new Status(
+                                StatusCode.DataLoss,
+                                $"crc32c mismatch: the server sent 0x{message.Crc32C:x8}, the bytes received give 0x{crc:x8}."));
+                        }
+
+                        complete = true;
+                    }
                 }
-
-                if (total < 0)
+                finally
                 {
-                    // The first message: learn the value's size, fix the range.
-                    if (!message.HasTotalSize || message.TotalSize > long.MaxValue)
-                    {
-                        throw Violation("the first message lacks a valid total_size");
-                    }
-
-                    total = (long)message.TotalSize;
-                    if (offset > total)
-                    {
-                        throw Violation("a range past the end of the value was not refused");
-                    }
-
-                    expected = length is { } l && l < total - offset ? l : total - offset;
-                    sink.Start(expected);
-                }
-                else if (message.HasTotalSize)
-                {
-                    throw Violation("total_size arrived after the first message");
-                }
-
-                if (!message.Data.IsEmpty)
-                {
-                    if (message.Data.Length > expected - received)
-                    {
-                        throw Violation("more data than the requested range");
-                    }
-
-                    crc = Crc32C.Append(crc, message.Data.Span);
-                    await sink.WriteAsync(message.Data.Memory, watch.Token).ConfigureAwait(false);
-                    received += message.Data.Length;
-                }
-
-                if (message.HasCrc32C)
-                {
-                    if (received != expected)
-                    {
-                        throw Violation($"crc32c arrived after {received} of {expected} bytes");
-                    }
-
-                    if (message.Crc32C != crc)
-                    {
-                        throw new RpcException(new Status(
-                            StatusCode.DataLoss,
-                            $"crc32c mismatch: the server sent 0x{message.Crc32C:x8}, the bytes received give 0x{crc:x8}."));
-                    }
-
-                    complete = true;
+                    // Back to the pools whatever happened: the sink has taken
+                    // (or refused) the bytes, and nothing below reads the frame.
+                    message.Release();
                 }
             }
         }

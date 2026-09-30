@@ -235,6 +235,50 @@ public sealed class StreamingTests(KvNodeServer server)
     }
 
     /// <summary>
+    /// A refusal comes back promptly whatever the chunk size. With messages
+    /// larger than the server's 1 MiB stream window, a write could wait for
+    /// flow-control credit that a refusing server never grants — found
+    /// 2026-09-30 as a hang (not an error) of
+    /// <see cref="LimitsAreCheckedLocallyThenByTheServer"/> when it ran after
+    /// other tests of this class, cured by keeping the first message small
+    /// and racing every pending write against the response. Repeated because
+    /// whether a write is already waiting when the refusal lands is a race;
+    /// the connection must still work afterwards.
+    /// </summary>
+    /// <remarks>
+    /// Alone, this test does not reliably reproduce that race (the pre-fix
+    /// code passed it in a single-test run); in a run of the whole class,
+    /// the sequence does — which is how the fix was verified.
+    /// </remarks>
+    /// <returns>A task that completes when the test finishes.</returns>
+    [Fact(Timeout = 120_000)]   // the bug was a hang: fail instead of waiting forever
+    public async Task RefusalsArePromptWithChunksLargerThanTheWindow()
+    {
+        // Directly, not through Ct: a timed test must reference the token itself (xUnit1069).
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        using KvNodeClient client = NewClient(new KvNodeClientOptions
+        {
+            MaxUploadBytes = 128 * 1024 * 1024,
+            UploadChunkBytes = KvNodeClientOptions.MaxUploadChunkBytes,
+            TransferIdleTimeout = TimeSpan.FromSeconds(20),
+        });
+        byte[] key = Key("bigchunks");
+        byte[] huge = new byte[(64 * 1024 * 1024) + 1];
+        for (int i = 0; i < 5; i++)
+        {
+            DateTime start = DateTime.UtcNow;
+            var refused = await Assert.ThrowsAsync<RpcException>(() => client.UploadAsync(key, huge, ct));
+            Assert.Equal(StatusCode.InvalidArgument, refused.StatusCode);
+            Assert.True(DateTime.UtcNow - start < TimeSpan.FromSeconds(10), $"refusal {i} took {DateTime.UtcNow - start}");
+        }
+
+        byte[] value = RandomBytes((9 * 1024 * 1024) + 5, 21);   // 64 KiB + two 4 MiB chunks + a tail
+        Assert.Equal(Crc32C.Compute(value), (await client.UploadAsync(key, value, ct)).Crc32C);
+        Assert.True((await client.DownloadAsync(key, cancellationToken: ct)).AsSpan().SequenceEqual(value));
+        Assert.True(await client.DeleteAsync(key, ct));
+    }
+
+    /// <summary>
     /// Request streams the public API never sends, through the generated
     /// client — another HTTP/2 and gRPC stack than the server's own tests use —
     /// each refused with its documented status, storing nothing.

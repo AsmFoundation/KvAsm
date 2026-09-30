@@ -76,6 +76,80 @@ public sealed class Crc32CTests
     }
 
     /// <summary>
+    /// Each implementation forced in turn — the CRC32-instruction chain, the
+    /// 128-bit and the 256-bit folding paths (where this CPU and runtime have
+    /// them) — against the bitwise reference, for every length from 0 to
+    /// 1,200 at four alignments (crossing the 256-byte hand-over, one and
+    /// several 128-byte blocks, the 16-byte loop and every tail length) and
+    /// with a random checksum to continue: the dispatch in
+    /// <see cref="Crc32C.Append(uint, ReadOnlySpan{byte})"/> may pick any of
+    /// them, so each must be exact on its own.
+    /// </summary>
+    [Fact]
+    public void EveryImplementationAgreesWithReference()
+    {
+        var random = new Random(11);
+        byte[] buffer = new byte[1200 + 3];
+        random.NextBytes(buffer);
+        var paths = new List<(string Name, Func<uint, byte[], int, int, uint> Run)>
+        {
+            ("chain", (seed, b, o, n) => Crc32C.Chain(seed, b.AsSpan(o, n))),
+        };
+        if (Crc32C.Fold128Supported)
+        {
+            paths.Add(("fold128", (seed, b, o, n) => Crc32C.Fold128(seed, b.AsSpan(o, n))));
+        }
+
+        if (Crc32C.Fold256Supported)
+        {
+            paths.Add(("fold256", (seed, b, o, n) => Crc32C.Fold256(seed, b.AsSpan(o, n))));
+        }
+
+        foreach ((string name, Func<uint, byte[], int, int, uint> run) in paths)
+        {
+            // The folding paths need FoldMin bytes (callers guarantee it).
+            int min = name == "chain" ? 0 : Crc32C.FoldMin;
+            for (int length = min; length <= 1200; length++)
+            {
+                int offset = length % 4;
+                uint seed = (uint)random.Next();
+                Assert.True(
+                    Reference(seed, buffer.AsSpan(offset, length)) == run(seed, buffer, offset, length),
+                    $"{name}: length {length}, offset {offset}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// All-zero and all-one buffers through the folding paths: a wrong fold
+    /// constant cannot hide behind random data (every multiply matters).
+    /// </summary>
+    /// <param name="fill">The byte every position holds.</param>
+    [Theory]
+    [InlineData(0x00)]
+    [InlineData(0xFF)]
+    public void UniformBuffersMatchReference(byte fill)
+    {
+        byte[] data = new byte[4096 + 7];
+        Array.Fill(data, fill);
+        foreach (uint seed in new uint[] { 0, 0xFFFFFFFF, 0x12345678 })
+        {
+            uint want = Reference(seed, data);
+            Assert.Equal(want, Crc32C.Append(seed, data));
+            Assert.Equal(want, Crc32C.Chain(seed, data));
+            if (Crc32C.Fold128Supported)
+            {
+                Assert.Equal(want, Crc32C.Fold128(seed, data));
+            }
+
+            if (Crc32C.Fold256Supported)
+            {
+                Assert.Equal(want, Crc32C.Fold256(seed, data));
+            }
+        }
+    }
+
+    /// <summary>
     /// CRC-32C one bit at a time, zlib-style — shares nothing with the
     /// implementation under test beyond the polynomial.
     /// </summary>

@@ -225,6 +225,43 @@ public sealed class FaultInjectionTests(KvNodeServer server)
         Assert.True(await direct.DeleteAsync(key, Ct));
     }
 
+    /// <summary>
+    /// A refusal reaches an upload whose write is WAITING for flow-control
+    /// credit. The server→client direction is paced to a trickle, so the
+    /// client — sending at full speed with 4 MiB chunks, beyond the server's
+    /// 1 MiB stream window — is blocked on credit when the refusal (and
+    /// RST_STREAM(NO_ERROR)) finally arrives, and the server never credits a
+    /// stream it answered: the answer must still come back promptly.
+    /// </summary>
+    /// <remarks>
+    /// Pins the contract, not the 2026-09-30 hang itself: in this paced setup
+    /// .NET releases the parked write on the reset even without the fix
+    /// (verified against the pre-fix code). The hang needed a warm process
+    /// (LimitsAreCheckedLocallyThenByTheServer after other StreamingTests,
+    /// 1 MiB chunks): that sequence reproduces it, and the fix — a small
+    /// first message and pending writes raced against the response — cured
+    /// it (pre-fix code: hung 5 of 5 runs; fixed: passed 3 of 3).
+    /// </remarks>
+    /// <returns>A task that completes when the test finishes.</returns>
+    [Fact(Timeout = 120_000)]   // a regression is a hang: fail instead of waiting forever
+    public async Task RefusalReachesAnUploadWaitingForCredit()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;   // referenced directly (xUnit1069)
+        await using var proxy = new FaultProxy(server.RequireAddress()) { Faults = new Faults { ThrottleDownBytesPerSecond = 2_000 } };
+        using KvNodeClient client = new(proxy.Address, new KvNodeClientOptions
+        {
+            ReadAttempts = 1,
+            MaxUploadBytes = 128 * 1024 * 1024,
+            UploadChunkBytes = KvNodeClientOptions.MaxUploadChunkBytes,
+        });
+        byte[] huge = new byte[(64 * 1024 * 1024) + 1];   // above the server's KVNODE_MAX_UPLOAD_BYTES
+        var watch = Stopwatch.StartNew();
+        RpcException refused = await Assert.ThrowsAsync<RpcException>(() => client.UploadAsync(Key("credit"), huge, ct));
+        Assert.Equal(StatusCode.InvalidArgument, refused.StatusCode);
+        Assert.Contains("value too large", refused.Status.Detail, StringComparison.Ordinal);
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(20), $"the refusal took {watch.Elapsed}");
+    }
+
     /// <summary>A key unique to this test run.</summary>
     /// <param name="name">A readable prefix.</param>
     /// <returns>The key bytes.</returns>
