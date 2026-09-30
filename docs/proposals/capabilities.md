@@ -4,8 +4,10 @@
   decided. It collects what KvNode could answer instantly beyond Get, Put
   and Delete, with the technique and the cost of each.
 - **Companions:** [export-watch.md](export-watch.md) (streaming queries and
-  the revision model) and [key-indexes.md](key-indexes.md) (prefix, suffix
-  and pattern indexes at 1M-16M keys).
+  the revision model), [key-indexes.md](key-indexes.md) (prefix, suffix
+  and pattern indexes at 1M-16M keys) and
+  [golden-operations.md](golden-operations.md) (the same question at 10M
+  keys, against a bar of 10× an exact lookup).
 - **Evidence:**
   [benchmarks/results/2026-09-29-cap-probe](../../benchmarks/results/2026-09-29-cap-probe/README.md),
   measured on the store's real code at 100k keys (and 1M for scale). Every
