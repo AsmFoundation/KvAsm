@@ -32,8 +32,10 @@
 enum { PROTO_RESP, PROTO_MEMCACHE, PROTO_GRPC };
 
 /* Operations. PING is each protocol's cheapest round trip: RESP PING,
- * memcached meta no-op, gRPC health check — the per-request floor. */
-enum { OP_GET, OP_SET, OP_PING, OP_COUNT };
+ * memcached meta no-op, gRPC health check — the per-request floor. UPLOAD
+ * and DOWNLOAD are KvNode's streaming calls (gRPC only): a whole value moved
+ * as a stream of chunks, one transfer per request. */
+enum { OP_GET, OP_SET, OP_PING, OP_UPLOAD, OP_DOWNLOAD, OP_COUNT };
 
 /* Outcome of one request, as judged by the client. */
 enum { ST_OK, ST_MISS, ST_BAD_VALUE, ST_ERROR };
@@ -111,7 +113,9 @@ void key_format(char *dst, uint64_t id);
 /* Options (immutable after parsing) and shared state                         */
 /* ------------------------------------------------------------------------- */
 
-enum { WL_MIXED, WL_PING };
+/* Workloads: GET/SET mix, protocol no-op, or one streaming call repeated
+ * (every request moves one whole value of --value-size bytes). */
+enum { WL_MIXED, WL_PING, WL_UPLOAD, WL_DOWNLOAD };
 
 /** Command-line options; see usage() in main.c for meanings and defaults. */
 typedef struct {
@@ -150,6 +154,14 @@ typedef struct {
    * one comparison.
    */
   int busy_poll;
+  /**
+   * Streaming workloads: value bytes per Upload message, and the
+   * chunk_size a Download asks for (0 = 64 KiB for uploads, the server's
+   * default for downloads).
+   */
+  uint32_t chunk;
+  /** Server process whose threads' schedstat gives server_cpu_s (0 = unused). */
+  int server_pid;
 } Options;
 
 extern Options g_opt;
@@ -233,7 +245,11 @@ typedef struct {
   void (*issue)(Conn *c, int op, uint64_t key, uint64_t t0);
   /** Consumes received bytes, completing requests. @returns 0 or -1 (fatal protocol error). */
   int (*input)(Conn *c, const uint8_t *data, size_t len, uint64_t now);
-  /** Moves pending protocol output into c->out (session-based protocols). @returns 0 or -1. */
+  /**
+   * Moves pending protocol output into c->out (session-based protocols).
+   * @returns 0 when all of it moved, 1 when it stopped early to let the
+   *          engine send first (call again after sending), -1 on error.
+   */
   int (*collect)(Conn *c);
   /** True when the protocol receives into c->in itself (zero-copy parsing). */
   int parses_in_place;
@@ -269,6 +285,187 @@ static inline void value_fill(uint8_t *dst, uint64_t key) {
   memcpy(dst, g_value_template, g_opt.value_size);
   memcpy(dst, &key, 8);
 }
+
+/**
+ * Writes bytes [off, off + n) of the value value_fill(key) would write,
+ * without materializing the rest — how an Upload streams a value of any
+ * size from the one shared template.
+ * @param dst  n writable bytes
+ * @param key  key id
+ * @param off  offset in the value (off + n <= value_size)
+ * @param n    count
+ */
+static inline void value_copy(uint8_t *dst, uint64_t key, uint64_t off, size_t n) {
+  memcpy(dst, g_value_template + off, n);
+  if (off < 8) {
+    /* The range overlaps the key id: patch its covered bytes. */
+    uint8_t id[8];
+    memcpy(id, &key, 8);
+    size_t end = off + n < 8 ? (size_t)(off + n) : 8;
+    memcpy(dst, id + off, end - (size_t)off);
+  }
+}
+
+/**
+ * Compares received bytes with bytes [off, off + n) of the value stored for
+ * key — how a Download is verified in place, chunk by chunk, with no copy.
+ * @param p    received bytes
+ * @param key  key id
+ * @param off  their offset in the value (off + n <= value_size)
+ * @param n    count
+ * @returns 1 when every byte matches, else 0
+ */
+static inline int value_matches(const uint8_t *p, uint64_t key, uint64_t off, size_t n) {
+  size_t head = 0;
+  if (off < 8) {
+    uint8_t id[8];
+    memcpy(id, &key, 8);
+    head = off + n < 8 ? n : 8 - (size_t)off;
+    if (memcmp(p, id + off, head) != 0) return 0;
+  }
+  return memcmp(p + head, g_value_template + off + head, n - head) == 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* CRC-32C (the streaming calls' checksum)                                    */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * CRC-32C (Castagnoli, zlib-style: pre/post inversion inside), continued
+ * from crc (0 to start). SSE4.2 crc32 when the CPU has it, else a table.
+ * @param crc  previous result, 0 to start
+ * @param p    bytes
+ * @param n    count
+ * @returns the continued checksum
+ */
+uint32_t crc32c_update(uint32_t crc, const uint8_t *p, size_t n);
+
+/**
+ * The GF(2) operator that shifts a CRC over len zero bytes: x^(8*len) mod P.
+ * @param len  byte count
+ * @returns the operator, for crc32c_combine_op
+ */
+uint32_t crc32c_shift_op(uint64_t len);
+
+/**
+ * crc(A || B) from crc(A), crc(B) and the shift operator of |B|
+ * (crc32c_shift_op(|B|)) — zlib's crc32_combine_op for Castagnoli. Lets a
+ * client derive the CRC of "key id || shared template" per request from two
+ * precomputed parts instead of re-reading the value.
+ * @param crc_a  crc(A)
+ * @param crc_b  crc(B)
+ * @param op     crc32c_shift_op(len(B))
+ * @returns crc(A || B)
+ */
+uint32_t crc32c_combine_op(uint32_t crc_a, uint32_t crc_b, uint32_t op);
+
+/**
+ * The CRC-32C of the value value_fill(key) writes, in O(1): the key id's 8
+ * bytes combined with the precomputed CRC of the shared template's tail.
+ * @param key  key id
+ * @returns crc32c of the value stored for key
+ */
+uint32_t value_crc(uint64_t key);
+
+/**
+ * Precomputes what value_crc needs. Call on the main thread after
+ * g_value_template is filled and before any worker starts.
+ */
+void value_crc_init(void);
+
+/** Test hook: 1 forces crc32c_update's table path (see crc32c.c). */
+extern int crc32c_force_table;
+
+/* ------------------------------------------------------------------------- */
+/* Streaming codec (grpc.c; exposed for the unit tests)                       */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * Generator of one Upload request stream, byte-exact and resumable at any
+ * byte: gRPC-framed UploadRequest messages of --chunk data bytes each; the
+ * first also carries key and total_size, the last the value's crc32c (where
+ * the .NET client puts it). Nothing is materialized: data bytes come from
+ * the shared template (value_copy), so a 64 MiB upload costs one copy of
+ * its bytes into the socket buffer's staging area.
+ */
+typedef struct {
+  uint64_t key;      /**< key id being uploaded */
+  uint64_t off;      /**< value bytes emitted so far */
+  uint32_t data_left; /**< data bytes left in the current message */
+  uint32_t crc;      /**< value_crc(key), for the last message */
+  uint8_t piece[48]; /**< pending non-data bytes: a message header or the crc field */
+  uint8_t piece_len, piece_off;
+  uint8_t stage;     /**< UP_PIECE, UP_DATA, UP_TAIL, UP_END (grpc.c) */
+} UpGen;
+
+/**
+ * Length of every Upload request stream of this run (it depends only on
+ * value_size and the chunk, never on the key).
+ * @returns bytes of gRPC framing plus messages
+ */
+uint64_t upload_stream_len(void);
+
+/**
+ * Starts generating the Upload request stream for a key.
+ * @param u    generator (fully overwritten)
+ * @param key  key id
+ */
+void up_start(UpGen *u, uint64_t key);
+
+/**
+ * Emits the next bytes of the stream.
+ * @param u    generator
+ * @param dst  n writable bytes
+ * @param n    bytes wanted
+ * @returns bytes written: n, or fewer only at the end of the stream
+ */
+size_t up_emit(UpGen *u, uint8_t *dst, size_t n);
+
+/**
+ * Incremental parser and verifier of one Download response body (gRPC-framed
+ * DownloadResponse messages), fed in whatever pieces DATA frames arrive.
+ * Data bytes are compared with the expected value where they lie in the
+ * receive buffer (value_matches); nothing is copied or buffered.
+ */
+typedef struct {
+  uint64_t key;       /**< key id being downloaded */
+  uint64_t received;  /**< value bytes received (offset of the next one) */
+  uint64_t total;     /**< total_size from the first message; UINT64_MAX until seen */
+  uint64_t field_left; /**< bytes left in the data field being received */
+  uint64_t acc;       /**< varint / fixed32 being assembled */
+  uint32_t msg_left;  /**< bytes left in the current message */
+  uint32_t crc;       /**< crc32c from the last message */
+  uint8_t tok[5];     /**< gRPC message prefix being assembled */
+  uint8_t tok_len;    /**< bytes of tok or of acc assembled so far */
+  uint8_t state;      /**< DL_* (grpc.c) */
+  uint8_t have_crc;   /**< the crc32c field arrived (it must be the last one) */
+  uint8_t messages;   /**< messages started, saturating at 255 */
+  uint8_t bad;        /**< framing or field-order violation: ST_ERROR */
+  uint8_t mismatch;   /**< a data byte, total_size or crc32c was wrong: ST_BAD_VALUE */
+} DlParse;
+
+/**
+ * Starts parsing a Download response body.
+ * @param d    parser (fully overwritten)
+ * @param key  key id requested
+ */
+void dl_start(DlParse *d, uint64_t key);
+
+/**
+ * Consumes the next piece of the response body.
+ * @param d  parser
+ * @param p  bytes
+ * @param n  count
+ */
+void dl_feed(DlParse *d, const uint8_t *p, size_t n);
+
+/**
+ * Judges a Download whose stream ended cleanly (HTTP 200, grpc-status 0).
+ * @param d  parser after the last dl_feed
+ * @returns ST_OK, ST_BAD_VALUE (wrong bytes, size or checksum) or ST_ERROR
+ *          (malformed or truncated body)
+ */
+int dl_judge(const DlParse *d);
 
 /* FIFO helpers for request/response-ordered protocols (RESP, memcache). */
 

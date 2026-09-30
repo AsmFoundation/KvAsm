@@ -169,29 +169,40 @@ static int conn_open(Conn *c) {
  * Sends everything pending (after the protocol serialized its frames).
  * @param c  connection
  * @remarks A short write keeps the rest and waits for EPOLLOUT; nothing is
- *          ever dropped.
+ *          ever dropped. A protocol that stops serializing at a cap (gRPC
+ *          uploads: megabytes per window) is drained in rounds of serialize
+ *          then send, so staged bytes are still in cache when sent.
  */
 static void conn_flush(Conn *c) {
   if (c->fd_dead) return;
-  if (g_proto->collect && g_proto->collect(c) != 0) {
-    conn_fail(c, "protocol send failed");
-    return;
-  }
-  while (c->out_off < c->out_len) {
-    ssize_t n = send(c->fd, c->out + c->out_off, c->out_len - c->out_off, MSG_NOSIGNAL);
-    if (n > 0) {
-      c->out_off += (size_t)n;
-      continue;
+  for (;;) {
+    int more = 0;
+    if (g_proto->collect) {
+      more = g_proto->collect(c);
+      if (more < 0) {
+        conn_fail(c, "protocol send failed");
+        return;
+      }
     }
-    if (n < 0 && errno == EINTR) continue;
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      if (!c->epoll_out) set_interest(c, 1);
+    while (c->out_off < c->out_len) {
+      ssize_t n = send(c->fd, c->out + c->out_off, c->out_len - c->out_off, MSG_NOSIGNAL);
+      if (n > 0) {
+        c->out_off += (size_t)n;
+        continue;
+      }
+      if (n < 0 && errno == EINTR) continue;
+      if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        /* The unsent rest stays; EPOLLOUT resumes here, and collect appends
+         * after it (never past its cap), so order is kept. */
+        if (!c->epoll_out) set_interest(c, 1);
+        return;
+      }
+      conn_fail(c, "send failed");
       return;
     }
-    conn_fail(c, "send failed");
-    return;
+    c->out_off = c->out_len = 0;
+    if (!more) break;
   }
-  c->out_off = c->out_len = 0;
   if (c->epoll_out) set_interest(c, 0);
 }
 
@@ -248,7 +259,11 @@ static void issue_one(Worker *w, Conn *c, uint64_t t0) {
   if (g_opt.workload == WL_PING) {
     op = OP_PING;
   } else {
-    op = g_opt.read_ratio >= 1.0 || rng_unit(&w->rng) < g_opt.read_ratio ? OP_GET : OP_SET;
+    /* Streaming workloads repeat one call; the mix draws GET or SET. */
+    op = g_opt.workload == WL_UPLOAD                                        ? OP_UPLOAD
+         : g_opt.workload == WL_DOWNLOAD                                    ? OP_DOWNLOAD
+         : g_opt.read_ratio >= 1.0 || rng_unit(&w->rng) < g_opt.read_ratio ? OP_GET
+                                                                            : OP_SET;
     key = g_opt.zipf ? scramble(zipf_next(&g_zipf, &w->rng), g_opt.keys)
                      : rng_next(&w->rng) % g_opt.keys;
   }
@@ -280,6 +295,10 @@ static void *worker_main(void *arg) {
   uint64_t start = now_ns();
   for (int i = 0; open_loop && i < w->nconns; i++) w->conns[i].next_due = start + poisson_gap(w);
 
+  /* Preload writes with Upload for the streaming workloads: their values may
+   * exceed a unary Put's limit (KVNODE_MAX_VALUE_BYTES). */
+  const int preload_op =
+      g_opt.workload == WL_UPLOAD || g_opt.workload == WL_DOWNLOAD ? OP_UPLOAD : OP_SET;
   struct epoll_event events[64];
   while (atomic_load_explicit(&g_phase, memory_order_relaxed) != PHASE_STOP && !w->errors) {
     uint64_t now = now_ns();
@@ -290,7 +309,7 @@ static void *worker_main(void *arg) {
       if (w->preload) {
         while (c->inflight < (uint32_t)g_opt.depth && c->next_key < c->end_key) {
           c->inflight++;
-          g_proto->issue(c, OP_SET, c->next_key, now);
+          g_proto->issue(c, preload_op, c->next_key, now);
           c->next_key++;
         }
         active |= c->inflight > 0 || c->next_key < c->end_key;

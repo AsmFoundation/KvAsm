@@ -3,7 +3,8 @@
 #
 #   all    build/kvbench (static-PIE: runs in a FROM-scratch container)
 #   test   unit tests of the parts results depend on (histogram, Zipf, key
-#          format, protocol parsers)
+#          format, protocol parsers, CRC-32C and its O(1) combination, the
+#          Upload stream generator and the Download body verifier)
 #
 # Built inside the repository's toolchain image (pinned nghttp2), normally
 # via `docker build --target kvbench .` at the repository root.
@@ -18,7 +19,7 @@ CFLAGS  := -std=c11 -O2 -g -Wall -Wextra -Werror -D_GNU_SOURCE -I$(NGHTTP2_PREFI
 LDFLAGS := -Wl,-z,relro -Wl,-z,now
 LIBS    := $(NGHTTP2_PREFIX)/lib/libnghttp2.a -lm -pthread
 
-LIB_SRC := engine.c proto.c grpc.c stats.c
+LIB_SRC := engine.c proto.c grpc.c stats.c crc32c.c
 HEADERS := kvbench.h engine.h
 
 .PHONY: all test clean

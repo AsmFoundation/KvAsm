@@ -8,6 +8,7 @@
  * exact window boundaries, giving CPU efficiency (operations per server
  * CPU-second) and memory per key without trusting any server's self-report.
  */
+#include <dirent.h>
 #include <getopt.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -43,6 +44,11 @@ static void usage(const char *argv0) {
           "  --value-size V      value bytes, >= 8 (100)\n"
           "  --read-ratio R      fraction of GETs, rest SETs (1.0)\n"
           "  --ping              protocol no-op instead of GET/SET\n"
+          "  --upload            grpc: every request uploads a whole value (client streaming)\n"
+          "  --download          grpc: every request downloads a whole value (server streaming;\n"
+          "                      use --load: the keys are preloaded with uploads)\n"
+          "  --chunk BYTES       streaming: data bytes per Upload message (65536), or the\n"
+          "                      Download chunk_size to ask for (server default: 65536)\n"
           "  --zipf THETA        Zipfian keys (YCSB scrambled), 0 < THETA < 1; default uniform\n"
           "  --rate OPS          open loop: Poisson arrivals at OPS/s total (0 = closed loop)\n"
           "  --warmup S          seconds before measuring (5)\n"
@@ -51,6 +57,8 @@ static void usage(const char *argv0) {
           "  --load-only         write all keys, report, exit\n"
           "  --settle S          pause after the load before reading server memory (1)\n"
           "  --cgroup-cpu FILE   server cgroup cpu.stat (v2) or cpuacct.usage (v1)\n"
+          "  --server-pid PID    server CPU from /proc/PID/task/*/schedstat instead (ns-exact;\n"
+          "                      the server must be in kvbench's PID namespace)\n"
           "  --cgroup-mem FILE   server cgroup memory.stat (v1 or v2)\n"
           "  --wait-ready S      wait up to S seconds for the port to accept (30)\n"
           "  --interval S        throughput timeline sampling period (1)\n"
@@ -97,7 +105,8 @@ static void parse_options(int argc, char **argv) {
       {"load-only", 0, 0, 'L'}, {"settle", 1, 0, 's'},    {"cgroup-cpu", 1, 0, 'C'},
       {"cgroup-mem", 1, 0, 'M'}, {"seed", 1, 0, 'S'},     {"label", 1, 0, 'b'},
       {"wait-ready", 1, 0, 'W'}, {"interval", 1, 0, 'I'}, {"busy-poll", 0, 0, 'B'},
-      {"help", 0, 0, '?'},     {0, 0, 0, 0}};
+      {"upload", 0, 0, 'U'},   {"download", 0, 0, 'G'},   {"chunk", 1, 0, 'K'},
+      {"server-pid", 1, 0, 'X'}, {"help", 0, 0, '?'},     {0, 0, 0, 0}};
   int ch;
   while ((ch = getopt_long(argc, argv, "", longopts, NULL)) != -1) {
     switch (ch) {
@@ -130,9 +139,23 @@ static void parse_options(int argc, char **argv) {
     case 'W': g_opt.wait_ready = num(optarg, "wait-ready"); break;
     case 'I': g_opt.interval = num(optarg, "interval"); break;
     case 'B': g_opt.busy_poll = 1; break;
+    case 'X': g_opt.server_pid = (int)num(optarg, "server-pid"); break;
+    case 'U': g_opt.workload = WL_UPLOAD; break;
+    case 'G': g_opt.workload = WL_DOWNLOAD; break;
+    case 'K': {
+      double v = num(optarg, "chunk");
+      /* Checked here: a negative or huge double would wrap in the cast. */
+      if (v < 1 || v > 16777216) {
+        fprintf(stderr, "kvbench: --chunk must be 1..16777216\n");
+        exit(2);
+      }
+      g_opt.chunk = (uint32_t)v;
+      break;
+    }
     default: usage(argv[0]); exit(2);
     }
   }
+  const int streaming = g_opt.workload == WL_UPLOAD || g_opt.workload == WL_DOWNLOAD;
   const char *bad = NULL;
   if (g_opt.proto < 0) bad = "--protocol must be resp, memcache or grpc";
   else if (!g_opt.port) bad = "--port is required";
@@ -146,6 +169,8 @@ static void parse_options(int argc, char **argv) {
   else if (g_opt.zipf && !(g_opt.zipf_theta > 0 && g_opt.zipf_theta < 1)) bad = "--zipf must be in (0,1)";
   else if (g_opt.rate < 0 || g_opt.warmup < 0 || g_opt.duration <= 0) bad = "bad rate/warmup/duration";
   else if (g_opt.interval <= 0.01) bad = "--interval must be > 0.01 s";
+  else if (streaming && g_opt.proto != PROTO_GRPC) bad = "--upload/--download need --protocol grpc";
+  else if (g_opt.chunk && !streaming) bad = "--chunk applies to --upload/--download only";
   if (bad) {
     fprintf(stderr, "kvbench: %s\n", bad);
     exit(2);
@@ -232,13 +257,46 @@ static int stat_field(const char *text, const char *name, int64_t *out) {
 }
 
 /**
+ * CPU time of every live thread of a process: the sum of the first field
+ * ("time spent on the cpu", in ns) of /proc/PID/task/TID/schedstat.
+ * @param pid  process id (in kvbench's PID namespace)
+ * @returns nanoseconds, or -1 when the process is not visible
+ * @remarks Exact to the nanosecond where /proc/PID/stat has 10 ms ticks. A
+ *          thread that exits takes its time with it, which is fine for
+ *          KvNode (workers live as long as the process). Over loopback the
+ *          server's figure includes the peer's TCP receive processing run
+ *          in the server's send() (and loses its own, run in the client's):
+ *          compare variants measured the same way, never against a NIC.
+ */
+static int64_t pid_cpu_ns(int pid) {
+  char path[64];
+  snprintf(path, sizeof path, "/proc/%d/task", pid);
+  DIR *dir = opendir(path);
+  if (!dir) return -1;
+  int64_t sum = 0;
+  struct dirent *e;
+  while ((e = readdir(dir)) != NULL) {
+    if (e->d_name[0] == '.') continue;
+    /* d_name can be 255 bytes in general (a TID is at most 10 digits here),
+     * so the path buffer is sized for the general case: no truncation. */
+    char file[300], buf[128];
+    snprintf(file, sizeof file, "/proc/%d/task/%s/schedstat", pid, e->d_name);
+    if (read_text(file, buf, sizeof buf) > 0) sum += strtoll(buf, NULL, 10);
+  }
+  closedir(dir);
+  return sum;
+}
+
+/**
  * Server CPU time consumed so far.
- * @returns nanoseconds, or -1 without --cgroup-cpu or when unreadable
- * @remarks cgroup v2 cpu.stat has "usage_usec N"; v1 cpuacct.usage is a
- *          bare nanosecond count.
+ * @returns nanoseconds, or -1 without --cgroup-cpu / --server-pid or when
+ *          unreadable
+ * @remarks --server-pid wins; cgroup v2 cpu.stat has "usage_usec N"; v1
+ *          cpuacct.usage is a bare nanosecond count.
  */
 static int64_t server_cpu_ns(void) {
   char buf[4096];
+  if (g_opt.server_pid > 0) return pid_cpu_ns(g_opt.server_pid);
   if (!g_opt.cg_cpu || read_text(g_opt.cg_cpu, buf, sizeof buf) < 0) return -1;
   int64_t v;
   if (stat_field(buf, "usage_usec ", &v)) return v * 1000;
@@ -323,6 +381,7 @@ int main(int argc, char **argv) {
   g_value_template = malloc(g_opt.value_size);
   for (uint32_t i = 0; i < g_opt.value_size; i++) g_value_template[i] = (uint8_t)('a' + i % 26);
   proto_text_init();
+  value_crc_init(); /* before any worker: they read its results unsynchronized */
   if (g_opt.zipf) zipf_init(&g_zipf, g_opt.keys, g_opt.zipf_theta);
   if (engine_resolve() != 0) return 2;
   if (engine_wait_ready(g_opt.wait_ready) != 0) {
@@ -331,16 +390,18 @@ int main(int argc, char **argv) {
   }
 
   static const char *proto_names[] = {"resp", "memcache", "grpc"};
+  static const char *workload_names[] = {"mixed", "ping", "upload", "download"};
   printf("{\"tool\":\"kvbench\",\"version\":\"" KVBENCH_VERSION "\",\"label\":");
   print_string(g_opt.label);
   printf(",\"config\":{\"protocol\":\"%s\",\"threads\":%d,\"connections\":%d,\"depth\":%d,"
          "\"keys\":%" PRIu64 ",\"key_size\":%d,\"value_size\":%u,\"read_ratio\":%.4f,"
-         "\"workload\":\"%s\",\"distribution\":\"%s\",\"zipf_theta\":%.3f,\"rate\":%.0f,"
-         "\"warmup_s\":%.2f,\"duration_s\":%.2f,\"seed\":%" PRIu64 ",\"busy_poll\":%s}",
+         "\"workload\":\"%s\",\"chunk\":%u,\"distribution\":\"%s\",\"zipf_theta\":%.3f,"
+         "\"rate\":%.0f,\"warmup_s\":%.2f,\"duration_s\":%.2f,\"seed\":%" PRIu64
+         ",\"busy_poll\":%s}",
          proto_names[g_opt.proto], g_opt.threads, g_opt.connections, g_opt.depth, g_opt.keys,
-         KEY_BYTES, g_opt.value_size, g_opt.read_ratio, g_opt.workload == WL_PING ? "ping" : "mixed",
-         g_opt.zipf ? "zipf" : "uniform", g_opt.zipf_theta, g_opt.rate, g_opt.warmup,
-         g_opt.duration, g_opt.seed, g_opt.busy_poll ? "true" : "false");
+         KEY_BYTES, g_opt.value_size, g_opt.read_ratio, workload_names[g_opt.workload],
+         g_opt.chunk, g_opt.zipf ? "zipf" : "uniform", g_opt.zipf_theta, g_opt.rate,
+         g_opt.warmup, g_opt.duration, g_opt.seed, g_opt.busy_poll ? "true" : "false");
 
   int rc = 0;
   if (g_opt.load) {
@@ -375,22 +436,32 @@ int main(int argc, char **argv) {
     engine_join(&g_totals);
 
     double secs = (double)(t2 - t1) / 1e9;
-    uint64_t ops = g_totals.done[OP_GET] + g_totals.done[OP_SET] + g_totals.done[OP_PING];
+    uint64_t ops = 0;
+    for (int op = 0; op < OP_COUNT; op++) ops += g_totals.done[op];
+    /* Value bytes moved by streaming calls (each moves one whole value). */
+    uint64_t transfers = g_totals.done[OP_UPLOAD] + g_totals.done[OP_DOWNLOAD];
+    double value_bytes_per_sec = (double)transfers * g_opt.value_size / secs;
     Hist all = {0};
     for (int op = 0; op < OP_COUNT; op++) hist_merge(&all, &g_totals.hist[op]);
     double srv_cpu = srv1 >= 0 && srv2 >= 0 ? (double)(srv2 - srv1) / 1e9 : -1;
     printf(",\"result\":{\"seconds\":%.3f,\"ops\":%" PRIu64 ",\"ops_per_sec\":%.0f,"
-           "\"gets\":%" PRIu64 ",\"sets\":%" PRIu64 ",\"pings\":%" PRIu64 ",\"stalls\":%" PRIu64
+           "\"gets\":%" PRIu64 ",\"sets\":%" PRIu64 ",\"pings\":%" PRIu64 ",\"uploads\":%" PRIu64
+           ",\"downloads\":%" PRIu64 ",\"value_bytes_per_sec\":%.0f,\"stalls\":%" PRIu64
            ",\"client_cpu_s\":%.3f,\"client_cpu_util\":%.3f,\"server_cpu_s\":%.3f,"
            "\"server_mem_bytes\":%" PRId64 ",\"latency_us\":",
            secs, ops, (double)ops / secs, g_totals.done[OP_GET], g_totals.done[OP_SET],
-           g_totals.done[OP_PING], g_totals.stalls, cpu2 - cpu1,
+           g_totals.done[OP_PING], g_totals.done[OP_UPLOAD], g_totals.done[OP_DOWNLOAD],
+           value_bytes_per_sec, g_totals.stalls, cpu2 - cpu1,
            (cpu2 - cpu1) / (secs * g_opt.threads), srv_cpu, mem);
     print_latency(&all);
     printf(",\"get_latency_us\":");
     print_latency(&g_totals.hist[OP_GET]);
     printf(",\"set_latency_us\":");
     print_latency(&g_totals.hist[OP_SET]);
+    printf(",\"upload_latency_us\":");
+    print_latency(&g_totals.hist[OP_UPLOAD]);
+    printf(",\"download_latency_us\":");
+    print_latency(&g_totals.hist[OP_DOWNLOAD]);
     printf(",\"interval_s\":%.3f,\"timeline_ops_per_sec\":[", g_opt.interval);
     for (int i = 0; i < g_nsamples; i++) printf("%s%.0f", i ? "," : "", g_timeline[i]);
     printf("],");
