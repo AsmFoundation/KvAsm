@@ -129,10 +129,21 @@ All three together, the original build against the final one (same A/B,
 6/6 everywhere): uploads **2.30x** (64 KiB values), **1.70x** (1 MiB),
 **1.56x** (16 MiB); downloads **1.24x / 1.28x / 1.22x**; GETs unchanged
 (1.000). One server core now takes ~11 GB/s of 1 MiB uploads and ~6 GB/s
-of 1 MiB downloads from `kvbench` over loopback. What remains of a download
-worker is mostly the kernel: the send copy and, on one machine, waking the
-co-located client — a topology cost a remote client does not cause
-(ADR 0009).
+of 1 MiB downloads from `kvbench` over loopback. A profile of the final
+build (1 MiB downloads, 4 connections, 6.6 GB/s on one worker): 36% the
+fused CRC + copy of each chunk from the record into the output buffer, 25%
+waking the co-located client — a topology cost a remote client does not
+cause (ADR 0009) — and 13% the kernel's send copy.
+
+**The next lever (not done):** that 36%. Store each record's CRC-32C when
+it is written (Upload computes it already; Put would add one fused pass)
+and send a whole-value download straight from the pinned record
+(`sendmsg` with an iovec into it, frame headers from the output buffer):
+one copy fewer and no CRC pass per download, so up to ~1.5x downloads per
+worker. Ranges keep today's path (their CRC needs their bytes). It changes
+the record format (+4 bytes) and the output path (partial writes resume
+inside a record; the pin already outlives every send), so it deserves its
+own measured design.
 
 The .NET client was the bottleneck by several times (the original build:
 2.0 GB/s of uploads on 4.7 client cores against a half-idle server core)

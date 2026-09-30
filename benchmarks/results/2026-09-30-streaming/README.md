@@ -71,6 +71,17 @@ VM), 6 blocks, every row 6/6 (p = 0.031) except the GET guard
 One server core over loopback, both variants running at once (so each
 gets part of the memory bus: alone, B's 1 MiB uploads reach ~11 GB/s).
 
+What the final server still spends on a download (perf by PID, 1 MiB
+values over 4 connections, 6.6 GB/s on one worker): **36.4%** the fused
+CRC + copy of each chunk from the record into the output buffer (the
+`vpclmul` loop, a NASM macro-local label `..@76.loop` in the report),
+**24.9%** `__wake_up_common_lock` (waking the co-located client; ADR 0009),
+**13.5%** `copy_user_enhanced_fast_string` (the kernel's send copy). The
+36% is the next lever, not taken here: a CRC stored with each record and
+whole-value downloads sent straight from the pinned record (`sendmsg` with
+an iovec into it) would drop both the copy and the CRC pass — ADR 0010
+section 6 sketches it.
+
 ## .NET client
 
 Baseline (original client, 4 concurrent 1 MiB transfers, one pinned
