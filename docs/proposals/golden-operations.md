@@ -12,6 +12,9 @@
     where a packed key arena is cache-resident.
   - [key-indexes.md](key-indexes.md): prefix, suffix and pattern indexes.
   - [export-watch.md](export-watch.md): streams, revisions and cuts.
+  - [functions-plan.md](functions-plan.md): the 38 user-facing functions
+    these measurements support, designed for implementation (API,
+    semantics, usage, phases).
 - **Evidence:**
   [benchmarks/results/2026-09-29-golden-probe](../../benchmarks/results/2026-09-29-golden-probe/README.md).
   - `golden_probe.c` measures each prototype next to the store's own
