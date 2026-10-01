@@ -503,6 +503,10 @@ message NearMatch { bytes key = 1; uint32 distance = 2; }
 - A key in an opted-in prefix carries its fingerprint, set with
   `SetFingerprint(key, fingerprint)` (a Mutate op), or as the value's
   first 8 bytes by convention.
+  - [functions-plan.md](functions-plan.md) H5 proposes the convention, so
+    that Put and Delete maintain the index and snapshots need no change.
+  - It also adds `with_values` to the request and `truncated` to the
+    response.
 
 **Semantics.**
 - **Exact:** every key whose fingerprint is within `max_distance` bits,
@@ -1037,13 +1041,14 @@ Notes:
    customer needs them.
 
 Each would land with its own ADR and measurement gate, in the functions
-plan's phases:
+plan's phases ([functions-plan.md](functions-plan.md) §V.10, which also
+gives every function its API names, usage and gates):
 
 | Phase | Gets |
 |---|---|
-| 0-1 | P2, P3, P4 |
-| 5 | H7-H9 |
-| 6 (opt-ins) | H1-H6, H10 |
+| S (store speedups, any time, no API) | P2, P3, P4 |
+| 5 (analytics and typed values) | H2, H3, H4, H9, H10; H7 and H8 are the plan's F3 and F4 |
+| 6 (opt-ins) | H1, H5, H6 |
 
 ---
 
@@ -1128,4 +1133,5 @@ plan's phases:
 5. **The geo index:** the ordered index keyed by Morton code, or a
    base + delta array with a prefix table? It depends on the write rate.
 6. **Near-duplicate fingerprints:** a dedicated `SetFingerprint`, or a
-   convention on the value's first 8 bytes?
+   convention on the value's first 8 bytes? The functions plan proposes
+   the convention, for geo points too (its §V.13 decision 11).
