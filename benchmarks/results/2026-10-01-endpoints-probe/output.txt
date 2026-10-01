@@ -1,0 +1,106 @@
+revision 783cf4a; gcc 14.2.0; nasm 2.16.03
+cpu 13th Gen Intel(R) Core(TM) i9-13900K
+thp [always] madvise never
+
+== endpoints_probe --keys 10000000 ==
+main store: 10000000 keys of 20-21 bytes, 100-byte values; fill 2.4 s; cpu 4, reps 5; crc32c mode 3
+
+THE BAR: exact gets on the main store (x = ratio to the bar of the same regime; GOLD = within 10x)
+  get (100-byte value)             dependent chain                                    411.4 ns     1.00xD GOLD  bar D
+                                   independent loop                                   369.5 ns     1.00xI GOLD  bar I
+                                   batched pipeline (the server's GET path)            57.5 ns     1.00xB GOLD  bar B
+BARS dep=411.4 ind=369.5 bat=57.5
+  Stat (lengths, no value)         batched; reads the record header only               58.8 ns     1.02xB GOLD  1.00x the get beside it (58.8 ns)
+  GetRange (16 bytes at offset 40) batched; copies the slice only                      58.7 ns     1.02xB GOLD  1.00x the get beside it
+
+ETAG: CRC32C of values with the server's crc32c.asm (folding VPCLMULQDQ vs the SSE4.2 instruction)
+  CRC32C of 100 bytes              best mode (VPCLMULQDQ folding)                       2.8 ns     0.05xB GOLD  35.7 GB/s
+  CRC32C of 1024 bytes             best mode (VPCLMULQDQ folding)                      11.6 ns     0.20xB GOLD  88.2 GB/s
+  CRC32C of 4096 bytes             best mode (VPCLMULQDQ folding)                      45.2 ns     0.78xB GOLD  90.7 GB/s
+  CRC32C of 65536 bytes            best mode (VPCLMULQDQ folding)                     720.4 ns    12.52xB       91.0 GB/s
+  CRC32C of 100 bytes              SSE4.2 crc32 chain                                   2.8 ns     0.05xB GOLD  35.8 GB/s
+  CRC32C of 1024 bytes             SSE4.2 crc32 chain                                  40.2 ns     0.70xB GOLD  25.4 GB/s
+  CRC32C of 4096 bytes             SSE4.2 crc32 chain                                 229.6 ns     3.99xB GOLD  17.8 GB/s
+  CRC32C of 65536 bytes            SSE4.2 crc32 chain                                  4.29 us    74.53xB       15.3 GB/s
+  GetIfChanged, value unchanged    batched + CRC32C of the 100-byte value              67.5 ns     1.17xB GOLD  1.12x the get beside it; 0 value bytes sent
+  GetIfChanged, value changed      batched + CRC32C + the value copy                   67.1 ns     1.17xB GOLD  1.12x the get beside it
+
+SNAPSHOT: 16 keys read as one consistent snapshot (double collect over bucket versions)
+  GetMany of 16 keys, per key      plain (today's GetMany)                             67.4 ns     1.17xB GOLD  batched pipeline
+                                   consistent snapshot (versions re-checked)           68.2 ns     1.19xB GOLD  1.01x plain; 1.000 attempts per snapshot
+  16 keys under a racing writer    plain reads (~0.1 us per key, as cold keys)         2.53 us                  21904 of 200000 reads torn
+                                   validated snapshots                                 3.94 us                  0 of 200000 torn; 1.52 attempts per read
+
+SCAN: every key by bucket cursor, no index (the table is 2097152 buckets of 64 bytes)
+  Iterate keys (1 thread)          bucket order, records prefetched 8 ahead            18.5 ns     0.32xB GOLD  54.0 M keys/s; checked: all 10000000 keys once
+  Iterate keys + values (1 thread) the same, copying each 100-byte value               19.5 ns     0.34xB GOLD  51.3 M keys/s, 5.13 GB/s of values
+  ScanShard keys (7 shards, 7 threads) one bucket range per thread                          2.9 ns     0.05xB GOLD  340.2 M keys/s; the whole table in 29 ms
+
+CELLS: max registers, 64-flag words and counter arrays, in place
+  1M 8-byte cells, batched         increment (LOCK XADD), baseline                     47.2 ns     0.82xB GOLD  exact (checked)
+                                   max register (LOCK CMPXCHG loop)                    43.1 ns     0.75xB GOLD  0.91x the increment
+                                   flag word (LOCK OR of a 64-bit mask)                47.1 ns     0.82xB GOLD  1.00x the increment
+  sum of 168 int64 (in cache)      scalar                                              29.2 ns     0.51xB GOLD  
+                                   AVX2 (4 accumulators)                                6.3 ns     0.11xB GOLD  
+  max of 168 int64 (in cache)      scalar                                              48.5 ns     0.84xB GOLD  
+                                   AVX2 (VPCMPGTQ + VPBLENDVB)                         18.2 ns     0.32xB GOLD  
+  ArrayIncrement (one of 168)      batched + LOCK XADD at the index                    71.7 ns     1.25xB GOLD  200k keys of 1,344 bytes
+  ArraySum (all 168)               batched + array prefetch stage + AVX2 sum          116.4 ns     2.02xB GOLD  8 bytes on the wire instead of 1,344
+
+JSON: one field out of a JSON value (simdjson-style AVX2 + PCLMULQDQ scan vs a scalar tokenizer)
+  2000 documents of 668 bytes on average: every structural and every field checked
+  index a 668-byte document        scalar tokenizer, every structural                 642.4 ns     1.74xI GOLD  1.04 GB/s
+                                   AVX2 + PCLMULQDQ, every structural                 273.4 ns     0.74xI GOLD  2.44 GB/s; 2.3x the scalar
+  JsonGet plan (early, top level)  scalar tokenizer + walker                           80.6 ns     0.22xI GOLD  
+                                   SIMD tokenizer + the same walker                    49.5 ns     0.13xI GOLD  1.6x the scalar
+  JsonGet address.zip (early, nested) scalar tokenizer + walker                          155.6 ns     0.42xI GOLD  
+                                   SIMD tokenizer + the same walker                    79.7 ns     0.22xI GOLD  2.0x the scalar
+  JsonGet stats.likes (late, nested) scalar tokenizer + walker                          490.6 ns     1.33xI GOLD  
+                                   SIMD tokenizer + the same walker                   253.1 ns     0.68xI GOLD  1.9x the scalar
+  JsonGet score (last)             scalar tokenizer + walker                          510.3 ns     1.38xI GOLD  
+                                   SIMD tokenizer + the same walker                   267.2 ns     0.72xI GOLD  1.9x the scalar
+  JsonGet absent key (whole doc)   scalar tokenizer + walker                          527.1 ns     1.43xI GOLD  
+                                   SIMD tokenizer + the same walker                   253.1 ns     0.69xI GOLD  2.1x the scalar
+  get a whole ~1 KB JSON document  batched pipeline (glibc memcpy)                    110.7 ns     1.92xB GOLD  1M documents
+  JsonGet stats.likes (late field) batched + SIMD tokenizer + walker                  369.2 ns     6.42xB GOLD  3.34x the whole get; a few bytes on the wire
+  2000 documents of 4969 bytes on average: every structural and every field checked
+  index a 4969-byte document       scalar tokenizer, every structural                  3.11 us     8.43xI GOLD  1.60 GB/s
+                                   AVX2 + PCLMULQDQ, every structural                  1.76 us     4.75xI GOLD  2.83 GB/s; 1.8x the scalar
+  JsonGet plan (early, top level)  scalar tokenizer + walker                           52.9 ns     0.14xI GOLD  
+                                   SIMD tokenizer + the same walker                    31.3 ns     0.08xI GOLD  1.7x the scalar
+  JsonGet address.zip (early, nested) scalar tokenizer + walker                           96.2 ns     0.26xI GOLD  
+                                   SIMD tokenizer + the same walker                    52.3 ns     0.14xI GOLD  1.8x the scalar
+  JsonGet stats.likes (late, nested) scalar tokenizer + walker                           3.36 us     9.10xI GOLD  
+                                   SIMD tokenizer + the same walker                    1.75 us     4.73xI GOLD  1.9x the scalar
+  JsonGet score (last)             scalar tokenizer + walker                           3.40 us     9.20xI GOLD  
+                                   SIMD tokenizer + the same walker                    1.77 us     4.80xI GOLD  1.9x the scalar
+  JsonGet absent key (whole doc)   scalar tokenizer + walker                           3.38 us     9.15xI GOLD  
+                                   SIMD tokenizer + the same walker                    1.77 us     4.79xI GOLD  1.9x the scalar
+
+SHA-256: content addressing (SHA-NI instructions vs scalar FIPS 180-4 code)
+  SHA-256 of 100 bytes             scalar                                             340.5 ns     5.92xB GOLD  0.29 GB/s
+                                   SHA-NI (SHA256RNDS2, MSG1, MSG2)                    97.7 ns     1.70xB GOLD  1.02 GB/s; 3.5x the scalar
+  SHA-256 of 4096 bytes            scalar                                             10.50 us   182.47xB       0.39 GB/s
+                                   SHA-NI (SHA256RNDS2, MSG1, MSG2)                    1.66 us    28.84xB       2.47 GB/s; 6.3x the scalar
+  SHA-256 of 65536 bytes           scalar                                            164.83 us  2864.81xB       0.40 GB/s
+                                   SHA-NI (SHA256RNDS2, MSG1, MSG2)                   25.49 us   442.97xB       2.57 GB/s; 6.5x the scalar
+  SHA-256 of 1048576 bytes         scalar                                              2.65 ms  46139.59xB       0.39 GB/s
+                                   SHA-NI (SHA256RNDS2, MSG1, MSG2)                  414.65 us  7206.68xB       2.53 GB/s; 6.4x the scalar
+  PutBlob, 4 KiB                   SHA-NI digest + exists + put                        1.77 us     4.79xI GOLD  4096 stored, 95904 deduplicated
+  FindMissingBlobs (32-byte digests) batched exists                                      33.8 ns     0.59xB GOLD  50% present
+
+GREP: substring search over 256 MiB of text values (a value filter for Scan / Export)
+  find "orange7" in 256 MiB        glibc memmem                                       53.44 ms                  5.02 GB/s; 4095 matches
+                                   AVX2 first/last-byte filter                        13.71 ms                  19.58 GB/s; 3.9x memmem
+  find "the cat sat" in 256 MiB    glibc memmem                                      169.87 ms                  1.58 GB/s; 440386 matches
+                                   AVX2 first/last-byte filter                        69.30 ms                  3.87 GB/s; 2.5x memmem
+
+  Rss:             2685812 kB
+  AnonHugePages:    399360 kB
+all checks passed
+
+== certification (host side, docker events for the run's window) ==
+1790885778 container exec_create: bash /src/benchmarks/results/2026-10-01-endpoints-probe/run.sh 4 5 kvnode-dev
+1790885778 container exec_start: bash /src/benchmarks/results/2026-10-01-endpoints-probe/run.sh 4 5 kvnode-dev
+attempt 1 window 2026-10-01T20:16:17Z .. 2026-10-01T20:16:49Z rc=0 foreign=0
+idle before the run: kvnode-dev had no process besides pid 1, zombies and the D-state trees stuck since 2026-09-29; VM CPU 0.0% over 2 s; host CPU 14.7%

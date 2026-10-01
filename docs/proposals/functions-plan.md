@@ -2,12 +2,18 @@
 
 - **Status:** proposed plan, 2026-10-01. Nothing here is implemented or
   decided. Each phase would land with its own ADR.
-- **What it covers:** the 46 functions KvNode could offer beyond Get, Put,
-  Delete, Upload and Download: 38 in groups A-G, and 8 more in Group H,
-  added on 2026-10-01 from [golden-services.md](golden-services.md). They
-  were chosen from the measured catalogs for the business value customers
-  get from them. The same date added Track S (§V.10): three store speedups
-  with no API, which make existing functions faster. For each function:
+- **What it covers:** the 58 functions KvNode could offer beyond Get, Put,
+  Delete, Upload and Download. They were chosen from the measured catalogs
+  for the business value customers get from them:
+  - 38 in groups A-G;
+  - 8 in Group H, added on 2026-10-01 from
+    [golden-services.md](golden-services.md);
+  - 12 in Group J, added the same day from
+    [storage-simd-endpoints.md](storage-simd-endpoints.md): what the
+    store's layout makes cheap, and SIMD work on values.
+
+  The same date added Track S (§V.10): three store speedups with no API,
+  which make existing functions faster. For each function:
   - why customers want it;
   - the API;
   - the exact semantics;
@@ -26,6 +32,10 @@
     near-duplicates, geo, TopK, quantiles, sliding windows, scoring) and
     six store speedups (8-lane SipHash, flat combining, UMWAIT, ...),
     measured at 10M keys. It also measures F3 and F4 below.
+  - [storage-simd-endpoints.md](storage-simd-endpoints.md): how the store
+    hashes and stores, where SIMD pays, and twelve endpoints derived from
+    them (Group J: metadata, slices, ETags, snapshot reads, Iterate, cells,
+    arrays, JsonGet, blobs, value filters, BulkLoad), measured at 10M keys.
   - [capabilities.md](capabilities.md): the same question at 100k keys.
   - [key-indexes.md](key-indexes.md): prefix, suffix and pattern indexes.
   - [export-watch.md](export-watch.md): Watch, Export, revisions and cuts.
@@ -40,6 +50,7 @@
   | **X** | the [export probe](../../benchmarks/results/2026-09-29-export-probe/README.md) |
   | **S** | the revision (sequence) probe in the index-probe directory |
   | **V** | the [services probe](../../benchmarks/results/2026-10-01-services-probe/README.md), 10M keys ([golden-services.md](golden-services.md)) |
+  | **N** | the [endpoints probe](../../benchmarks/results/2026-10-01-endpoints-probe/README.md), 10M keys ([storage-simd-endpoints.md](storage-simd-endpoints.md)) |
   | **E** | estimated from measured parts |
   | **C** | cited (Appendix B) |
 
@@ -51,13 +62,13 @@
   |---|---|
   | I | the catalog and a "which function do I need" table |
   | II | the foundations every function shares |
-  | III | the 46 functions, one fixed template each: Why, API, Semantics, How it works, Cost, Usage, Pitfalls |
+  | III | the 58 functions, one fixed template each: Why, API, Semantics, How it works, Cost, Usage, Pitfalls |
   | IV | recipes that combine functions |
   | V | the engineering plan |
 
 ## Summary
 
-**The 46 functions, by group.**
+**The 58 functions, by group.**
 
 | Group | Functions | What the store needs | Phase |
 |---|---|---|---|
@@ -69,6 +80,7 @@
 | F. Sketches | CountDistinct; Frequency; TopK; Quantiles | typed values, updated in place | 5 |
 | G. Streams and sync | Watch; ChangesSince; Export; Reconcile; StatsByPrefix | the history ring and cuts (export-watch.md); directories | 3, 4 (Reconcile: 6) |
 | H. More golden services ([golden-services.md](golden-services.md)) | compact keys; Fields (struct fields); Bits (bitmaps); Sets; FindNear; GeoAdd / GeoRadius; WindowAdd; Score (TopK and quantiles are F3, F4) | typed values; a compact table; two opt-in indexes | 5 (Fields, Bits, Sets, WindowAdd, Score); 6 (compact keys, FindNear, Geo) |
+| J. From the storage design, and SIMD on values ([storage-simd-endpoints.md](storage-simd-endpoints.md)) | value metadata; GetRange; GetIfChanged (ETags); snapshot reads; Iterate; max / min registers; flag words; counter arrays; JsonGet; PutBlob; value filters; BulkLoad | GetMany and Increment options; a relocation log and a sequence word; one typed value (arrays); SIMD kernels (JSON, SHA-256, substring) | 1 (J1-J7, J12); 5 (J8-J11); 6 (Bazel's cache services) |
 
 **Seven decisions this plan proposes.**
 
@@ -102,19 +114,19 @@
 | Phase | Ships | Depends on | Gate (must hold to land) |
 |---|---|---|---|
 | 0 Foundations | revisions and versions; the Mutate engine; batch limits; Stats | — | ≤ +5 ns per write; Get/Put unchanged ±2% |
-| 1 No new structures | Exists, GetMany, Mutate (batches, conditions, swap, atomic batches, Move), Increment (with bounds), RateLimit, Sample | 0 | batched puts ≥ 2.5× single puts per key; Increment ≤ 1.2× a batched get |
+| 1 No new structures | Exists, GetMany, Mutate (batches, conditions, swap, atomic batches, Move), Increment (with bounds), RateLimit, Sample; Group J: GetMany's metadata, slices, ETags and snapshot reads, Iterate, Increment's MAX / MIN and flag ops, BulkLoad | 0 | batched puts ≥ 2.5× single puts per key; Increment ≤ 1.2× a batched get; Group J gates in §V.9 |
 | 2 Time | TTL (Expire, `ttl_ms` on writes), leases | 1 | Get ±1%; put with TTL ≤ +50 ns |
 | 3 Streams | Watch, ChangesSince, Export, ad hoc patterns; ADD and EXPIRE events | 0 | export-watch.md §12 |
 | 4 Order | the ordered index; Scan, Count, Seek, Rank / Select, Pop, DeleteRange, LongestPrefix; directories (StatsByPrefix, prefix sampling) | 0 | ≤ +0.85 µs per create or delete; nothing per replace |
-| 5 Analytics and typed values | sketches (HLL, Count-Min, TopK, quantiles); GetFilter; Fields, Bits, Sets, WindowAdd, Score (Group H) | 1 | an add ≤ 1.2× a batched get per item; filter build ≤ 100 ns per key; Group H gates in §V.9 |
-| 6 Opt-ins | FindSimilar, FindContaining, Matching, hot counters, Reconcile; compact keys, FindNear, GeoAdd / GeoRadius (Group H) | 3, 4 | per function, Part V §9 |
+| 5 Analytics and typed values | sketches (HLL, Count-Min, TopK, quantiles); GetFilter; Fields, Bits, Sets, WindowAdd, Score (Group H); Arrays, JsonGet, PutBlob, value filters (Group J) | 1 | an add ≤ 1.2× a batched get per item; filter build ≤ 100 ns per key; Group H and J gates in §V.9 |
+| 6 Opt-ins | FindSimilar, FindContaining, Matching, hot counters, Reconcile; compact keys, FindNear, GeoAdd / GeoRadius (Group H); Bazel's cache services (Group J) | 3, 4 | per function, Part V §9 |
 | S Store speedups (any time, no API) | 8-lane SipHash in every batched hash stage; flat combining for writers; UMWAIT waits | — | batched get ≤ 0.97×; puts/s at 7 writers ≥ 1.5×, at 1 ≥ 0.95× (§V.9) |
 
 ---
 
 # Part I — The catalog at a glance
 
-## I.1 All 46 functions
+## I.1 All 58 functions
 
 | # | Function | What it answers | RPC | Cost at 10M keys | Store needs | Phase | Ev. |
 |---|---|---|---|---|---|---|---|
@@ -164,6 +176,18 @@
 | H6 | GeoAdd / GeoRadius | members within a radius of a point | `GeoAdd`, `GeoRadius` | 697.5 ns for 200 m (15 results) among 10M | opt-in, 28 B per point + 4 MiB | 6 | V |
 | H9 | Sliding windows | a count over the last N periods | `WindowAdd` | ≈ an increment; the sum 4.5 ns | typed value | 5 | V, E |
 | H10 | Score | similarity of given keys' stored vectors to a query | `Score` | a batched get + 1.5-5.6 ns per key | typed vector values | 5 | V |
+| J1 | Value metadata | lengths and types, without the values | GetMany `with_length` | 58.8 ns per key, batched | — | 1 | N |
+| J2 | GetRange | slices of many small values | GetMany `range`; Download for one large value | 58.7 ns per 16-byte slice, batched | — | 1 | N |
+| J3 | GetIfChanged (ETags) | only the values that changed since a tag | GetMany `if_tags` | 67.5 ns when unchanged, no value bytes | — (CRC tags); versions (version tags) | 1 | N |
+| J4 | Snapshot reads | many keys read at one instant | GetMany `consistent` | 1.01× plain GetMany at rest | an atomic-batch sequence word | 1 | N |
+| J5 | Iterate | every key, by hash shard, with no index | `Iterate` | 18.5 ns per key per thread; 340 M keys/s on 7 | a 512 KiB relocation log | 1 | N |
+| J6 | UpdateMax / UpdateMin | a register that only rises (or falls) | Increment `op` | 43.1 ns batched, mostly unchanged; ≈ an increment when raising | — | 1 | N, E |
+| J7 | SetFlags / ClearFlags | 64 flags per key, with the previous word | Increment `op` | 47.1 ns, batched | — | 1 | N |
+| J8 | Counter arrays | N counters in one key; sums and extremes of ranges | `Arrays` | add 71.7 ns; sum of 168 cells 116.4 ns | typed value | 5 | N |
+| J9 | JsonGet | fields of JSON values | `JsonGet` | late field: 253 ns at 668 B, 1.75 µs at 5 KB; early 31-80 ns | — | 5 | N |
+| J10 | PutBlob | content-addressed blobs, deduplicated | `PutBlob`; Exists; opt-in REAPI services | 1.77 µs per 4 KiB; 33.8 ns per digest checked | — (REAPI: Phase 6) | 5 | N |
+| J11 | Value filters | records whose values match | Iterate, Export | 3.9-19.6 GB/s per thread, paged | — | 5 | N |
+| J12 | BulkLoad | load millions of keys fast | client over `Mutate` | ≈ 126 ns per key | — | 1 | M |
 
 ## I.2 "I want to…": choosing a function
 
@@ -208,11 +232,25 @@
 | find what is near a point | GeoRadius (H6, R21) | Scan over a grid of keys |
 | count events over a rolling window, with thresholds | WindowAdd (H9, R23) | RateLimit, when throttling is all you need (B3) |
 | re-rank candidates by embedding similarity | Score (H10) | fetching every vector to the client |
+| check sizes or types before downloading | GetMany `with_length` (J1) | a Get of each value |
+| read a header or a fixed field of many values | GetMany `range` (J2); Download with `offset` for one large value | whole values |
+| revalidate cached values, or answer HTTP 304 | GetMany `if_tags` (J3, R24) | re-reading every value |
+| read several keys that must agree | GetMany `consistent` (J4, R27) | separate Gets |
+| back up, migrate or re-index everything, in parallel | Iterate by hash shard (J5, R26) | Scan without the ordered index; Export before Phase 3 |
+| keep a high-water mark or a last-seen time | UpdateMax (J6, R28) | Get, then CompareAndSet |
+| keep up to 64 flags per account, and claim one once | SetFlags (J7, R28) | a key per flag |
+| count per hour of the week, or fill a histogram | Arrays (J8, R29) | 168 counter keys |
+| read a few fields of large JSON documents | JsonGet (J9, R30) | a Get of the whole document |
+| store build outputs or files by content | PutBlob (J10, R25) | a Put under a client-computed digest |
+| find records by what their values contain | Iterate or Export with a value filter (J11, R31) | downloading everything |
+| load or restore millions of keys | BulkLoad (J12) | one Put per key |
 
 ## I.3 Not in this plan
 
 - **Indexes over value contents** (secondary indexes inside values): values
-  stay opaque bytes. capabilities.md §1.8 lists the options.
+  stay opaque to indexes. capabilities.md §1.8 lists the options. Group J
+  reads inside values on request (JsonGet, value filters), but indexes
+  nothing.
 - **Vector, geo and full-text search.**
   - **Now in this plan (Group H):** geo radius (H6) and near-duplicate
     search (H5), both measured golden at 10M keys, and the scoring of
@@ -269,6 +307,11 @@ call cannot exceed the synchronous budget:
 | FindNear (H5) | ~0.7 µs per query (V) | one query, ≤ 1,000 matches | ~1 µs + the matches |
 | GeoRadius (H6) | ~17 ns per result (V) | one query, ≤ 10,000 results | ~170 µs |
 | Score (H10) | a batched get + ≤ 6 ns (V) | 1,024 keys | ~65 µs |
+| GetMany with `consistent` (J4) | ~68 ns (N) | 1,024 keys, one response | ~70 µs + the lock fallback's ~1 µs per 16 keys |
+| Iterate (J5) | ~19 ns per key visited (N) | 1,000 entries; 2,048 buckets visited (~10k keys); 512 KiB of values filtered | ~0.2 ms |
+| Arrays GET, SUM, MIN, MAX (J8) | 0.04-0.11 ns per cell in cache; 116 ns per 168-cell op in the store (N) | 256 ops; 524,288 cells read per call | ~0.2 ms |
+| JsonGet (J9) | 2.4-2.8 GB/s of documents scanned (N) | 1,024 keys; 512 KiB scanned, after at least one document | ~0.2 ms |
+| PutBlob (J10) | SHA-256 at ~2.5 GB/s, then a put (N) | 512 KiB of blobs | ~0.25 ms |
 
 ### 1.3 Answers versus errors
 
@@ -278,11 +321,14 @@ call cannot exceed the synchronous budget:
 | a bound refused an increment | `OK`, outcome `OUT_OF_BOUNDS`, the current value |
 | the rate limit refused a request | `OK`, `allowed = false`, `retry_after_ms` |
 | the key is absent | `OK`, `found = false` |
-| the value has the wrong type (Increment on a non-counter, SketchAdd on a non-sketch; Fields, Bits, Sets, WindowAdd or Score on a value of another type) | `FAILED_PRECONDITION` (9) for a single item; a per-item outcome in batches |
-| a compact key or value over its limit (H1); a value under a near-duplicate or geo prefix too short for its fingerprint or point (H5, H6) | `INVALID_ARGUMENT` (3), with `reason` |
+| a cached tag still matches (J3) | `OK`, `unchanged = true`, no value |
+| a value is not JSON up to the requested path, or nests too deep (J9) | `OK`, outcome `NOT_JSON` or `TOO_DEEP` for that key |
+| an Iterate cursor fell behind the relocation log (J5) | `OK`, `restart = true` |
+| the value has the wrong type (Increment on a non-counter, SketchAdd on a non-sketch; Fields, Bits, Sets, WindowAdd, Score or Arrays on a value of another type) | `FAILED_PRECONDITION` (9) for a single item; a per-item outcome in batches |
+| a compact key or value over its limit (H1); a value under a near-duplicate or geo prefix too short for its fingerprint or point (H5, H6); a blob that does not match its `expected_sha256`, or another write under the CAS prefix (J10); bounds or `sharded` with an op other than ADD (J6, J7) | `INVALID_ARGUMENT` (3), with `reason` |
 | a counter would overflow int64 | `OUT_OF_RANGE` (11), or a per-item outcome |
 | the feature is disabled | `UNIMPLEMENTED` (12) |
-| a limit was hit (batch, page, memory, capacity) | `RESOURCE_EXHAUSTED` (8); `INVALID_ARGUMENT` (3) for a malformed request |
+| a limit was hit (batch, page, memory, capacity; a consistent read larger than one response, J4) | `RESOURCE_EXHAUSTED` (8); `INVALID_ARGUMENT` (3) for a malformed request |
 | the key is outside the caller's scope (§1.10) | `PERMISSION_DENIED` (7) |
 
 The rule: anything a correct program expects as a normal outcome is a field
@@ -302,6 +348,8 @@ asked.
   .NET client's default receive limit is 1 MiB + 1 KiB. A read batch that
   would exceed it returns the items so far plus `next_index`; the client
   library continues automatically.
+  - **The exception is a consistent read** (J4). A snapshot cannot span two
+    calls, so one that would exceed the cap is `RESOURCE_EXHAUSTED`.
 - **Non-atomic write batches** apply in order, each item atomically. Each
   item reports its own outcome: applied, condition failed, or no space (the
   memory or key limit was reached at that item).
@@ -352,14 +400,19 @@ asked.
 | set | a magic `KVSE`, the count, then the sorted u64 members (H4) | Sets ADD | the documented bytes |
 | window | a magic `KVWN`, the bucket count and width, the newest epoch, then the buckets (H9) | WindowAdd | the documented bytes |
 | vector | a magic `KVVC`, the element type and dimension, then the elements (H10) | a Put of the encoding (a client helper) | the bytes |
+| array | a magic `KVAR`, the cell count, then int64 cells (J8) | Arrays ADD with `create_cells`, or a Put of the encoding | the documented bytes |
 
 - A Put of other bytes over any typed value makes it a plain value again.
 - Increment on a value that is not exactly 8 bytes is `NOT_A_COUNTER`.
+  That includes its MAX, MIN and flag ops (J6, J7): registers and flag
+  words are counters.
 - SketchAdd on a value without the sketch magic of the right kind is
   `FAILED_PRECONDITION`.
-- **The same rule holds for Group H.** Fields, Bits, Sets, WindowAdd and
-  Score on a value without their magic are `FAILED_PRECONDITION`, or a
-  per-item outcome.
+- **The same rule holds for Groups H and J.** Fields, Bits, Sets,
+  WindowAdd, Score and Arrays on a value without their magic are
+  `FAILED_PRECONDITION`, or a per-item outcome.
+- **Not types:** JSON documents (J9) and blobs (J10) are plain bytes.
+  JsonGet parses on every call, and a blob's key is its digest.
 - **Some prefixes fix the start of the value.** Under
   `KVNODE_NEAR_PREFIXES` a value starts with its 8-byte fingerprint (H5),
   and under `KVNODE_GEO_INDEXES` with its 16-byte point (H6). Compact keys
@@ -382,15 +435,17 @@ asked.
 
 | Call | Safe to retry on `UNAVAILABLE`? | Why |
 |---|---|---|
-| Exists, GetMany, Scan, Count, Seek, Rank, Select, Sample, Stats, SketchQuery, GetFilter, FindSimilar, FindContaining, Matching; FindNear, GeoRadius, Score; the reads of Fields (GET), Bits (GET, COUNT, POS), Sets (IS_MEMBER, CARD, INTER_CARD) and WindowAdd (delta 0) | yes | read-only |
+| Exists, GetMany, Scan, Count, Seek, Rank, Select, Sample, Stats, SketchQuery, GetFilter, FindSimilar, FindContaining, Matching; FindNear, GeoRadius, Score; the reads of Fields (GET), Bits (GET, COUNT, POS), Sets (IS_MEMBER, CARD, INTER_CARD) and WindowAdd (delta 0); Iterate, JsonGet, GetMany with any Group J option, and the reads of Arrays (GET, SUM, MIN, MAX) | yes | read-only |
 | DeleteRange | yes | deleting again is harmless; only the reported count differs |
-| GeoAdd; Fields SET and DEL; Bits SET and CLEAR; Sets ADD and REMOVE | yes | a retry writes the same state; only the reply (`was`, counts) describes the retry instead of the first attempt |
+| GeoAdd; Fields SET and DEL; Bits SET and CLEAR; Sets ADD and REMOVE; PutBlob; Increment MAX, MIN, SET_BITS and CLEAR_BITS | yes | a retry writes the same state; only the reply (`was`, `previous`, `existed`, counts) describes the retry instead of the first attempt |
 | Mutate with conditions | yes, with care | a retry after a lost reply reports `CONDITION_FAILED` for your own write: put a unique token in the value and compare `previous` |
-| Mutate without conditions, Increment, RateLimit, Pop, SketchAdd, SketchMerge; Fields INCR; WindowAdd with a delta | no | a retry applies twice (or pops another key) |
+| Mutate without conditions, Increment (ADD), RateLimit, Pop, SketchAdd, SketchMerge; Fields INCR; WindowAdd with a delta; Arrays ADD | no | a retry applies twice (or pops another key) |
 
 The .NET client auto-retries only the first group (as today for Get and
 Download). For the others, idempotency comes from the application, usually
-through PutIfAbsent on a request ID (R1).
+through PutIfAbsent on a request ID (R1). BulkLoad (J12) retries its own
+PutMany calls: storing the same value twice leaves the same value, and only
+its version moves.
 
 ### 1.9 Keys: what the functions see, and how to design them
 
@@ -461,7 +516,8 @@ cross it is refused before any structure is touched. The full picture at
 | compact table (H1) | 54 B per compact key, instead of ~61 B as an ordinary key of that size (V) | — | off (per prefix) |
 | near-duplicate index (H5) | 48 B per indexed key (V) | ~0.48 GB if all are indexed | off (per prefix) |
 | geo index (H6) | 28 B per point + 4 MiB (V) | ~0.28 GB if all are points | off (per index) |
-| typed values (H2-H4, H9, H10) | their own size; structs +56 B of directory, bitmaps +0.1% of counts | — | on |
+| typed values (H2-H4, H9, H10, J8) | their own size; structs +56 B of directory, bitmaps +0.1% of counts | — | on |
+| relocation log (J5) | — | 512 KiB fixed (`KVNODE_RELOCATION_LOG`) | on |
 | history ring | fixed size (`KVNODE_WATCH_HISTORY`) | — | export-watch.md |
 | sketches | they are values: 4-16 KB per HLL, sized Count-Mins | — | — |
 
@@ -511,6 +567,11 @@ They take **one revision for the whole batch**, which gives two properties:
   watermark, which passes the batch's revision only after every mutation
   of it is in place.
 
+A third property comes from a sequence word: **snapshot reads** (J4) see
+the batch whole or not at all. The batch keeps the table's atomic-batch
+sequence word odd while it applies, and a consistent read rejects any
+window in which the word was odd or moved.
+
 ### 2.2 The revision counter
 
 | Property | Value |
@@ -541,6 +602,9 @@ cores. Hot counters (B4) coalesce their events to stay under it.
 | struct field (H2) | `LOCK XADD` or an aligned 8-byte store |
 | bitmap bit (H3) | `LOCK BTS` / `LOCK BTR`; on a flip, `LOCK XADD` on the block count and the total |
 | window bucket (H9) | `LOCK CMPXCHG16B` to reset a stale bucket, then `LOCK XADD` |
+| max / min register (J6) | `LOCK CMPXCHG` loop; a candidate that changes nothing is one load |
+| flag word (J7) | `LOCK CMPXCHG` loop, which returns the previous word |
+| array cell (J8) | `LOCK XADD` at the index |
 
 The 8-byte value cell is aligned because records are 16-aligned, the header
 is 24 bytes and keys are padded to 8 (golden-operations §4.1).
@@ -563,6 +627,11 @@ Concurrent updates can publish their "value after" out of revision order.
 The deltas commute, though, so a consumer that sums deltas is exact; the
 value is informative.
 
+**MAX, MIN and the flag ops (J6, J7) publish their change as a wrapping
+delta,** `after − before`. The `LOCK CMPXCHG` that applies them knows both
+values. Sums of deltas, and rule 4's exports, therefore stay exact. A
+no-op publishes nothing.
+
 **Rule 4: counters export exactly.** The exporter:
 
 1. reads a counter's live value `v`;
@@ -577,6 +646,9 @@ its watermark.
 
 Sketch and rate-limit state are exported as read: approximate by nature,
 and documented as such.
+
+**Array cells (J8) follow rules 3 and 4 per cell.** Their events carry the
+index with the delta, and an export subtracts each cell's own deltas.
 
 **Rule 4b: fields and bits export exactly through undo records.**
 - **Struct fields and bitmap bits are not sums,** so a delta cannot undo
@@ -735,6 +807,7 @@ message GetManyRequest {
   bool keys_only = 2;             // found, version and ttl only: no values
   bool with_versions = 3;
   bool with_ttl = 4;
+  // fields 5-9: Group J (lengths J1, slices J2, tags J3, consistent reads J4)
 }
 message GetManyResponse {
   repeated Item items = 1;        // request order; may stop early
@@ -753,8 +826,8 @@ mutation per key and `atomic = false`.
 
 **Semantics.**
 - **GetMany** gives per-key linearizable reads, not a snapshot. For a
-  consistent multi-key read, use Export with exact keys (export-watch.md
-  §5.8), or read versions and verify them with an atomic batch (A8).
+  consistent multi-key read, set `consistent` (J4). Export with exact keys
+  (export-watch.md §5.8) also gives one, at a cut.
 - **The response cap** (§1.4) can stop a batch early. The client library
   continues from `next_index`, invisibly to the caller.
 - **PutMany and DeleteMany** apply in request order, each mutation
@@ -1096,10 +1169,10 @@ guarantee. Don't choose a TTL shorter than a few round trips.
   `CONDITION_FAILED` and the rest `NOT_ATTEMPTED`.
 - **Writers, conditions, Watch and Export cuts see the batch atomically**
   (§2.1).
-- **Lock-free readers do not.** Get and GetMany can see it half-applied for
-  the microseconds it takes, because there is no MVCC. A reader that needs
-  atomic visibility reads with versions and verifies them, or reads through
-  Export.
+- **Plain lock-free reads do not.** Get and GetMany can see it
+  half-applied for the microseconds it takes, because there is no MVCC. A
+  reader that needs atomic visibility reads with GetMany `consistent` (J4),
+  which sees the batch whole or not at all (§2.1), or reads through Export.
 - **Move** gives the destination the batch's revision as its version.
   `overwrite = false` fails the condition if the destination exists.
 
@@ -1169,6 +1242,8 @@ enum CounterOutcome {
   COUNTER_OUTCOME_OVERFLOW = 5;        // the result would leave int64
 }
 ```
+Group J adds `op` (MAX, MIN, SET_BITS, CLEAR_BITS: J6, J7) to
+`CounterUpdate`, and `previous` to `CounterResult`.
 
 **Semantics.**
 - **What a counter is:** a key whose value is exactly 8 bytes, int64
@@ -1619,6 +1694,8 @@ message ScanResponse {
   so it cannot be replayed against another range.
 - **For one point-in-time listing** across all pages, use Export with the
   same filter (G3).
+- **For every key in no particular order,** without the ordered index, use
+  Iterate (J5).
 
 **How it works.**
 - Seek the radix tree to the start, which costs O(key length).
@@ -2414,6 +2491,9 @@ cut, streamed, with filters, `keys_only` and `count_only`.
 - Keys expired at the cut's time are excluded.
 - With the ordered index, a prefix Export visits only the prefix: O(k)
   instead of a scan.
+- **Value filters** (J11): `ExportRequest.value_filter`, field 5.
+- **Before Phase 3,** Iterate (J5) covers backups and migrations that need
+  every key but not one point in time.
 
 ### G4. Reconcile
 
@@ -3073,6 +3153,837 @@ var top = candidateKeys.Zip(scores).OrderByDescending(p => p.Second).Take(20);
 - **int8 quantization is the client's:** scale each vector into
   −127..127.
 
+## Group J — Endpoints from the storage design, and SIMD on values
+
+**Where these come from.**
+- **Added 2026-10-01** from
+  [storage-simd-endpoints.md](storage-simd-endpoints.md). That document
+  re-reads how the store hashes and stores (its §1-§3) and where SIMD pays
+  (§4). It holds each design's argument: the relocation-log proof, the
+  snapshot's sequence word, the tag kinds.
+- **This section** holds what the other groups hold: why, API, semantics,
+  cost, usage and pitfalls.
+- **The letter J:** Part I numbers its sections I.1-I.3, so the group skips
+  I.
+- **Costs** are measured by the endpoints probe at 10M keys (N). Its bars
+  that day were D 411.4 / I 369.5 / B 57.5 ns. Ratios within that run are
+  what carry over.
+
+**Shared rules.**
+- **Most are options, not RPCs.**
+  - J1-J4 are fields of GetMany, and J6-J7 an `op` of Increment. They keep
+    those calls' batching, limits and outcomes.
+  - The new RPCs are `Iterate` (J5), `Arrays` (J8), `JsonGet` (J9) and
+    `PutBlob` (J10). BulkLoad (J12) is a client method.
+- **Values stay bytes.**
+  - JsonGet and the value filters read JSON and bytes inside plain values
+    on every call. Nothing is indexed, and no type is attached.
+  - Arrays (J8) are a typed value (§1.6).
+- **Value work is bounded per call.** JsonGet, value filters and PutBlob
+  stop after `KVNODE_MAX_SCAN_KB` of values scanned or hashed (default
+  512), with at least one value per call. They continue from `next_index`
+  or a cursor (§1.2).
+- **Every SIMD kernel has a scalar twin,** chosen at startup by CPUID (ADR
+  0006): JSON, SHA-256, substring search and array aggregates.
+
+### J1. Value metadata (STRLEN, TYPE)
+
+**Why.**
+- **Decide before downloading:** size a buffer, choose Get or Download, or
+  skip a value that is too large.
+- **Audits and listings:** sizes per key without moving the bytes.
+- **Type checks:** is this key a plain value, a struct, a bitmap, an
+  array?
+
+**API.** GetMany (A2) gains:
+```proto
+message GetManyRequest {
+  // fields 1-4 as in A2
+  bool with_length = 5;            // J1: each item's length and type
+}
+message Item {
+  // fields 1-5 as in A2
+  uint64 length = 6;               // with_length: the whole value's length
+  ValueType type = 7;              // with_length: from the value's magic (§1.6)
+}
+enum ValueType {
+  VALUE_TYPE_UNSPECIFIED = 0;      // the key is absent
+  VALUE_TYPE_BYTES = 1;            // no known magic; counters included
+  VALUE_TYPE_SKETCH = 2;
+  VALUE_TYPE_STRUCT = 3;
+  VALUE_TYPE_BITMAP = 4;
+  VALUE_TYPE_SET = 5;
+  VALUE_TYPE_WINDOW = 6;
+  VALUE_TYPE_VECTOR = 7;
+  VALUE_TYPE_ARRAY = 8;
+}
+```
+`keys_only` with `with_length` returns the metadata alone.
+
+**Semantics.**
+- **The length is the whole value's,** even with `range` (J2).
+- **The type comes from the magic,** as Fields, Bits and the other typed
+  calls decide it (§1.6). A counter is 8 plain bytes, so it reads as
+  `BYTES` with length 8.
+
+**How it works.** The batched GET pipeline. The header holds `val_len`, and
+a typed value's magic is its first 4 bytes. Those bytes lie within the
+three record lines the pipeline already prefetches, since keys never exceed
+65 bytes.
+
+**Cost (N).** 58.8 ns per key, batched: 1.00× the get beside it, with no
+value bytes.
+
+**Usage.**
+```csharp
+var meta = await kv.GetManyAsync(keys, keysOnly: true, withLength: true);
+foreach (var (key, m) in keys.Zip(meta))
+    if (m.Found && m.Length > 1 << 20) await DownloadToFileAsync(key);   // big: stream it
+```
+
+**Pitfalls.** The length can change right after the read, so a following
+Get may return another size. Read both in one call, or tie them with a
+version.
+
+### J2. GetRange (slices of values)
+
+**Why.**
+- **Headers and fixed fields:** a file format's header, a 16-byte id at a
+  known offset, the last bytes of an appended log value.
+- **Large values in pieces:** resumable reads and media seeking.
+
+**API.**
+- **One large value:** Download with `offset` and `length` already does it
+  (ADR 0010), streamed and CRC-checked.
+- **Batches of small values:** GetMany gains:
+```proto
+message GetManyRequest {
+  // ...
+  ValueRange range = 6;            // J2: only these bytes of each value
+}
+message ValueRange {
+  uint64 offset = 1;
+  optional uint64 length = 2;      // absent: to the end
+}
+```
+
+**Semantics.**
+- **Never an error:** each item's slice is `[offset, offset + length)` cut
+  to the value, possibly empty. `with_length` tells the whole length.
+- **Typed values** slice their encoded bytes.
+- **`too_large` (A2) applies to the slice,** not the value: a 1 KiB slice
+  of a 100 MiB uploaded value is fine.
+
+**How it works.** The batched pipeline copies the slice straight from the
+record into the response. The record prefetch targets the slice's lines.
+
+**Cost (N).** 58.7 ns per key for 16 bytes at offset 40: 1.00× the get
+beside it.
+
+**Usage.**
+```csharp
+var heads = await kv.GetManyAsync(fileKeys, range: new ValueRange(0, 64));    // each file's 64-byte header
+await foreach (var chunk in kv.DownloadAsync("video:7", offset: 5 << 20, length: 1 << 20))
+    Play(chunk);
+```
+
+**Pitfalls.** One slice comes from one version, since records are
+immutable. Two calls can slice two versions: check `with_versions`, or a
+tag (J3).
+
+### J3. GetIfChanged (ETags)
+
+**Why.**
+- **HTTP caching:** answer `If-None-Match` with 304 without moving the body
+  (RFC 9110, R24).
+- **Edge caches and polling clients:** revalidate many keys and receive
+  only those that changed.
+- **Config reloaders:** re-read only the entries that changed.
+
+**API.** GetMany gains:
+```proto
+message GetManyRequest {
+  // ...
+  TagKind tag_kind = 7;            // J3: the tags items carry; if_tags without it means CRC32C
+  repeated fixed64 if_tags = 8;    // J3: per key, the tag the client holds (0 = none); empty = no condition
+}
+enum TagKind {
+  TAG_KIND_UNSPECIFIED = 0;        // no tags
+  TAG_CRC32C = 1;                  // content: 2^63 | (length mod 2^31) << 32 | CRC-32C(value)
+  TAG_VERSION = 2;                 // the record's version (§1.5)
+}
+message Item {
+  // ...
+  fixed64 tag = 8;                 // tag_kind set: the current tag
+  bool unchanged = 9;              // the key's if_tags entry matched: no value sent
+}
+```
+
+**Semantics.**
+- **A matching tag** answers `found = true, unchanged = true`, with no
+  value bytes. An absent key answers `found = false`, whatever the tag.
+- **CRC32C tags** see every change, in-place updates included:
+  - a changed value of the same length keeps its tag with probability
+    2^-32;
+  - a change confined to 32 consecutive bits is always seen, so a
+    counter's small change cannot hide.
+- **VERSION tags** cost O(1) and are exact for Put, Mutate and Move. They
+  are **blind to in-place updates** (counters, fields, bits, arrays,
+  sketches), which keep the version (§2.3 rule 5).
+- **0 is never a tag:** CRC tags set bit 63, and versions start above 0.
+
+**How it works.** The batched pipeline, then the folding CRC-32C
+(`crc32c.asm`, the mode `KVNODE_CRC32C` picks) over the value in the
+record. A match frames `unchanged` instead of the value.
+
+**Cost (N).**
+
+| Case | Per key, batched |
+|---|---|
+| unchanged, 100-byte value, CRC tag | **67.5 ns**: 1.12× the get beside it; 0 value bytes |
+| changed: the CRC, then the value | 67.1 ns |
+| the CRC alone | 2.8 ns per 100 B; 11.6 ns per KiB; 720 ns per 64 KiB |
+| a VERSION tag | O(1): ≈ a get (E) |
+
+**Usage.**
+```csharp
+// An HTTP endpoint backed by KvNode: 304 while the client's ETag still matches.
+var r = await kv.GetIfChangedAsync(key, etag: ParseETag(Request.Headers.IfNoneMatch));
+if (r.Unchanged) return StatusCode(304);
+Response.Headers.ETag = FormatETag(r.Tag);
+return File(r.Value, "application/json");
+```
+
+**Pitfalls.**
+- **VERSION tags miss in-place updates.** Use them only for keys written by
+  Put-class calls.
+- **A CRC tag on a large value** costs a pass over it on every check (720
+  ns per 64 KiB), until CRCs are stored at write time (§V.13 decision 14).
+- **Byte-exact:** a document re-serialized with other whitespace is
+  "changed".
+
+### J4. Snapshot reads (consistent GetMany)
+
+**Why.**
+- **Invariants across keys:** both sides of a transfer, an order and its
+  lines, a configuration bundle. Never see half of an atomic batch (R27).
+- **Dashboards** whose figures must agree with each other.
+- **Decisions over several keys** without a write. Today that takes
+  versions plus an atomic batch of conditions (A8).
+
+**API.** GetMany gains:
+```proto
+message GetManyRequest {
+  // ...
+  bool consistent = 9;             // J4: every key read at one instant
+}
+message GetManyResponse {
+  // fields 1-2 as in A2
+  uint32 attempts = 3;             // J4: optimistic attempts used (diagnostics)
+}
+```
+
+**Semantics.**
+- **One instant.** The values and absences returned all held at one
+  instant during the call. That covers every Put, Delete, Mutate, Move and
+  Upload. **Atomic batches** are seen whole or not at all.
+- **In-place cells are not covered.** Counters, fields, bits, arrays and
+  sketches are each read at an instant inside the window, but not
+  necessarily the same one. Use Export for an exact cut of counters (§2.3
+  rule 4).
+- **One response.** A consistent read never continues from `next_index`:
+  one that would exceed the response cap is `RESOURCE_EXHAUSTED` (§1.4).
+- **Expired keys are absent,** as in any read.
+
+**How it works.**
+1. Read the table's atomic-batch sequence word and every key's two bucket
+   versions. All must be even.
+2. Run the batched lookups.
+3. Re-read the versions and the word.
+4. **Unchanged:** answer. **Changed:** retry, up to
+   `KVNODE_SNAPSHOT_ATTEMPTS` (default 4), then read under the writer
+   lock, which no writer can hold at the same time.
+
+- **Atomic batches** keep the sequence word odd while they apply (§2.1).
+  Each bucket's version alone could validate a window between two of a
+  batch's mutations.
+- **Private caches** (ADR 0006, off by default) are bypassed: a snapshot
+  reads the table.
+
+**Cost (N).**
+
+| Case | Result |
+|---|---|
+| 16 keys at rest, per key | **68.2 ns**: 1.01× plain GetMany (67.4); 1.000 attempts |
+| 16 keys under a racing writer | plain: 21,904 of 200,000 reads torn; consistent: **0 torn**, 1.52 attempts |
+| the lock fallback | the call's lookups under the mutex: about 1 µs for 16 keys (E) |
+
+**Usage.**
+```csharp
+var bal = await kv.GetManyAsync(new[] { "bal:alice", "bal:bob" }, consistent: true);   // never mid-transfer
+```
+
+**Pitfalls.**
+- **Hot keys retry.** Writers touching the snapshot's buckets push it
+  toward the lock fallback, which briefly delays writers.
+- **Consistent, not repeatable:** the next call may see later writes.
+
+### J5. Iterate (every key, by hash shard)
+
+**Why.**
+- **Backups and migrations** before Export's cuts exist (Phase 3), and
+  without the ordered index (R26).
+- **Rebuilding derived data:** a search index, a warehouse table, a cache
+  warm-up.
+- **Background jobs:** scrubbing, re-encryption, backfills.
+- **Parallel consumers:** n workers take n hash shards.
+
+**API.**
+```proto
+rpc Iterate(IterateRequest) returns (IterateResponse);
+message IterateRequest {
+  uint32 shard = 1;                // 0 .. shards-1
+  uint32 shards = 2;               // 1 .. 1,024 (0 = 1): contiguous bucket ranges
+  bytes cursor = 3;                // the previous page's next_cursor; empty: the shard's start
+  uint32 limit = 4;                // entries per page; 0 = 100; at most KVNODE_MAX_ITERATE_PAGE (1,000)
+  bool keys_only = 5;
+  bool with_versions = 6;
+  bool with_ttl = 7;
+  KeyFilter key_filter = 8;        // exact and prefix selectors; globs and regexes from Phase 3 (export-watch.md §4)
+  ValueFilter value_filter = 9;    // J11
+}
+message IterateResponse {
+  repeated Entry entries = 1;
+  bytes next_cursor = 2;           // empty: the shard is done
+  bool restart = 3;                // the cursor fell behind the relocation log: restart this shard
+  uint64 relocations = 4;          // cuckoo moves since the previous page; 0 = no repeat possible
+}
+```
+
+**Semantics.**
+- **No order:** bucket order is hash order, random to the client.
+- **At least once:** every key present for the whole pass appears at least
+  once. If `relocations` stayed 0 for the whole pass, exactly once. A key
+  created or deleted during the pass may or may not appear.
+- **Not one point in time:** each value is read live. For a point-in-time
+  copy, use Export (G3).
+- **Bounded pages.** A page stops at the first of:
+  - `limit` entries;
+  - `KVNODE_ITERATE_BUCKETS` buckets visited (default 2,048, about 10k
+    keys);
+  - `KVNODE_MAX_SCAN_KB` of values filtered;
+  - the response cap.
+
+  A page can hold fewer entries than `limit`, even none, and still return a
+  cursor.
+- **The cursor is opaque:** the shard, the next bucket, the relocation
+  count it has seen, the server's incarnation (§1.5), and a fingerprint of
+  the request (shards, filters). It cannot be replayed with other
+  parameters, or against another server process.
+- **`restart`:** a cursor older than the relocation log's reach (65,536
+  moves) restarts its shard.
+
+**How it works.**
+- **The scan:** one SSE2 compare per bucket finds its occupied slots. Each
+  bucket is read under its seqlock, and the records of the bucket 8 ahead
+  are prefetched.
+- **Only a cuckoo relocation moves an existing key,** and it can move one
+  behind the cursor. Each move therefore appends its destination (bucket,
+  slot) to a ring of `KVNODE_RELOCATION_LOG` entries (default 65,536, 512
+  KiB). The ring is indexed by `Table.st_moves`, which every move already
+  increments: one 8-byte store per move.
+- **After its scan,** a page re-reads every slot that a move since the
+  cursor filled inside the region scanned so far, and emits the key found
+  there. The proof is in storage-simd-endpoints.md §5 J5.
+
+**Cost (N).**
+
+| Case | Result |
+|---|---|
+| keys, 1 thread | 18.5 ns per key: **54 M keys/s** |
+| keys and 100-byte values, 1 thread | 19.5 ns per key: 5.1 GB/s of values |
+| 7 shards on 7 threads | 2.9 ns per key: **340 M keys/s; 10M keys in 29 ms** |
+| a 1,000-entry page with values | ≈ 20 µs (E) |
+| the writer | one store per relocation |
+
+**Usage.**
+```csharp
+// Re-index everything with 8 parallel workers.
+await Parallel.ForEachAsync(Enumerable.Range(0, 8), async (shard, ct) =>
+{
+    await foreach (var e in kv.IterateAllAsync(shard, shards: 8, ct: ct))   // follows cursors and restarts
+        await index.UpsertAsync(e.Key, e.Value);
+});
+```
+
+**Pitfalls.**
+- **Repeats are possible under writes** (`relocations` > 0): make the
+  consumer idempotent (an upsert, a put).
+- **Not for counts:** use Stats or Count; Iterate is not a snapshot.
+- **The whole store crosses the network** with values: filter by key or
+  value (J11), or iterate `keys_only`.
+
+### J6. UpdateMax / UpdateMin (max and min registers)
+
+**Why.**
+- **High-water marks:** a personal best, peak concurrency, the highest bid.
+- **Timestamps:** last seen (max), first seen (min), watermarks that never
+  move backwards.
+- **Consumer offsets:** the highest processed offset, safe under
+  out-of-order acknowledgements.
+
+**API.** Increment (B1) gains:
+```proto
+message CounterUpdate {
+  // fields 1-7 as in B1
+  CellOp op = 8;                   // J6, J7; delta holds the candidate or the mask
+}
+enum CellOp {
+  CELL_OP_UNSPECIFIED = 0;         // ADD (B1)
+  CELL_OP_MAX = 1;                 // J6: cell = max(cell, delta)
+  CELL_OP_MIN = 2;                 // J6: cell = min(cell, delta)
+  CELL_OP_SET_BITS = 3;            // J7: cell = cell | delta
+  CELL_OP_CLEAR_BITS = 4;          // J7: cell = cell & ~delta
+}
+message CounterResult {
+  // fields 1-3 as in B1
+  sint64 previous = 4;             // J6, J7: the value before the op
+}
+```
+
+**Semantics.**
+- **Linearizable per cell,** like an increment: one `LOCK CMPXCHG`
+  decides.
+- **An absent key** is created holding the candidate (MAX, MIN), the mask
+  (SET_BITS) or 0 (CLEAR_BITS), unless `no_create`.
+- **ADD only:** bounds (B2) and `sharded` (B4) with another op are
+  `INVALID_ARGUMENT`.
+- **A no-op still applies:** a MAX below the current value changes
+  nothing, and `previous == value` says so.
+- **Events and exports:** a change publishes an ADD event whose delta is
+  `after − before` (wrapping), so sums of deltas and exports stay exact
+  (§2.3 rules 3-4). A no-op publishes nothing.
+- **Idempotent:** the same op twice leaves the same state, so retries are
+  safe (§1.8).
+
+**How it works.** The batched lookup, then a `LOCK CMPXCHG` loop on the
+8-aligned cell. A MAX candidate at or below the cell is decided by the
+first load, with no locked instruction.
+
+**Cost (N, E).**
+- **43.1 ns** per update, batched: 0.91× an increment (47.2 ns in the same
+  run). Exact registers, checked against the stream.
+- That figure is mostly the no-write path. The probe replays its
+  candidates in each repetition, so after the first one they rarely raise
+  a register.
+- A raising update adds one `LOCK CMPXCHG`, which costs what an
+  increment's `LOCK XADD` does: ≈ 1.0× an increment (E).
+
+**Usage.**
+```csharp
+var r = await kv.UpdateMaxAsync($"best:{player}", score);          // personal best, any arrival order
+if (r.Value > r.Previous) await CelebrateAsync(player);            // a new best, decided in one call
+await kv.UpdateMaxAsync($"c:seen:{userId:x8}", nowUnixMs);          // last seen, on a compact key (H1)
+await kv.UpdateMaxAsync($"offset:{group}:{partition}", ackedOffset);
+```
+
+**Pitfalls.** A Put of 8 bytes resets a register, as it resets a counter
+(§2.3 rule 2).
+
+### J7. SetFlags / ClearFlags (64 flags per word)
+
+**Why.**
+- **Account and feature state:** verified, MFA on, trial used, onboarding
+  steps done. Up to 64 flags in one key.
+- **Claim once:** "set these flags and tell me which were already set", in
+  one call.
+- **Permissions as bits:** a role's grants.
+
+**API.** Increment with `op = SET_BITS` or `CLEAR_BITS` (J6's messages).
+`delta` is the mask, and `previous` the word before.
+
+**Semantics.**
+- **One atomic step per word:** concurrent SET_BITS on different flags
+  never lose each other.
+- **`previous & mask`** says which of the mask's flags were already set.
+- **Events, exports and retries** as in J6.
+
+**How it works.** The batched lookup, then a `LOCK CMPXCHG` loop that
+returns the previous word, as for max registers.
+
+**Cost (N, E).**
+- **47.1 ns** per update, batched: 1.00× an increment. The probe measured
+  `LOCK OR`, which always writes but does not return the previous word.
+- Returning it takes a `LOCK CMPXCHG` loop instead, which costs the same
+  uncontended (E).
+
+**Usage.**
+```csharp
+const long Verified = 1, MfaOn = 2, TrialUsed = 4;
+var r = await kv.SetFlagsAsync($"acct:{id}:flags", TrialUsed);
+if ((r.Previous & TrialUsed) != 0) return TrialAlreadyUsed();      // the trial is claimed once
+```
+
+**Pitfalls.** 64 flags per key. Flags per user number belong in a bitmap
+(H3).
+
+### J8. Counter arrays (Arrays)
+
+**Why.**
+- **Time buckets in one key:** a week of hourly counts (168 cells), a day
+  of minutes (1,440).
+- **Histograms:** latency or size distributions with fixed bucket bounds.
+- **Per-resource usage:** quotas per resource type in one key.
+
+**API.**
+```proto
+rpc Arrays(ArraysRequest) returns (ArraysResponse);
+message ArraysRequest { repeated ArrayOp ops = 1; }      // 1 .. KVNODE_MAX_WRITE_BATCH
+message ArrayOp {
+  bytes key = 1;
+  ArrayOpKind kind = 2;
+  uint32 index = 3;                // ADD: the cell; GET, SUM, MIN, MAX: the range's start
+  uint32 count = 4;                // GET, SUM, MIN, MAX: cells in the range; 0 = to the end
+  sint64 delta = 5;                // ADD
+  uint32 create_cells = 6;         // ADD: the size when this op creates the array
+  optional uint64 ttl_ms = 7;      // on create
+}
+enum ArrayOpKind {
+  ARRAY_OP_UNSPECIFIED = 0;
+  ARRAY_ADD = 1;
+  ARRAY_GET = 2;
+  ARRAY_SUM = 3;
+  ARRAY_MIN = 4;
+  ARRAY_MAX = 5;
+}
+message ArraysResponse { repeated ArrayResult results = 1; }
+message ArrayResult {
+  ArrayOutcome outcome = 1;        // APPLIED, NO_KEY, NOT_AN_ARRAY, OUT_OF_RANGE, OVERFLOW
+  sint64 number = 2;               // ADD: the cell after; SUM, MIN, MAX: the result
+  repeated sint64 cells = 3;       // GET
+}
+```
+
+**Semantics.**
+- **A typed value** (§1.6): a magic `KVAR`, the cell count, then int64
+  cells.
+- **The size is fixed at creation,** 1 .. `KVNODE_MAX_ARRAY_CELLS`
+  (default 65,536: 512 KiB). An index beyond it is `OUT_OF_RANGE`; a Put
+  of a bigger encoding grows the array.
+- **ADD** is linearizable per cell and exact under contention, like a
+  counter. Overflow is handled as in B1.
+- **SUM, MIN and MAX** read the range live, within ± the adds in flight,
+  like a window's sum (H9).
+  - SUM is exact: 128-bit lane accumulation, with `OVERFLOW` when the
+    result leaves int64.
+- **Events and exports:** ADD events carry the index and the delta, and
+  exports subtract them per cell (§2.3 rule 4).
+
+**How it works.**
+- The batched lookup, then one more prefetch stage for the cell's line, or
+  the range's first lines.
+- **ADD:** `LOCK XADD` at the index.
+- **Aggregates:** AVX2 kernels, each with a scalar twin. Sums use four
+  accumulators; MIN and MAX use `VPCMPGTQ` + `VPBLENDVB`.
+
+**Cost (N, 200k arrays of 168 cells).**
+
+| Op | Time |
+|---|---|
+| ADD, batched | **71.7 ns** (1.25× a batched get) |
+| SUM of all 168 cells, batched | **116.4 ns**: 8 bytes on the wire instead of 1,344 |
+| the kernels alone, in cache: sum / max of 168 cells | AVX2 6.3 / 18.2 ns; scalar 29.2 / 48.5 ns |
+
+The 128-bit sum (a carry compare per add) is estimated at ≤ 2× the
+measured kernel: still far below the lookup (E).
+
+**Usage.**
+```csharp
+int hourOfWeek = (int)now.DayOfWeek * 24 + now.Hour;
+await kv.ArrayAddAsync($"calls:{cust}:{week}", hourOfWeek, +1, createCells: 168);
+long today = await kv.ArraySumAsync($"calls:{cust}:{week}", start: (int)now.DayOfWeek * 24, count: 24);
+long[] byHour = await kv.ArrayGetAsync($"calls:{cust}:{week}");
+```
+
+**Pitfalls.**
+- **Plan the size up front:** growing is a whole-value Put.
+- **Not a sliding window:** cells do not rotate with time. That is
+  WindowAdd (H9).
+
+### J9. JsonGet
+
+**Why.**
+- **List pages and APIs that need a few fields of large documents:** the
+  title and price of each product in a 5 KB catalog document (R30).
+- **Mobile and edge clients,** for which bytes on the wire cost time and
+  money.
+- **No migration:** documents stay plain JSON values, written by Put.
+
+**API.**
+```proto
+rpc JsonGet(JsonGetRequest) returns (JsonGetResponse);
+message JsonGetRequest {
+  repeated bytes keys = 1;         // 1 .. KVNODE_MAX_READ_BATCH
+  repeated string paths = 2;       // 1 .. 16, applied to every key: "title", "address.zip", "items[2].sku"
+}
+message JsonGetResponse {
+  repeated JsonResult results = 1; // request order; may stop early
+  uint32 next_index = 2;           // 0: complete; else the first key not answered
+}
+message JsonResult {
+  JsonOutcome outcome = 1;         // OK, NO_KEY, NOT_JSON, TOO_DEEP
+  repeated bytes values = 2;       // one per path: the value's raw JSON text; empty when the path is absent
+}
+```
+- **Paths:** member names separated by `.`, array indexes in `[n]`, and
+  `["a.b"]` for a name with dots or brackets. No wildcards and no filters.
+
+**Semantics.**
+- **Raw text:** each answer is the value's JSON text as stored: `42`,
+  `"a\"b"` (escapes kept), `{"x":1}`. The server builds no tree and
+  re-serializes nothing.
+- **Lazy validation:** the server validates what it walks to answer.
+  - A document broken after the last requested field still answers `OK`.
+  - One broken before it answers `NOT_JSON`.
+- **Duplicate member names:** the first wins. RFC 8259 leaves the case
+  open.
+- **Depth:** at most `KVNODE_JSON_MAX_DEPTH` levels (default 64); deeper is
+  `TOO_DEEP`.
+- **Bounded work:** a call stops before the next document once
+  `KVNODE_MAX_SCAN_KB` have been scanned, after at least one document. The
+  client library continues from `next_index`.
+
+**How it works.**
+- **The batched lookup, then a structural scan** of the value: simdjson's
+  stage 1 (C). Per 64 bytes:
+  - six byte compares find quotes, backslashes and `{ } [ ] : ,` (the
+    brackets via `| 0x20`);
+  - branchless escape detection;
+  - the in-string mask is a carry-less multiply (`PCLMULQDQ`).
+- **A path walker** pulls structurals with `TZCNT` / `BLSR`, skips unwanted
+  values by depth, and stops once the last requested value is complete.
+- **A scalar tokenizer** with the same walker is the fallback (ADR 0006).
+
+**Cost (N).**
+
+| Document | Field | SIMD | Scalar |
+|---|---|---|---|
+| 668 B | early: top level / nested | 49.5 / 79.7 ns | 80.6 / 155.6 ns |
+| 668 B | late, nested | **253 ns** | 491 ns |
+| 4,969 B | early: top level / nested | 31.3 / 52.3 ns | 52.9 / 96.2 ns |
+| 4,969 B | late, nested | **1.75 µs** | 3.36 µs |
+| a whole document indexed | 668 / 4,969 B | 2.44 / 2.83 GB/s | 1.04 / 1.60 GB/s |
+| end to end: 1M stored ~1 KB documents, a late field | | **369.2 ns**, against 110.7 ns for the whole document | |
+
+**Usage.**
+```csharp
+var rows = await kv.JsonGetAsync(productKeys, "title", "price.amount", "images[0]");
+foreach (var r in rows)
+    Render(JsonText.String(r[0]), decimal.Parse(r[1]), JsonText.String(r[2]));   // a few bytes per product
+```
+
+**Pitfalls.**
+- **Late fields cost a scan up to them:** 1.75 µs at 5 KB. Put hot fields
+  first.
+- **Answers are JSON text:** strings keep their quotes and escapes.
+- **Reads only:** edits stay whole-value writes with CompareAndSet (A4), or
+  struct fields (H2) for small numeric state.
+
+### J10. PutBlob (content-addressed blobs)
+
+**Why.**
+- **Build caches:** Bazel, Buck2 and Pants store outputs by content digest
+  and ask which are missing (R25).
+- **Deduplicated storage:** attachments, images, packages and model
+  artifacts, stored once however often they are uploaded.
+- **Integrity:** the key is the content's digest, so any reader can verify
+  what it got.
+
+**API.**
+```proto
+rpc PutBlob(PutBlobRequest) returns (PutBlobResponse);
+message PutBlobRequest { repeated Blob blobs = 1; }      // ≤ KVNODE_MAX_WRITE_BATCH, ≤ KVNODE_MAX_SCAN_KB in all
+message Blob {
+  bytes data = 1;
+  bytes expected_sha256 = 2;       // optional: the client's digest (32 bytes)
+  optional uint64 ttl_ms = 3;
+}
+message PutBlobResponse { repeated BlobResult results = 1; }
+message BlobResult {
+  bytes sha256 = 1;                // the digest; the key is KVNODE_CAS_PREFIX ‖ these 32 bytes
+  bool existed = 2;                // already stored: nothing written
+}
+```
+- **Missing blobs:** Exists (A1) on `KVNODE_CAS_PREFIX ‖ digest`.
+- **Reads:** Get, GetMany or Download.
+- **Bazel's cache services** (opt-in `KVNODE_REAPI=on`, Phase 6):
+  Capabilities, ActionCache, ContentAddressableStorage and ByteStream, on
+  the same port, mapped onto these calls. Blobs above the per-call limit
+  stream through ByteStream, which hashes on the way.
+
+**Semantics.**
+- **The server computes every digest.** A blob whose digest differs from
+  its `expected_sha256` fails the whole call with `INVALID_ARGUMENT`, and
+  nothing is stored (§1.4).
+- **Opt-in by prefix.** PutBlob works once `KVNODE_CAS_PREFIX` is set (for
+  example `cas:`). Unset, it answers `UNIMPLEMENTED`, and no key is ever
+  refused.
+- **The prefix holds only verified content.** Put, Mutate puts and moves,
+  and Upload under `KVNODE_CAS_PREFIX` are `INVALID_ARGUMENT`, with
+  `reason = "cas-prefix"`. Delete and `touch` stay allowed: a deleted blob
+  is simply uploaded again.
+- **Deduplication** is a PutIfAbsent (A3). Of two concurrent PutBlobs of
+  the same content, one stores it and the other reports `existed`.
+- **An existing blob with `ttl_ms`** gets its expiry extended when the new
+  deadline is later (a touch, A6).
+- **Keys** are the prefix plus the raw 32-byte digest: 36 bytes with
+  `cas:`. The 64-character hex form would cross 64 bytes and be compacted
+  (§1.9).
+
+**How it works.** Every blob's digest first, with SHA-NI (`SHA256RNDS2`,
+`SHA256MSG1/2`; a FIPS 180-4 scalar twin). Then the Mutate engine, with
+`condition.absent` on each digest key.
+
+**Cost (N).**
+
+| Op | Time |
+|---|---|
+| SHA-256 with SHA-NI: 100 B / 4 KiB / 1 MiB | 97.7 ns / 1.66 µs / 415 µs: 2.47-2.57 GB/s, 6.3-6.5× scalar |
+| PutBlob of 4 KiB (digest, exists, put) | **1.77 µs** |
+| a digest check (Exists, batched) | **33.8 ns** |
+
+**Usage.**
+```csharp
+var r = await kv.PutBlobAsync(bytes);                     // r.Sha256, r.Existed
+var missing = await kv.FindMissingBlobsAsync(digests);    // Exists on the digest keys
+var blob = await kv.GetBlobAsync(r.Sha256, verify: true); // Get, then SHA-256 on the client
+```
+
+**Pitfalls.**
+- **Eviction is the operator's:** TTLs on blobs, longer than those of any
+  cache entry that references them (R25).
+- **Never hex digests in keys:** they exceed 64 bytes and get compacted.
+
+### J11. Value filters (on Iterate and Export)
+
+**Why.**
+- **Find records by content** when the key does not say: every value
+  mentioning an email (GDPR, R31), sessions holding a revoked token, jobs
+  whose `status` is `"failed"`.
+- **Ad hoc reports** over values, without an index (I.3).
+- **Selective exports:** only matching records cross the network.
+
+**API.**
+```proto
+message ValueFilter {
+  oneof kind {
+    bytes contains = 1;            // the value contains these bytes (1 .. 256)
+    JsonPredicate json = 2;        // a JSON member compared with a literal
+    Int64Range int64_at = 3;       // the int64 (little-endian) at an offset lies in [min, max]
+  }
+}
+message JsonPredicate {
+  string path = 1;                 // JsonGet's path syntax (J9)
+  JsonCompare op = 2;              // EXISTS, EQ, NE, LT, LE, GT, GE
+  bytes literal = 3;               // JSON text: "\"failed\"", "42", "true"
+}
+message Int64Range { uint32 offset = 1; sint64 min = 2; sint64 max = 3; }
+```
+It appears as `IterateRequest.value_filter` (J5) and
+`ExportRequest.value_filter` (G3, field 5).
+
+**Semantics.**
+- **Key filters apply first,** so only key matches pay for the value
+  scan.
+- **`contains`** matches raw bytes, case-sensitively.
+- **JSON comparisons:**
+  - numbers compare numerically (int64 exactly, others as double);
+  - strings and other literals compare by raw JSON text, with EQ and NE
+    only, so an escaped spelling does not match an unescaped one;
+  - a value that is not JSON up to the path does not match.
+- **`int64_at`** never matches a value too short for its offset.
+- **Bounded pages:** Iterate's page limits, `KVNODE_MAX_SCAN_KB` of values
+  per page (J5); Export is streamed.
+
+**How it works.**
+- **`contains`:** AVX2 compares of the needle's first and last bytes at 32
+  positions per step, then an exact compare of the candidates (Muła, C).
+  A memmem-style scalar twin backs it.
+- **JSON predicates:** JsonGet's scan and walker.
+- **`int64_at`:** one load per value.
+
+**Cost (N, 256 MiB of text values, per thread).**
+
+| Needle | AVX2 | glibc memmem |
+|---|---|---|
+| `orange7` (a rare last byte) | **19.6 GB/s** | 5.0 GB/s (3.9×) |
+| `the cat sat` (common bytes) | **3.9 GB/s** | 1.6 GB/s (2.5×) |
+
+JSON predicates run at JsonGet's speed: 2.4-2.8 GB/s of documents.
+
+**Usage.**
+```csharp
+await foreach (var e in kv.IterateAllAsync(prefix: "ticket:", contains: "jane@example.com"))
+    await RedactAsync(e.Key);
+await foreach (var e in kv.ExportAsync(prefix: "job:", json: ("status", JsonCompare.Eq, "\"failed\"")))
+    Retry(e);
+```
+
+**Pitfalls.**
+- **A filter still reads every value under the key filter:** about 2.6 s
+  of one thread per 10 GB at 3.9 GB/s. Narrow by key prefix first, and run
+  shards in parallel.
+- **Speed depends on the data:** common first and last bytes slow
+  `contains` (3.9 against 19.6 GB/s).
+
+### J12. BulkLoad
+
+**Why.**
+- **Initial loads and restores:** millions of keys at the batched write
+  rate.
+- **Migrations:** the write half of a move whose read half is Iterate (J5,
+  R26).
+
+**API.** A client method, no RPC (§1.4 keeps one request per call):
+```csharp
+Task<BulkLoadResult> BulkLoadAsync(IAsyncEnumerable<(string Key, ReadOnlyMemory<byte> Value)> items,
+                                   BulkLoadOptions? options = null);   // Connections = 4, InFlight = 4, BatchSize = 256
+```
+It pipelines PutMany calls (Mutate, `atomic = false`, 256 puts each) over
+a few connections, as the client's Upload pool does.
+
+**Semantics.**
+- **Not atomic:** readers see the load progress key by key.
+- **Order:** within a call, mutations apply in order (§1.4). Across calls
+  in flight, the order is not defined: load each key once.
+- **Retries:** the helper retries a failed call. A put of the same value
+  twice leaves the same value; only its version moves.
+- **Memory:** items past the memory limit report `NO_SPACE` (§1.4). The
+  helper stops and returns them.
+
+**How it works.** Each PutMany is the Mutate engine's batched write path:
+prefetch the buckets and old records, then apply under the writer lock in
+chunks of 8 (§1.4). With flat combining (Track S), concurrent loaders and
+other writers share lock passes.
+
+**Cost (M, V).**
+
+| Case | Result |
+|---|---|
+| PutMany, replace / create, one writer | 126 / 125 ns per key (M) |
+| a single Put | 433 ns (M) |
+| 7 writers with flat combining | 4.29 M puts/s in all (V) |
+
+**Usage.**
+```csharp
+var result = await kv.BulkLoadAsync(ReadSnapshotFile(path));
+Console.WriteLine($"{result.Loaded:N0} keys; {result.NoSpace.Count} refused at the memory limit");
+```
+
+**Pitfalls.** Loading while serving shares the writer mutex. Flat
+combining (Track S) keeps other writers' tail latency bounded; until it
+lands, lower `InFlight`.
+
 ---
 
 # Part IV — Recipes
@@ -3451,6 +4362,164 @@ Each recipe states the **problem**, the **keys**, the **calls**, what is
 - **Watch out:** to throttle callers, RateLimit (B3) is cheaper and
   smoother. Windows are for counts you read or compare.
 
+### R24. HTTP caching and revalidation with ETags
+
+- **Problem:** an API serves JSON documents from KvNode to browsers, CDNs
+  and edge caches. It should answer `If-None-Match` with 304 without
+  sending the body.
+- **Keys:** `doc:<id>` → the JSON.
+- **Calls:**
+  - **A request with `If-None-Match`:**
+    `GetMany([doc:<id>], if_tags = [etag])` with CRC tags (J3).
+    - `unchanged`: answer 304.
+    - Otherwise: answer 200 with the value and `ETag: "<the tag in hex>"`.
+  - **An edge cache revalidating 500 entries:** one GetMany with 500 tags.
+    Only the changed values come back.
+- **Guaranteed:** a 304 only while the value's CRC-32C and length match. A
+  stale 304 needs a same-length change that keeps the CRC: probability
+  2^-32.
+- **Watch out:**
+  - VERSION tags are O(1), but they miss in-place updates. Use them only
+    for documents written by Put.
+  - The tag covers the stored bytes, so a document re-serialized with
+    other whitespace is "changed".
+
+### R25. A remote build cache (Bazel, Buck2, Pants)
+
+- **Problem:** CI machines and developers share build outputs by content
+  digest.
+- **Keys:**
+  - `cas:` ‖ the 32-byte SHA-256 → the blob (PutBlob, J10);
+  - `ac:` ‖ the action digest → the action result: a plain Put, with a TTL
+    of 30 days.
+- **Calls,** with `KVNODE_REAPI=on` (Phase 6). Bazel talks to KvNode
+  directly (`--remote_cache=grpc://host:port`):
+
+  | Bazel's call | KvNode |
+  |---|---|
+  | FindMissingBlobs | a batched Exists on the digest keys |
+  | BatchUpdateBlobs | PutBlob |
+  | BatchReadBlobs | GetMany |
+  | ByteStream Write / Read | a streamed blob write hashed on the way / Download |
+  | ActionCache Get / Update | Get / Put on `ac:` |
+
+  Before Phase 6, a thin proxy maps the same calls.
+- **Guaranteed:**
+  - **integrity:** the server computes every digest, and the CAS prefix
+    refuses other writes;
+  - **deduplication:** identical outputs are stored once.
+- **Watch out:** eviction. A blob must outlive the action results that
+  reference it, so give blobs a longer TTL than `ac:` entries.
+
+### R26. Migration and resharding by hash shard
+
+- **Problem:** move a store to a bigger machine, or split it, with no
+  downtime and no ordered index.
+- **Calls, with Watch (Phase 3):**
+  1. Read the current revision R.
+  2. Eight workers Iterate eight shards of the old node (J5) and BulkLoad
+     into the new one (J12).
+  3. `ChangesSince(R)` replays every write made during the copy, deletes
+     included.
+  4. Switch the clients over.
+- **Calls, before Phase 3:**
+  1. The application writes to both nodes from the start.
+  2. The copy uses PutIfAbsent (A3), so it never overwrites a newer
+     double-written value.
+  3. Deletes also write a short-lived tombstone (`del:<key>`, TTL 1 h),
+     which the copy checks before writing a key.
+- **Guaranteed:** every key present throughout is copied at least once
+  (J5). Repeats are harmless: puts of the same value.
+- **Watch out:**
+  - without replayed changes or tombstones, a copy can resurrect a key
+    deleted after it was read;
+  - throttle the loaders while serving: they share the writer mutex.
+
+### R27. Consistent reads across keys
+
+- **Problem:** show both sides of a transfer, or an order and its lines,
+  never half-applied.
+- **Keys:** `bal:<account>`, as plain values (A8's pitfall: not counters).
+- **Calls:**
+  - **Writes:** `Mutate(atomic, put bal:a, put bal:b)`, with version
+    conditions (A8).
+  - **Reads:** `GetMany([bal:a, bal:b], consistent)` (J4).
+- **Guaranteed:** a reader sees both writes of a transfer, or neither.
+- **Watch out:** values updated in place (counters, fields) are not
+  covered (J4). Keep the values that carry an invariant as plain values.
+
+### R28. Per-account state words (max registers and flags)
+
+- **Problem:** track last seen, a personal best and a set of account flags
+  for millions of accounts, with updates arriving from any server in any
+  order.
+- **Keys:**
+  - `c:seen:<id hex>`: a max register on a compact key (J6, H1);
+  - `best:<id>`: a max register;
+  - `acct:<id>:flags`: a flag word (J7).
+- **Calls:**
+  - **On activity:** `Increment(c:seen:<id>, MAX, now)`.
+  - **On a score:** `Increment(best:<id>, MAX, score)`. `value > previous`
+    means a new personal best, decided in the same call.
+  - **On an onboarding step:** `Increment(acct:<id>:flags, SET_BITS,
+    step)`. `previous & step` says whether the step's one-time logic
+    already ran.
+- **Guaranteed:**
+  - late or reordered updates never move a register backwards;
+  - concurrent flag sets never lose each other.
+- **Watch out:** 64 flags per word. A Put resets the word.
+
+### R29. A week of hourly counters, and histograms, in one key
+
+- **Problem:** show a customer's API calls per hour of the current week,
+  and a latency histogram per endpoint and day.
+- **Keys:**
+  - `calls:<customer>:<week>`: an array of 168 cells, with a TTL of 60
+    days (J8);
+  - `lat:<endpoint>:<day>`: 32 cells, cell i counting latencies below
+    2^(i+1) µs.
+- **Calls:**
+  - **Per request:** one Arrays call with two ADDs: the hour's cell, and
+    the latency's cell.
+  - **Dashboards:** ARRAY_GET of the week (1,344 bytes), or ARRAY_SUM of a
+    day's 24 cells (8 bytes).
+- **Guaranteed:** exact counts under any concurrency (`LOCK XADD` per
+  cell).
+- **Watch out:** percentiles from fixed buckets are only as fine as the
+  bounds. For accurate quantiles, use DDSketch (F4).
+
+### R30. List pages from large JSON documents
+
+- **Problem:** a catalog stores 5 KB product documents. Listing pages need
+  the title, the price and one image of each product.
+- **Keys:** `prod:<sku>` → the JSON, with the listing fields first.
+- **Calls:** `JsonGet(the page's keys, ["title", "price.amount",
+  "images[0]"])` (J9).
+- **Guaranteed:** each field as stored, as raw JSON text, from one version
+  of each document.
+- **Watch out:** the cost grows with how deep into the document a field
+  sits: 31-80 ns early, 1.75 µs at the end of 5 KB. Keep listing fields
+  near the start.
+
+### R31. GDPR erasure when keys don't name the user
+
+- **Problem:** erase or export every record that mentions a user's email,
+  when keys are ticket or order ids. (R10 covers keys under a user
+  prefix.)
+- **Keys:** `ticket:<id>` → JSON with a `requester.email` member, plus
+  free text.
+- **Calls:**
+  1. `Iterate` with the key filter `ticket:` and a value filter (J11):
+     - `json: requester.email EQ "\"jane@example.com\""` for the field;
+     - `contains: "jane@example.com"` for anywhere in the text.
+  2. For each match: Delete, or rewrite with CompareAndSet (A4).
+- **Guaranteed:** every record present for the whole pass is examined
+  (J5). Erasure is idempotent, so repeats are harmless.
+- **Watch out:**
+  - a full pass reads every ticket: 10 GB costs 0.5-2.6 s of one thread at
+    3.9-19.6 GB/s. Run shards in parallel, off-peak;
+  - records written during the pass may need a second pass.
+
 ---
 
 # Part V — Engineering plan
@@ -3462,15 +4531,18 @@ Each recipe states the **problem**, the **keys**, the **calls**, what is
   | Phase | RPCs |
   |---|---|
   | 0 | `Stats` |
-  | 1 | `Exists`, `GetMany`, `Mutate`, `Increment`, `RateLimit`, `Sample` |
+  | 1 | `Exists`, `GetMany`, `Mutate`, `Increment`, `RateLimit`, `Sample`; `Iterate` (Group J) |
   | 3 | `Export`, `Watch` (export-watch.md) |
   | 4 | `Scan`, `Count`, `Seek`, `Rank`, `Select`, `Pop`, `DeleteRange`, `LongestPrefix` |
-  | 5 | `SketchAdd`, `SketchQuery`, `SketchMerge`, `GetFilter`; `Fields`, `Bits`, `Sets`, `WindowAdd`, `Score` |
-  | 6 | `FindSimilar`, `FindContaining`, `Matching`, `Reconcile`; `FindNear`, `GeoAdd`, `GeoRadius` (compact keys need no RPC) |
+  | 5 | `SketchAdd`, `SketchQuery`, `SketchMerge`, `GetFilter`; `Fields`, `Bits`, `Sets`, `WindowAdd`, `Score`; `Arrays`, `JsonGet`, `PutBlob` (Group J) |
+  | 6 | `FindSimilar`, `FindContaining`, `Matching`, `Reconcile`; `FindNear`, `GeoAdd`, `GeoRadius` (compact keys need no RPC); Bazel's cache services, opt-in: Capabilities, ActionCache, ContentAddressableStorage, ByteStream (J10) |
   | S | none: Track S changes no message |
 
+- **Group J also extends messages:** GetMany (fields 5-9), Increment (`op`,
+  `previous`) and Export (`value_filter`).
 - **Shared messages:** `Entry` (fields 1-2 as in export-watch.md, plus
-  `version` and `ttl_ms`), `KeyRange`, `Bounds`, `Condition`.
+  `version` and `ttl_ms`), `KeyRange`, `Bounds`, `Condition`; `ValueRange`
+  and `ValueFilter` (Group J).
 - **[PROTOCOL.md](../PROTOCOL.md)** gains:
   - the new status codes: `FAILED_PRECONDITION` (9), `PERMISSION_DENIED`
     (7);
@@ -3479,6 +4551,8 @@ Each recipe states the **problem**, the **keys**, the **calls**, what is
   - the struct, bitmap, set, window and vector layouts (§1.6), the
     compact-key limits, and the fingerprint and point prefixes of near and
     geo values;
+  - Group J's definitions: the array layout, the CRC tag, the JSON path
+    syntax, the CAS key layout, and Iterate's cursor guarantee;
   - one conformance vector per RPC, in the existing hex format.
 
 ## V.2 Server changes by module
@@ -3489,7 +4563,7 @@ Each recipe states the **problem**, the **keys**, the **calls**, what is
 | `grpc.asm` | dispatch, validation and budgets per RPC; Exists and GetMany inside the batched GET path; the front half of the Mutate engine (decode, validate, prefetch); reply framing; cursors |
 | `proto.asm` | decoders for repeated messages, oneofs, packed bools and varints; encoders for the new replies |
 | `store.asm` | the back half of the Mutate engine (conditions, apply, Move, atomic batches, memory reservation); revisions and versions; in-place cells (counters, rate limits); the TTL record extension and lazy checks |
-| `cuckoo.asm` | unchanged lookup. TTL checks live in the callers, so the tag scan stays as measured |
+| `cuckoo.asm` | unchanged lookup. TTL checks live in the callers, so the tag scan stays as measured. The relocation step appends to the relocation log beside its `st_moves` count (J5) |
 | new `ttl.asm` | the timing wheel and the sweeper |
 | new `order.asm` | the radix tree with optimistic lock coupling, subtree counts and leaf back-pointers; the reversed tree |
 | new `dir.asm` | segment directories (key-indexes.md §2.1) |
@@ -3499,7 +4573,13 @@ Each recipe states the **problem**, the **keys**, the **calls**, what is
 | `wlock.asm` | Track S: flat combining (per-thread publication slots; the combiner prefetches and applies every pending write) and UMWAIT waits with a PAUSE fallback |
 | `siphash.asm`, `grpc.asm` | Track S: SipHash-2-4-128 in 8 AVX2 lanes (two interleaved 4-lane groups, bit-exact) in every batched hash stage, behind CPUID dispatch |
 | new `compact.asm` | H1: the compact table (64-byte buckets, seqlock, partial-key cuckoo) and routing by prefix |
-| new `typed.asm` | H2-H4, H9, H10: struct fields, bitmaps with block counts, sets, windows and vectors; AVX2 kernels (nibble and Harley-Seal popcount, all-pairs set intersection, int8 and fp32 dot products) each with a scalar twin (ADR 0006) |
+| new `typed.asm` | H2-H4, H9, H10, J8: struct fields, bitmaps with block counts, sets, windows, vectors and arrays; AVX2 kernels (nibble and Harley-Seal popcount, all-pairs set intersection, int8 and fp32 dot products, array sums and extremes) each with a scalar twin (ADR 0006) |
+| `grpc.asm`, `store.asm` | Group J: GetMany's options (J1-J4: lengths, slices, CRC or version tags, the double collect and its lock fallback); the atomic-batch sequence word; Iterate's pages and cursors; Increment's MAX, MIN and flag ops |
+| `crc32c.asm` | unchanged: J3's CRC tags call the folding CRC |
+| new `json.asm` | J9, J11: the structural scan (AVX2 + PCLMULQDQ), the path walker, JSON predicates, the scalar tokenizer twin |
+| new `sha256.asm` | J10: SHA-256 with SHA-NI, and a FIPS 180-4 scalar twin |
+| new `vfilter.asm` | J11: the AVX2 substring filter with a memmem-style twin; the int64 predicate |
+| new `reapi.asm` | J10, Phase 6: Bazel's cache services (messages, routing, the ByteStream adapter with SHA-256 on the way) |
 | new `near.asm`, `geo.asm` | H5, H6: static base + live delta, merged by the builder thread; multi-index hashing; Morton codes (PDEP and PEXT, with a shift-and-mask twin); prefix tables for seeks |
 | export-watch.md §8 modules | the history ring, cuts, ADD and EXPIRE events, counter exports (§2.3 rule 4) |
 | `worker.asm` | the sweeper and builder scheduling; the per-worker cell index for hot counters |
@@ -3530,7 +4610,7 @@ Each recipe states the **problem**, the **keys**, the **calls**, what is
 | `KVNODE_SCOPE_HEADER` | (unset) | multi-tenant scopes (§1.10) |
 | `KVNODE_WATCH_HISTORY`, `KVNODE_EXPORT*` | — | export-watch.md §9 |
 | `KVNODE_COMPACT_PREFIXES` | (unset) | key prefixes stored in the compact table (H1) |
-| `KVNODE_TYPED_VALUES` | on | Fields, Bits, Sets, WindowAdd and Score |
+| `KVNODE_TYPED_VALUES` | on | Fields, Bits, Sets, WindowAdd, Score and Arrays |
 | `KVNODE_MAX_BITMAP_MB` | 128 | the largest bitmap (H3) |
 | `KVNODE_MAX_SET_MEMBERS` | 65536 | the largest set (H4) |
 | `KVNODE_NEAR_PREFIXES` | (unset) | prefixes indexed for FindNear (H5) |
@@ -3539,6 +4619,15 @@ Each recipe states the **problem**, the **keys**, the **calls**, what is
 | `KVNODE_HASH_LANES` | auto | Track S: `auto` (8 lanes with AVX2) \| `1` |
 | `KVNODE_WRITE_COMBINING` | on | Track S: flat combining for writers |
 | `KVNODE_WAIT` | auto | Track S: `auto` (UMWAIT when the CPU and the hypervisor allow it) \| `pause` |
+| `KVNODE_MAX_ITERATE_PAGE` | 1000 | entries per Iterate page (J5) |
+| `KVNODE_ITERATE_BUCKETS` | 2048 | buckets one Iterate page visits at most (J5) |
+| `KVNODE_RELOCATION_LOG` | 65536 | relocation-log entries, 8 bytes each (J5) |
+| `KVNODE_SNAPSHOT_ATTEMPTS` | 4 | optimistic attempts of a consistent read before it reads under the writer lock (J4) |
+| `KVNODE_MAX_SCAN_KB` | 512 | value bytes one call or page may scan or hash: JsonGet, value filters, PutBlob (J9-J11) |
+| `KVNODE_MAX_ARRAY_CELLS` | 65536 | the largest array (J8) |
+| `KVNODE_JSON_MAX_DEPTH` | 64 | the deepest nesting JsonGet and JSON filters accept (J9, J11) |
+| `KVNODE_CAS_PREFIX` | (unset) | the content-addressed key space, e.g. `cas:`. Unset: PutBlob answers `UNIMPLEMENTED`, so existing keys are never refused after an upgrade. Set: other writes under it are refused (J10) |
+| `KVNODE_REAPI` | off | Bazel's cache services on the same port (J10, Phase 6) |
 
 Every setting follows today's strict rules: validated at startup, logged,
 and refused with the allowed range when invalid.
@@ -3556,6 +4645,9 @@ and refused with the allowed range when invalid.
   - `fuzzy_bytes`, `substr_bytes`;
   - Group H: `compact_keys`, `compact_load`, `typed_updates`, `near_keys`,
     `geo_points`;
+  - Group J: `iterate_pages`, `relocations_logged`, `iterate_restarts`,
+    `snapshot_retries`, `snapshot_lock_reads`, `etag_unchanged`,
+    `json_bytes`, `blobs_stored`, `blobs_deduplicated`;
   - Track S: `hash_lanes`, `wait_mode`, `combined_passes`,
     `combined_writes_avg`.
 - **Every per-call limit that refuses a request** logs it at most once per
@@ -3571,6 +4663,16 @@ and refused with the allowed range when invalid.
   - Group H adds its own bounds: FindNear's distance (≤ 3) and limit,
     GeoRadius's radius and limit, the members INTER_CARD may compare per
     call, bitmap and set sizes, and the keys per Score call.
+  - Group J adds: the value bytes scanned or hashed per call
+    (`KVNODE_MAX_SCAN_KB`), the buckets per Iterate page, JSON depth and
+    path count, needle length (≤ 256 bytes), and array size.
+- **Content addressing (J10):**
+  - The server computes every digest, and other writes under the CAS
+    prefix are refused, so a digest key always holds its content.
+  - SHA-256 is unkeyed, but placement still uses the secret SipHash key, so
+    chosen digests cannot flood buckets.
+- **Iterate (J5)** lists every key. With scopes (§1.10) it is clamped to
+  the caller's scope.
 - **Hashing:**
   - Sketch items hash with the server's secret key.
   - Client filters use public seeds: a crafted key can only produce a false
@@ -3601,6 +4703,11 @@ and refused with the allowed range when invalid.
     FindNear and GeoRadius indexes are rebuilt at load.
   - The snapshot writer walks the compact table too. A compact key is a
     key, so the format does not change.
+- **Group J persists as values.**
+  - Arrays are typed values, and blobs are values under their digests.
+  - The relocation log and the atomic-batch sequence word are runtime
+    state: a restart starts them empty, and pre-restart cursors answer
+    `restart`.
 - **The persistence proposal (write-ahead log)** must log *effects*
   (resulting values), not deltas or conditions. Replay is then
   deterministic even for counters and conditional writes.
@@ -3629,6 +4736,13 @@ and refused with the allowed range when invalid.
 | `GeoAddAsync`, `GeoRadiusAsync` (one page), `GeoRadiusAllAsync` (`IAsyncEnumerable`), `GeoRemoveAsync` | GeoAdd, GeoRadius, Mutate | cursors handled |
 | `WindowAddAsync`, `WindowSumAsync` | WindowAdd | |
 | `ScoreAsync`; `KvVector` encoders (int8, fp32, MinHash) | Score, Put | quantization helpers |
+| `GetManyAsync` options `withLength`, `range`, `consistent`; `GetIfChangedAsync` (one or many) | GetMany | tags as opaque `ETag` values; Download for large slices |
+| `IterateAsync` (one page), `IterateAllAsync` (`IAsyncEnumerable`, per shard) | Iterate | follows cursors; restarts a shard on `restart` |
+| `UpdateMaxAsync`, `UpdateMinAsync`, `SetFlagsAsync`, `ClearFlagsAsync` | Increment | return the value and the previous one |
+| `ArrayAddAsync`, `ArrayGetAsync`, `ArraySumAsync`, `ArrayMinAsync`, `ArrayMaxAsync` | Arrays | |
+| `JsonGetAsync`; `JsonText` helpers | JsonGet | follows `next_index` |
+| `PutBlobAsync`, `FindMissingBlobsAsync`, `GetBlobAsync` | PutBlob, Exists, Get | SHA-256 in C# for `expected_sha256` and for verified reads |
+| `BulkLoadAsync` | Mutate (PutMany) | pipelined over 4 connections × 4 calls; returns the items refused at the memory limit |
 
 **Plumbing:**
 - **Retries** follow §1.8.
@@ -3668,6 +4782,23 @@ and refused with the allowed range when invalid.
     and a stress test with a watchdog);
   - the PAUSE fallback when the hypervisor refuses UMWAIT (a test hook
     forces the refusal).
+- **Group J:**
+  - **Consistent reads** with the endpoints probe's race test: a writer
+    rewrites keys in order, and readers run at cold-miss speed. Plain reads
+    must tear (or the test proves nothing), and consistent ones never.
+    Atomic batches must be seen whole or not at all.
+  - **Iterate** under inserts that force relocations (a nearly full
+    table): every key present throughout returned at least once; exactly
+    once without relocations; `restart` past the log's reach.
+  - **JSON** against the scalar reference on generated documents with
+    escaped quotes, backslashes before closing quotes, brackets inside
+    strings and random whitespace (as the probe does), plus a public JSON
+    conformance suite.
+  - **SHA-256** against the FIPS 180-4 vectors and random lengths; **CRC
+    tags** against a bitwise reference.
+  - **Arrays and Increment's new ops:** exact registers, words and sums
+    under concurrency; exports rebuilt from deltas equal the state at the
+    cut.
 
 **Protocol.**
 - Every new decoder is fuzzed, as `proto.asm` is today.
@@ -3686,7 +4817,15 @@ and refused with the allowed range when invalid.
 - forget the delta subtraction in counter exports;
 - skip a bitmap block-count update (a range COUNT test must fail);
 - drop an undo record (an export test must fail);
-- let the combiner skip one slot's DONE store (the watchdog must fire).
+- let the combiner skip one slot's DONE store (the watchdog must fire);
+- skip a consistent read's second collect (the race test must catch a torn
+  snapshot);
+- leave the atomic-batch sequence word even (a batch-visibility test must
+  fail);
+- drop a relocation-log append (the forced-relocation Iterate test must
+  miss a key);
+- drop the escape carry between JSON blocks (an escaped-quote test must
+  fail).
 
 ## V.9 Measurement gates
 
@@ -3722,18 +4861,27 @@ container, `docker events` for the window).
 | GeoRadius (H6) | 200 m with ≤ 20 results ≤ 2 µs at 10M uniform points (697.5 ns measured), and on real data |
 | WindowAdd (H9) | ≤ 1.3× an Increment |
 | Score (H10) | ≤ 1.2× a batched get per key |
+| GetMany `with_length`, `range` (J1, J2) | ≤ 1.05× the batched get beside it (1.00× measured, N) |
+| GetMany `if_tags` (J3) | unchanged ≤ 1.2× the batched get beside it for values ≤ 1 KiB (1.12× at 100 B); CRC ≥ 50 GB/s per core from 1 KiB (88-91 measured) |
+| GetMany `consistent` (J4) | ≤ 1.05× plain GetMany at rest (1.01× measured); 0 torn snapshots in 200,000 under the race test |
+| Iterate (J5) | ≥ 40 M keys/s per thread at 10M keys (54 measured); ≥ 250 M keys/s on 7 threads (340); at least once under forced relocations |
+| Increment MAX, MIN and flag ops (J6, J7) | ≤ 1.1× an Increment, on raising updates as well as unchanged ones (0.91× mostly unchanged, 1.00× for `LOCK OR`, measured) |
+| Arrays (J8) | ADD ≤ 1.5× a batched get (1.25× measured); SUM of 168 cells ≤ 2.5× (2.02×) |
+| JsonGet (J9) | a late field of a ~1 KB document ≤ 4× the whole document's batched get (3.34× measured); the structural index ≥ 2 GB/s (2.44-2.83) |
+| PutBlob (J10) | SHA-256 ≥ 2 GB/s with SHA-NI (2.47-2.57 measured); a digest check ≤ 1.1× an Exists |
+| value filters (J11) | `contains` ≥ 2× memmem on the customer's data (2.5-3.9× on the probe's text) |
 
 ## V.10 Phases
 
 | Phase | Scope | Depends on | Deliverables | Size |
 |---|---|---|---|---|
 | 0 Foundations | revisions and versions (clock seed, `Rec.aux`); the Mutate engine with Put and Delete as its fast paths; batch and response limits; Stats | — | its ADR; PROTOCOL.md; store tests; a .NET client skeleton | M |
-| 1 No new structures | Exists, GetMany, Mutate (batches, conditions, return_previous, atomic batches, Move), Increment with bounds, RateLimit, Sample (whole store); the batched write pipeline | 0 | its ADR; the client methods; example programs for conditional writes and bounded counters | L |
+| 1 No new structures | Exists, GetMany, Mutate (batches, conditions, return_previous, atomic batches, Move), Increment with bounds, RateLimit, Sample (whole store); the batched write pipeline; Group J: GetMany's lengths, slices, tags and consistent reads (J1-J4), Iterate with the relocation log (J5), Increment's MAX, MIN and flag ops (J6, J7), BulkLoad in the client (J12) | 0 | its ADR; the client methods; example programs for conditional writes and bounded counters; R24, R26-R28 | L |
 | 2 Time | TTL (record extension, lazy checks, wheel, sweeper); leases in the client; KVNSNAP expiry | 1 | its ADR; R1, R2, R3 and R5 as example programs | M |
 | 3 Streams | export-watch.md's phases, plus ADD and EXPIRE events and exact counter exports | 0 | export-watch.md §13; R4 (hold release), R11, R12 | XL |
 | 4 Order | the radix tree with counts and back-pointers; the order RPCs; directories; prefix sampling; StatsByPrefix | 0 | its ADR; R6-R10 | XL |
-| 5 Analytics and typed values | the sketch RPCs; GetFilter; the internal filter experiment; Fields, Bits, Sets, WindowAdd and Score (Group H) | 1 | its ADR; R16, R17, R19, R22, R23 | L |
-| 6 Opt-ins | FindSimilar (1 edit; 2 edits after its gate); FindContaining (after its gate); Matching; hot counters; the snapshot accelerator; the Reconcile proposal; compact keys, FindNear, GeoAdd / GeoRadius (Group H) | 3, 4 | an ADR per feature; R13, R14, R20, R21 | L each |
+| 5 Analytics and typed values | the sketch RPCs; GetFilter; the internal filter experiment; Fields, Bits, Sets, WindowAdd and Score (Group H); Arrays, JsonGet, PutBlob and value filters (Group J) | 1 | its ADR; R16, R17, R19, R22, R23; R25 through a proxy, R29-R31 | L |
+| 6 Opt-ins | FindSimilar (1 edit; 2 edits after its gate); FindContaining (after its gate); Matching; hot counters; the snapshot accelerator; the Reconcile proposal; compact keys, FindNear, GeoAdd / GeoRadius (Group H); Bazel's cache services (J10) | 3, 4 | an ADR per feature; R13, R14, R20, R21; R25 served directly | L each |
 | S Store speedups | 8-lane SipHash; flat combining for writers; UMWAIT waits (golden-services.md P2-P4) | — | one ADR; the services probe's rows as its gate | M |
 
 ADR numbers are assigned when each phase lands, not reserved here: other
@@ -3761,6 +4909,9 @@ work takes numbers in between.
 | Memory growth from opt-ins | per-prefix enablement; stated costs (§1.11); refusal at the memory limit |
 | Assembly complexity: the radix tree with optimistic locking and counts is the hardest part | prototype in C beside the store first (as the probes did); a reference model; mutation checks |
 | In-place updates versus cuts | rule 4 (§2.3) needs the history ring: counters in exports wait for Phase 3; until then, exports aren't offered at all |
+| Value work moves CPU into the server: JsonGet, value filters, digests (Group J) | per-call byte budgets (`KVNODE_MAX_SCAN_KB`); paged scans; gates on the byte rates |
+| Iterate's guarantee rests on the relocation log keeping up | a 65,536-entry ring; `restart` past its reach; relocations happen only on inserts into two full buckets |
+| Consistent reads starve under hot writes | a bounded number of optimistic attempts, then a read under the writer lock |
 | API sprawl | orthogonal RPCs that share `Entry`, `KeyRange` and `Condition`; every function maps to an existing need (Part IV) |
 
 ## V.12 Alternatives considered
@@ -3779,6 +4930,11 @@ work takes numbers in between.
 | Structs, bitmaps and sets encoded by clients over Get and CompareAndSet | two round trips per update, the whole value on the wire, and retry loops under contention. A field-level call is one atomic instruction (H2-H4) |
 | Approximate nearest-neighbor search (HNSW and kin) over all vectors | hundreds of µs and several times the data in memory: not golden. Score covers re-ranking (H10) |
 | Lock striping before flat combining | more invasive (every cuckoo path changes), while combining keeps the one-writer invariant and measured 1.91× (Track S) |
+| MVCC (versioned records) for consistent reads | memory and work on every write; the double collect costs 1.01× and needs one sequence word (J4) |
+| Redis's reverse-binary SCAN cursor for Iterate | it survives power-of-two rehashing, but cuckoo relocations move keys between unrelated buckets: a relocation log is needed (J5) |
+| A JSON type parsed once into a tree (RedisJSON) | a second representation and its memory; extraction from text runs at 2.4-2.8 GB/s and needs no type (J9) |
+| Version-only ETags | O(1), but blind to in-place updates (J3) |
+| A server-side BulkLoad stream | one request per call (§1.4); pipelined PutMany reaches the batched rate (J12) |
 
 ## V.13 Open decisions
 
@@ -3813,6 +4969,17 @@ work takes numbers in between.
     - the geo index structure.
 13. **Track S defaults:** on (proposed) once its gates hold, each with a
     switch for A/B tests and fallback (§V.3).
+14. **Group J's own decisions** (storage-simd-endpoints.md §9):
+    - store each record's CRC-32C at write time (+4 bytes per record):
+      O(1) default ETags (J3), and downloads skip a pass (ADR 0010's next
+      lever);
+    - the relocation log's size (J5): 65,536 entries proposed;
+    - optimistic attempts before a consistent read takes the lock (J4):
+      four proposed;
+    - Bazel's cache services served directly (proposed, opt-in) or by a
+      proxy (J10);
+    - JSON extraction only (proposed), or in-place JSON edits too (J9);
+    - Export split by hash shard: n streams sharing one cut.
 
 ---
 
@@ -3832,6 +4999,7 @@ work takes numbers in between.
 | `RANDOMKEY` | Sample(1) |
 | `DBSIZE`, `INFO` | Stats |
 | `SCAN MATCH`, `KEYS` | Scan (prefix), Export (pattern) |
+| `SCAN` (every key, an unordered cursor) | Iterate (J5), by hash shard |
 | `ZRANGEBYLEX`, `ZLEXCOUNT`, `ZRANK`, `ZPOPMIN` | Scan, Count, Rank, Pop, over the whole keyspace (no separate sorted set to maintain) |
 | `PFADD`, `PFCOUNT`, `PFMERGE` | SketchAdd, SketchQuery, SketchMerge (DISTINCT) |
 | `CMS.*`, `TOPK.*`, `TDIGEST.*` (RedisBloom) | the sketches (FREQUENCY, TOP_K, QUANTILES) |
@@ -3845,6 +5013,17 @@ work takes numbers in between.
 | `SADD`, `SREM`, `SISMEMBER`, `SCARD`, `SINTERCARD` | Sets (H4) |
 | `GEOADD`, `GEOSEARCH` (`GEORADIUS`) | GeoAdd, GeoRadius (H6) |
 | no direct equivalent | FindNear (H5), WindowAdd (H9; in Redis, a key per second plus a sum), Score (H10) |
+| `STRLEN`, `TYPE` | GetMany `with_length` (J1) |
+| `GETRANGE` | GetMany `range` (J2); Download `offset` / `length` |
+| no equivalent (HTTP's `If-None-Match`) | GetMany `if_tags` (J3) |
+| `MULTI` / `EXEC` around reads | GetMany `consistent` (J4) |
+| `ZADD GT` / `LT` on a one-member sorted set, or a Lua script | Increment MAX / MIN (J6) |
+| a Lua script (OR of a mask) | Increment SET_BITS / CLEAR_BITS (J7) |
+| `BITFIELD … INCRBY i64 #n` (integers in a string) | Arrays ADD (J8); SUM, MIN and MAX have no equivalent |
+| `JSON.GET` (RedisJSON) | JsonGet (J9) |
+| no equivalent (a Bazel remote cache) | PutBlob, Exists and Bazel's cache services (J10) |
+| `SCAN` plus client-side filtering | Iterate or Export with a value filter (J11) |
+| `redis-cli --pipe` (mass insertion) | BulkLoad (J12) |
 
 # Appendix B — Evidence and sources
 
@@ -3854,6 +5033,7 @@ work takes numbers in between.
 - [export-probe](../../benchmarks/results/2026-09-29-export-probe/README.md) (X)
 - [cap-probe](../../benchmarks/results/2026-09-29-cap-probe/README.md) (100k / 1M)
 - [services-probe](../../benchmarks/results/2026-10-01-services-probe/README.md) (10M keys: V; Group H and Track S)
+- [endpoints-probe](../../benchmarks/results/2026-10-01-endpoints-probe/README.md) (10M keys: N; Group J)
 
 **Cited techniques:**
 - Most sources are listed in golden-operations.md §8 and capabilities.md
@@ -3864,6 +5044,10 @@ work takes numbers in between.
   Harley-Seal, SimHash and multi-index hashing, SIMD set intersection,
   Roaring, HeavyKeeper, DDSketch, learned and radix indexes, Morton codes
   with BMI2, flat combining, ffwd, and UMWAIT.
+- **Group J** cites storage-simd-endpoints.md §8: simdjson, Muła's SIMD
+  substring search, Intel's SHA extensions, Bazel's remote APIs, Redis
+  SCAN's guarantees, RFC 9110's conditional requests, Afek et al.'s atomic
+  snapshots, MemC3, and CRC folding with PCLMULQDQ.
 - **GCRA:** the generic cell rate algorithm (ATM Forum traffic
   management), as implemented by redis-cell,
   <https://github.com/brandur/redis-cell>.
