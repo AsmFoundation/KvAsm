@@ -1,0 +1,123 @@
+# The first certified run, kept as the exhibit of a probe bug fixed before the run in output.txt.
+# Its bar copy used a variable-size memcpy that GCC compiled to 'rep movsq': bar B read 83.4 ns here
+# against 56-64 ns from the golden probe's own bar in the same hour (control.txt). Do not quote its numbers.
+
+revision a8dec3a; gcc 14.2.0; nasm 2.16.03
+cpu 13th Gen Intel(R) Core(TM) i9-13900K
+thp [always] madvise never
+
+== services_probe --keys 10000000 ==
+main store: 10000000 keys of 20-21 bytes, 100-byte values; fill 2.6 s; cpu 4, reps 5; avx-vnni yes, waitpkg yes
+
+THE BAR: exact gets on the main store (x = ratio to the bar of the same regime; GOLD = within 10x)
+  get (100-byte value)             dependent chain                                    440.1 ns     1.00xD GOLD  bar D
+                                   independent loop                                   429.7 ns     1.00xI GOLD  bar I
+                                   batched pipeline (the server's GET path)            83.4 ns     1.00xB GOLD  bar B
+BARS dep=440.1 ind=429.7 bat=83.4
+
+SIPHASH x4: SipHash-2-4-128 of four keys per AVX2 instruction stream
+  hash one 20-21 byte key          the store's assembly (SipHash-2-4-128)              13.7 ns     0.16xB GOLD  keys in L1, throughput
+                                   four AVX2 lanes per call                             6.7 ns     0.08xB GOLD  0.49x the assembly; bit-exact (every query key)
+                                   eight AVX2 lanes, two groups interleaved             5.5 ns     0.07xB GOLD  0.40x the assembly; bit-exact (every query key)
+  batched get (the bar B)          hash: the store's assembly                          85.0 ns     1.02xB GOLD  paired with the next rows
+                                   hash: four AVX2 lanes                               78.5 ns     0.94xB GOLD  0.924x the assembly
+                                   hash: eight AVX2 lanes                              79.9 ns     0.96xB GOLD  0.940x the assembly
+
+INLINE TABLE: keys <= 16 bytes and 8-byte values inside the 64-byte bucket (one miss per lookup)
+  fill: store 1.9 s, inline 2.1 s; memory: store 61 B/key (records + buckets), inline 54 B/key (60% entry load)
+  get (16-byte key, 8-byte value)  store, same keys: dependent chain                  336.0 ns     0.76xD GOLD  
+                                   inline table: dependent chain                      164.8 ns     0.37xD GOLD  0.49x the store
+                                   store, same keys: independent loop                 334.3 ns     0.78xI GOLD  
+                                   inline table: independent loop                     165.8 ns     0.39xI GOLD  0.50x the store
+                                   store, same keys: batched                           77.6 ns     0.93xB GOLD  
+                                   inline table: batched                               36.3 ns     0.43xB GOLD  0.47x the store
+                                   inline table: batched + 8-lane AVX2 hashing         28.0 ns     0.34xB GOLD  
+  increment (LOCK XADD in place)   store, same keys: batched                           59.5 ns     0.71xB GOLD  exact (checked)
+                                   inline table: batched                               39.5 ns     0.47xB GOLD  0.66x the store
+
+COMBINING: concurrent replace-puts (100-byte values), each thread taking the writer mutex vs flat combining
+  put (replace), all threads       each thread takes the writer mutex                 203.3 ns                  1 thread: 4.92 M puts/s
+                                   flat combining (prefetched batches)                196.1 ns                  1 thread: 5.10 M puts/s (1.04x)
+                                   each thread takes the writer mutex                 424.8 ns                  2 threads: 2.35 M puts/s
+                                   flat combining (prefetched batches)                267.4 ns                  2 threads: 3.74 M puts/s (1.59x)
+                                   each thread takes the writer mutex                 463.3 ns                  4 threads: 2.16 M puts/s
+                                   flat combining (prefetched batches)                240.5 ns                  4 threads: 4.16 M puts/s (1.93x)
+                                   each thread takes the writer mutex                 480.5 ns                  7 threads: 2.08 M puts/s
+                                   flat combining (prefetched batches)                241.1 ns                  7 threads: 4.15 M puts/s (1.99x)
+
+WAITPKG: one-way wake-up between two P-cores (half a round trip)
+  wake a waiting thread            PAUSE spin (burns its core)                        118.9 ns                  
+                                   UMONITOR + UMWAIT                                   85.2 ns                  0.72x the spin; the waiter's core idles in C0.1
+                                   futex wait / wake (system calls)                    4.15 us                  34.9x the spin
+
+BITMAPS: 1 MiB bitmaps (8,388,608 bits, e.g. one bit per user id per day)
+  BITCOUNT, 1 MiB                  POPCNT, 4 accumulators                             24.77 us    56.27xD       42.3 GB/s
+                                   AVX2 nibble lookup (VPSHUFB, VPSADBW)              20.53 us    46.64xD       51.1 GB/s
+                                   AVX2 Harley-Seal (carry-save adders)               12.86 us    29.23xD       81.5 GB/s
+  AND-count of two 1 MiB bitmaps   POPCNT (retention: active both days)               27.60 us    62.70xD       
+                                   AVX2 Harley-Seal, AND fused                        17.61 us    40.01xD       
+  SETBIT (in place)                LOCK OR on the word                                  3.3 ns     0.04xB GOLD  plus the key's lookup
+  GETBIT                           load + shift                                         0.6 ns     0.01xB GOLD  plus the key's lookup
+  BITPOS (next set bit, sparse)    word by word                                       228.2 ns     0.52xD GOLD  
+                                   AVX2: VPTEST skips 32-byte zero blocks             107.0 ns     0.24xD GOLD  
+  SETBIT, counts maintained        LOCK BTS; on a flip, 2 x LOCK XADD                  10.5 ns     0.13xB GOLD  50% of the bits flipped; plus the key's lookup
+  BITCOUNT of a byte range         AVX2 scan of the range                              7.04 us    15.99xD       ranges average 341 KiB
+                                   block counts + <= 2 x 2 KiB scanned                 68.7 ns     0.16xD GOLD  exact (checked)
+
+STRUCT VALUES: 1M keys with 16-field values (440 bytes); fields found by one SSE2 tag compare
+  get the whole value              batched pipeline                                   103.2 ns     1.24xB GOLD  440 bytes copied
+  HGET one field                   batched + directory + field stages                  57.3 ns     0.69xB GOLD  0.56x the whole get; 8 bytes on the wire
+  HINCRBY one field                batched + LOCK XADD on the field                    59.0 ns     0.71xB GOLD  0.57x the whole get; exact (checked)
+                                   the field lookup alone (value in L1)                 1.9 ns     0.02xB GOLD  PCMPEQB over 16 tags
+
+SETS: sorted u32 arrays in a value (tags, small member lists)
+  SISMEMBER (value in cache)       branchless binary search                            14.9 ns     0.18xB GOLD  64 elements
+                                   AVX2 scan (VPCMPEQD, 8 per step)                     2.0 ns     0.02xB GOLD  64 elements
+                                   branchless binary search                            30.0 ns     0.36xB GOLD  1024 elements
+                                   AVX2 scan (VPCMPEQD, 8 per step)                    31.5 ns     0.38xB GOLD  1024 elements
+  SINTERCARD                       branchy merge                                       1.61 us     3.66xD GOLD  1,024 x 1,024 elements, 38 in common
+                                   branchless merge                                    3.02 us     6.86xD GOLD  
+                                   AVX2 all-pairs blocks (8 x 8, VPERMD)              530.3 ns     1.20xD GOLD  
+
+KERNELS: per-value computations once the record is in cache
+  sliding-window sum (64 buckets)  scalar                                              17.4 ns     0.21xB GOLD  
+                                   AVX2 (VPMOVZXDQ + VPADDQ)                            4.5 ns     0.05xB GOLD  
+  MinHash agreement (128 x u32)    scalar                                              42.6 ns     0.51xB GOLD  
+                                   AVX2 (VPCMPEQD + VMOVMSKPS + POPCNT)                 5.5 ns     0.07xB GOLD  
+  int8 dot product (256 dims)      scalar                                              67.5 ns     0.81xB GOLD  
+                                   AVX2 (VPMADDUBSW + VPMADDWD)                         3.2 ns     0.04xB GOLD  
+                                   AVX-VNNI (VPDPBUSD)                                  1.6 ns     0.02xB GOLD  
+  fp32 dot product (256 dims)      scalar                                              69.8 ns     0.84xB GOLD  
+                                   AVX2 FMA, 4 accumulators                             4.8 ns     0.06xB GOLD  
+
+TOPK: the 100 heaviest of 10000000 keys from a Zipf(1) stream of 1048576 updates (HeavyKeeper 2 x 4096 = 64 KiB + heap)
+  TOPK update (heavy hitters)      HeavyKeeper + AVX2 heap membership                  16.4 ns     0.20xB GOLD  100/100 truly top-100 (#100 seen 660 times); count error 0.1%
+
+QUANTILES: DDSketch (1% relative accuracy, 2,048 buckets = 16 KiB) over 1048576 lognormal latencies
+  record a latency                 DDSketch: log, two increments                       16.1 ns     0.19xB GOLD  16 KiB, in cache
+  quantile (p50..p99.9)            walk the buckets                                    93.6 ns     0.21xD GOLD  p50/p90/p99/p99.9 worst error 0.19%
+                                   64-bucket group counts, then one group              15.5 ns     0.04xD GOLD  same answers (checked)
+
+SIMHASH: near-duplicates (Hamming distance <= 3) among 10000000 64-bit fingerprints
+  build 0.52 s (52 ns per fingerprint); 458 MB (48 B per fingerprint: 4 tables of code + id)
+  near-duplicate search            MIH, scalar POPCNT scan                            936.4 ns     2.18xI GOLD  612 candidates per query
+                                   MIH, AVX2 Hamming scan                             634.4 ns     1.48xI GOLD  0.50 matches per query
+                                   brute force: XOR + POPCNT over all                 10.60 ms  24658.68xI       the alternative
+
+GEO: points within a radius, among 10000000 uniform points (a 445 x 190 km region)
+  Morton code of a point           BMI2 PDEP (2 instructions)                           0.4 ns     0.00xB GOLD  
+                                   shifts and masks (magic bits)                        1.2 ns     0.01xB GOLD  
+  index build 0.69 s (Morton codes + 4-pass radix sort) + 0.016 s (prefix table); 267 MB (28 B per point: code, id, lat, lon) + 4 MiB prefix table
+  points within 200 m              4 Morton ranges (binary-search seeks), PEXT box     933.7 ns     2.17xI GOLD  15.0 results, 82 codes scanned per query
+                                   same, seeks through the 2^20 prefix table          641.2 ns     1.49xI GOLD  15.0 results, 82 codes scanned per query
+  points within 1000 m             4 Morton ranges (binary-search seeks), PEXT box      6.86 us    15.97xI       371.4 results, 3548 codes scanned per query
+                                   same, seeks through the 2^20 prefix table           6.28 us    14.61xI       371.4 results, 3548 codes scanned per query
+                                   brute force: distance to every point                8.39 ms  19532.38xI       the alternative
+
+  Rss:             3199752 kB
+  AnonHugePages:    942080 kB
+all checks passed
+
+1790874873 container exec_create: bash /src/benchmarks/results/2026-10-01-services-probe/run.sh 4 5 kvnode-dev
+1790874873 container exec_start: bash /src/benchmarks/results/2026-10-01-services-probe/run.sh 4 5 kvnode-dev
+attempt 1 window 2026-10-01T17:14:33Z .. 2026-10-01T17:15:11Z rc=0 foreign=0

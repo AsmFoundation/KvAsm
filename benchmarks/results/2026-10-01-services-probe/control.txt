@@ -1,0 +1,23 @@
+# Control: the golden probe's own bar (committed golden_probe.c, --bar-only),
+# 10M keys, cpu 4, reps 5, run twice by control_golden_bar.sh between the two
+# certified services runs (2026-10-01 ~17:17Z; kvnode-dev idle, not wrapped
+# in docker-events certification).
+#
+# Purpose: separate "the machine is slower today" from "the new probe
+# measures differently". Certified on 2026-09-29 the same bar read
+# D 347.2 / I 326.9 / B 54.1 ns.
+#
+# Reading:
+#   * D and I read 432-449 / 386-414 ns here, as in the services probe's
+#     certified run (435.5 / 406.0): the host is slower for latency today
+#     (a game client and desktop load on the host; the VM itself was idle).
+#   * B read 56-64 ns here, while the services probe's FIRST run read 83.4:
+#     that gap was the probe's variable-size value copy (rep movsq), fixed
+#     before the certified run in output.txt (B 57.3 ns).
+
+== golden_probe --bar-only, run 1 ==
+  budget (10x): D 4.49 us, I 3859 ns, B 562 ns
+BARS dep=449.0 ind=385.9 bat=56.2 exists_dep=404.3
+== golden_probe --bar-only, run 2 ==
+  budget (10x): D 4.33 us, I 4142 ns, B 638 ns
+BARS dep=432.5 ind=414.2 bat=63.8 exists_dep=418.6

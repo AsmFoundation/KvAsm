@@ -18,6 +18,11 @@
 - **Companions:**
   - [golden-operations.md](golden-operations.md): the measured costs at 10M
     keys.
+  - [golden-services.md](golden-services.md): ten more golden services
+    (Group H: compact values, struct fields, bitmaps, small sets,
+    near-duplicates, geo, TopK, quantiles, sliding windows, scoring) and
+    six store speedups (8-lane SipHash, flat combining, UMWAIT, ...),
+    measured at 10M keys. It also measures F3 and F4 below.
   - [capabilities.md](capabilities.md): the same question at 100k keys.
   - [key-indexes.md](key-indexes.md): prefix, suffix and pattern indexes.
   - [export-watch.md](export-watch.md): Watch, Export, revisions and cuts.
@@ -31,6 +36,7 @@
   | **K** | the [index probe](../../benchmarks/results/2026-09-29-index-probe/README.md), 16M keys |
   | **X** | the [export probe](../../benchmarks/results/2026-09-29-export-probe/README.md) |
   | **S** | the revision (sequence) probe in the index-probe directory |
+  | **V** | the [services probe](../../benchmarks/results/2026-10-01-services-probe/README.md), 10M keys ([golden-services.md](golden-services.md)) |
   | **E** | estimated from measured parts |
   | **C** | cited (Appendix B) |
 
@@ -59,6 +65,7 @@
 | E. Search over keys | FindSimilar (1 and 2 edits); FindContaining; Matching; ad hoc patterns | opt-in indexes, about 2 GB each at 10M keys | 6 (ad hoc: 3) |
 | F. Sketches | CountDistinct; Frequency; TopK; Quantiles | typed values, updated in place | 5 |
 | G. Streams and sync | Watch; ChangesSince; Export; Reconcile; StatsByPrefix | the history ring and cuts (export-watch.md); directories | 3, 4 (Reconcile: 6) |
+| H. More golden services ([golden-services.md](golden-services.md)) | compact values; struct fields; bitmaps; small sets; near-duplicates; geo radius; sliding windows; scoring (TopK and quantiles are F3, F4) | a compact table; typed values; opt-in indexes | 5, 6 |
 
 **Seven decisions this plan proposes.**
 
@@ -138,8 +145,8 @@
 | E5 | Ad hoc patterns | keys matching any glob or regex | `Export` (filter) | ~92 ms at 10M keys, streamed | — | 3 | E |
 | F1 | CountDistinct | how many distinct items (HLL) | `Sketch*` | 0.6 ns add and count; union 0.26-1.06 µs | 4-16 KB per sketch | 5 | M |
 | F2 | Frequency | how often an item was seen (Count-Min) | `Sketch*` | 21 ns per item, batched | sized per sketch | 5 | M |
-| F3 | TopK | the most frequent items | `Sketch*` | est. 1-2 µs to read | KBs | 5 | E |
-| F4 | Quantiles | p50 / p99 of a measure (DDSketch) | `Sketch*` | O(buckets) | KBs | 5 | C |
+| F3 | TopK | the most frequent items | `Sketch*` | est. 1-2 µs to read; measured since: 16.7 ns per add (HeavyKeeper, golden-services H7) | KBs | 5 | E, V |
+| F4 | Quantiles | p50 / p99 of a measure (DDSketch) | `Sketch*` | O(buckets); measured since: 16.7 ns per add, 16.2 ns per quantile (golden-services H8) | KBs | 5 | C, V |
 | G1 | Watch | the stream of changes to matching keys | `Watch` | 20-40 ns per write to route | history ring | 3 | E, X |
 | G2 | ChangesSince | what changed after revision R | `Watch` (`start_revision`) | O(changes) | history ring | 3 | E |
 | G3 | Export | a consistent copy of matching keys | `Export` | cut O(1); 25-40 ns per key streamed | cuts | 3 | X |
@@ -186,7 +193,12 @@
 
 - **Indexes over value contents** (secondary indexes inside values): values
   stay opaque bytes. capabilities.md §1.8 lists the options.
-- **Vector, geo and full-text search.**
+- **Vector, geo and full-text search.** Since this plan,
+  [golden-services.md](golden-services.md) proposes geo radius (H6) and
+  near-duplicate search (H5), both measured golden at 10M keys, and
+  scoring of stored vectors for given keys (H10). Approximate
+  nearest-neighbor search over all vectors, and full-text search, remain
+  out.
 - **Multi-node replication and sharding.** Reconcile (G4) and Watch are
   their building blocks, not the feature.
 - **Durable persistence.** That is the persistence proposal; §V.6 covers
@@ -2194,6 +2206,15 @@ exceeds N/k is in the list, and each count has a known maximum error.
 **Cost (E).** An add is ≈ 50-100 ns (a hash probe and a heap fix);
 reading the top 100 is ≈ 1-2 µs.
 
+**Measured since (V, [golden-services.md](golden-services.md) H7).**
+- **The sketch:** HeavyKeeper (2 × 4,096 buckets, 64 KiB) with a 100-entry
+  heap whose membership test is 13 AVX2 compares.
+- **Cost:** 16.7 ns per add on a Zipf(1) stream over 10M keys.
+- **Accuracy:** all 100 reported keys were truly top-100, with a 0.1%
+  count error.
+- **What this leaves open:** Space-Saving's per-item error bounds remain
+  the reason to prefer it (golden-services §10).
+
 **Usage.**
 ```csharp
 await kv.TopKAddAsync($"top:viewed:{hour}", productId);
@@ -2220,6 +2241,17 @@ Space-Saving summaries are mergeable.
 
 **Cost (E, C).** An add is one `XADD` after a logarithm (computed as an
 exponent extraction); a query is O(buckets), a few hundred: ≈ µs.
+
+**Measured since (V, [golden-services.md](golden-services.md) H8).** With
+α = 1% and 2,048 buckets:
+
+| Operation | Cost |
+|---|---|
+| add (glibc `log` included) | 16.7 ns |
+| query, walking every bucket | 102.2 ns |
+| query, through per-64-bucket group counts kept on add | 16.2 ns |
+
+- **Accuracy:** the worst error at p50, p90, p99 and p99.9 was 0.19%.
 
 **Usage.**
 ```csharp

@@ -15,6 +15,10 @@
   - [functions-plan.md](functions-plan.md): the 38 user-facing functions
     these measurements support, designed for implementation (API,
     semantics, usage, phases).
+  - [golden-services.md](golden-services.md): the sequel. It adds ten
+    more golden services and six store speedups (8-lane SipHash, a compact
+    one-miss tier, flat combining, UMWAIT, prefix-table seeks, aggregates
+    kept on write), measured at 10M keys.
 - **Evidence:**
   [benchmarks/results/2026-09-29-golden-probe](../../benchmarks/results/2026-09-29-golden-probe/README.md).
   - `golden_probe.c` measures each prototype next to the store's own
