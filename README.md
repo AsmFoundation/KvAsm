@@ -171,6 +171,7 @@ Store alone, single thread, 4M keys: 279 ns per dependent lookup, p99.9
 | [`client/dotnet/`](client/dotnet) | .NET 8/10 client and snapshot writer, with unit and container tests |
 | [`benchmarks/`](benchmarks/README.md) | comparison with other key-value stores: the kvbench client, the suite, methodology, committed results |
 | [`docs/`](docs) | [architecture](docs/ARCHITECTURE.md), [protocol and client contract](docs/PROTOCOL.md), [operations](docs/OPERATIONS.md), [decision records](docs/adr) |
+| [`docs/paper/`](docs/paper/README.md) | case-study paper on how an LLM coding agent built KvNode in assembly (Word document, Markdown source, figures, and the scripts behind its numbers) |
 | [`Dockerfile`](Dockerfile) | toolchain (pinned and verified nghttp2 for the test clients, and h2spec) → build + all tests → scratch runtime |
 
 ## Development

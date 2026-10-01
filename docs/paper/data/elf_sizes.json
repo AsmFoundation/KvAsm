@@ -1,0 +1,124 @@
+{
+ "files": {
+  "obj/abi.o": {
+   "text": 0,
+   "rodata": 192,
+   "data": 0,
+   "bss": 0
+  },
+  "obj/config.o": {
+   "text": 994,
+   "rodata": 570,
+   "data": 824,
+   "bss": 0
+  },
+  "obj/crc32c.o": {
+   "text": 5084,
+   "rodata": 8256,
+   "data": 64,
+   "bss": 0
+  },
+  "obj/cuckoo.o": {
+   "text": 2305,
+   "rodata": 0,
+   "data": 64,
+   "bss": 0
+  },
+  "obj/grpc.o": {
+   "text": 4928,
+   "rodata": 1096,
+   "data": 3296,
+   "bss": 0
+  },
+  "obj/h2n.o": {
+   "text": 8864,
+   "rodata": 131,
+   "data": 0,
+   "bss": 0
+  },
+  "obj/hcache.o": {
+   "text": 729,
+   "rodata": 0,
+   "data": 0,
+   "bss": 0
+  },
+  "obj/hpack.o": {
+   "text": 3031,
+   "rodata": 18624,
+   "data": 0,
+   "bss": 248
+  },
+  "obj/log.o": {
+   "text": 398,
+   "rodata": 17,
+   "data": 0,
+   "bss": 0
+  },
+  "obj/main.o": {
+   "text": 2728,
+   "rodata": 685,
+   "data": 0,
+   "bss": 144
+  },
+  "obj/pool.o": {
+   "text": 542,
+   "rodata": 8,
+   "data": 0,
+   "bss": 0
+  },
+  "obj/proto.o": {
+   "text": 1538,
+   "rodata": 0,
+   "data": 0,
+   "bss": 0
+  },
+  "obj/siphash.o": {
+   "text": 834,
+   "rodata": 0,
+   "data": 0,
+   "bss": 0
+  },
+  "obj/snapshot.o": {
+   "text": 1054,
+   "rodata": 339,
+   "data": 0,
+   "bss": 0
+  },
+  "obj/store.o": {
+   "text": 3406,
+   "rodata": 0,
+   "data": 0,
+   "bss": 0
+  },
+  "obj/util.o": {
+   "text": 171,
+   "rodata": 0,
+   "data": 0,
+   "bss": 0
+  },
+  "obj/wlock.o": {
+   "text": 117,
+   "rodata": 0,
+   "data": 0,
+   "bss": 0
+  },
+  "obj/worker.o": {
+   "text": 3408,
+   "rodata": 192,
+   "data": 0,
+   "bss": 0
+  },
+  "kvnode": {
+   "text": 622497,
+   "rodata": 253543,
+   "data": 30312,
+   "bss": 23832
+  }
+ },
+ "total": {
+  "text": 662628,
+  "rodata": 283653,
+  "data": 34560,
+  "bss": 24224
+ }
+}
