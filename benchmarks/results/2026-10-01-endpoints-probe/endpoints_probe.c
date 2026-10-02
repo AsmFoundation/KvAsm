@@ -1,7 +1,8 @@
 /*
  * endpoints_probe.c — endpoints derived from how KvNode hashes and stores,
  * and the SIMD work they let the server do on values. Evidence for
- * docs/proposals/storage-simd-endpoints.md.
+ * docs/proposals/functions-plan.md: Part II §3 (the store as built, and
+ * where SIMD pays) and Group J (the functions measured here).
  *
  * Why it exists: a re-read of the store (siphash.asm, cuckoo.asm,
  * store.asm, grpc.asm) showed that a GET is memory-bound (two dependent

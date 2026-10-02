@@ -1,16 +1,22 @@
 # Plan: KvNode functions — design, usage and rollout
 
-- **Status:** proposed plan, 2026-10-01. Nothing here is implemented or
-  decided. Each phase would land with its own ADR.
+- **Status:** proposed plan, 2026-10-01; Group J merged in on 2026-10-02.
+  Nothing here is implemented or decided. Each phase would land with its
+  own ADR.
+- **One plan:** this document is the single plan. Work that adds functions
+  is merged into it, not kept beside it: Group J and the storage revisit
+  behind it (Part II §3) live only here. The companions below are the
+  measurement and design records the plan cites, and the benchmark READMEs
+  hold the evidence.
 - **What it covers:** the 58 functions KvNode could offer beyond Get, Put,
   Delete, Upload and Download. They were chosen from the measured catalogs
   for the business value customers get from them:
   - 38 in groups A-G;
   - 8 in Group H, added on 2026-10-01 from
     [golden-services.md](golden-services.md);
-  - 12 in Group J, added the same day from
-    [storage-simd-endpoints.md](storage-simd-endpoints.md): what the
-    store's layout makes cheap, and SIMD work on values.
+  - 12 in Group J, added the same day from a revisit of how the store
+    hashes and stores, and where SIMD pays (Part II §3): what the store's
+    layout makes cheap, and SIMD work on values.
 
   The same date added Track S (§V.10): three store speedups with no API,
   which make existing functions faster. For each function:
@@ -32,10 +38,6 @@
     near-duplicates, geo, TopK, quantiles, sliding windows, scoring) and
     six store speedups (8-lane SipHash, flat combining, UMWAIT, ...),
     measured at 10M keys. It also measures F3 and F4 below.
-  - [storage-simd-endpoints.md](storage-simd-endpoints.md): how the store
-    hashes and stores, where SIMD pays, and twelve endpoints derived from
-    them (Group J: metadata, slices, ETags, snapshot reads, Iterate, cells,
-    arrays, JsonGet, blobs, value filters, BulkLoad), measured at 10M keys.
   - [capabilities.md](capabilities.md): the same question at 100k keys.
   - [key-indexes.md](key-indexes.md): prefix, suffix and pattern indexes.
   - [export-watch.md](export-watch.md): Watch, Export, revisions and cuts.
@@ -50,7 +52,7 @@
   | **X** | the [export probe](../../benchmarks/results/2026-09-29-export-probe/README.md) |
   | **S** | the revision (sequence) probe in the index-probe directory |
   | **V** | the [services probe](../../benchmarks/results/2026-10-01-services-probe/README.md), 10M keys ([golden-services.md](golden-services.md)) |
-  | **N** | the [endpoints probe](../../benchmarks/results/2026-10-01-endpoints-probe/README.md), 10M keys ([storage-simd-endpoints.md](storage-simd-endpoints.md)) |
+  | **N** | the [endpoints probe](../../benchmarks/results/2026-10-01-endpoints-probe/README.md), 10M keys (Part II §3, Group J) |
   | **E** | estimated from measured parts |
   | **C** | cited (Appendix B) |
 
@@ -61,7 +63,7 @@
   | Part | What it holds |
   |---|---|
   | I | the catalog and a "which function do I need" table |
-  | II | the foundations every function shares |
+  | II | the foundations every function shares (§1, §2), and the store as built: hashing, storage, where a request's time goes, and where SIMD pays (§3) |
   | III | the 58 functions, one fixed template each: Why, API, Semantics, How it works, Cost, Usage, Pitfalls |
   | IV | recipes that combine functions |
   | V | the engineering plan |
@@ -80,7 +82,7 @@
 | F. Sketches | CountDistinct; Frequency; TopK; Quantiles | typed values, updated in place | 5 |
 | G. Streams and sync | Watch; ChangesSince; Export; Reconcile; StatsByPrefix | the history ring and cuts (export-watch.md); directories | 3, 4 (Reconcile: 6) |
 | H. More golden services ([golden-services.md](golden-services.md)) | compact keys; Fields (struct fields); Bits (bitmaps); Sets; FindNear; GeoAdd / GeoRadius; WindowAdd; Score (TopK and quantiles are F3, F4) | typed values; a compact table; two opt-in indexes | 5 (Fields, Bits, Sets, WindowAdd, Score); 6 (compact keys, FindNear, Geo) |
-| J. From the storage design, and SIMD on values ([storage-simd-endpoints.md](storage-simd-endpoints.md)) | value metadata; GetRange; GetIfChanged (ETags); snapshot reads; Iterate; max / min registers; flag words; counter arrays; JsonGet; PutBlob; value filters; BulkLoad | GetMany and Increment options; a relocation log and a sequence word; one typed value (arrays); SIMD kernels (JSON, SHA-256, substring) | 1 (J1-J7, J12); 5 (J8-J11); 6 (Bazel's cache services) |
+| J. From the storage design, and SIMD on values (Part II §3) | value metadata; GetRange; GetIfChanged (ETags); snapshot reads; Iterate; max / min registers; flag words; counter arrays; JsonGet; PutBlob; value filters; BulkLoad | GetMany and Increment options; a relocation log and a sequence word; one typed value (arrays); SIMD kernels (JSON, SHA-256, substring) | 1 (J1-J7, J12); 5 (J8-J11); 6 (Bazel's cache services) |
 
 **Seven decisions this plan proposes.**
 
@@ -736,6 +738,218 @@ index (E3) are rebuilt off the event loop:
 For the internal absent-key filter (C1), writers set the key's bits before
 publishing the record. Section C1 shows why that makes "absent" answers
 linearizable.
+
+## 3. The store as built: hashing, storage, and where SIMD pays
+
+Every function in this plan runs on today's store. This section describes
+it from the code (file and line references as of commit 6d82b29), says
+where a request's time goes, and maps where SIMD is used and where it can
+pay. Group J (Part III) derives its functions from it. The new measurements
+are the endpoints probe's (N).
+
+### 3.1 Hashing
+
+- **The function:** SipHash-2-4 with a 128-bit output
+  ([server/src/siphash.asm](../../server/src/siphash.asm), `kv_siphash128`
+  at line 61).
+  - It is keyed with a per-process secret seed from `getrandom`
+    (`Table.seed0/1`, used by `kv_store_hash` in store.asm line 380).
+  - **Why keyed:** clients choose keys, so a keyed pseudo-random function
+    keeps bucket occupancy random whatever arrives: no hash flooding (ADR
+    0004).
+  - **Why scalar:** it is pure 64-bit add, rotate and XOR. The file keeps
+    the server's "no SIMD requirement" rule.
+  - **Safe at the end of a buffer:** reads never pass the key. The tail is
+    an overlapping 8-byte load, or 4/2/1-byte loads.
+- **One pass, two words:**
+  - **h1** picks the primary bucket: `b1 = h1 & mask`.
+  - **h2** gives a one-byte tag: `tag = h2 >> 56`, with 0 reserved for
+    empty slots.
+  - **The alternate bucket** comes from the bucket and the tag alone:
+    `b2 = b1 ^ ((((tag × 0x9E3779B97F4A7C15) >> 32) | 1) & mask)`
+    (cuckoo.asm `LOCATE`, line 102).
+  - This is partial-key cuckoo hashing, as in MemC3 (C). A relocation
+    needs only bucket lines, never the key. The offset is odd, so
+    `b2 ≠ b1` and `alt(alt(b)) = b`.
+- **When:** at parse time, for every request (grpc.asm line 670), before
+  the GET batch runs. A GET's two buckets are prefetched right away (line
+  730).
+- **Cost:** 12.7-13.9 ns for a 20-21-byte key (M, V): 23% of a batched get
+  (M), and 18% of a whole GET's user-space instructions (§3.3).
+  - Eight keys hash in 5.6 ns each in AVX2 lanes, bit-exact (V, Track S).
+- **Exactness:** keys are compared byte for byte (`kv_keyeq`, util.asm line
+  33), never by hash (ADR 0004). Clients send a key longer than 64 bytes as
+  `0xFF ‖ SHA-512(key)` (§1.9), so no key the server sees exceeds 65
+  bytes.
+- **What it means for functions:**
+  - **The secret seed keeps placement private.** Clients cannot compute
+    where a key lives; a cluster must route with its own hash.
+  - **A bucket range is a hash range:** a free shard key for parallel
+    iteration (J5).
+  - **Every request already carries its 128-bit hash** from parse time, so
+    anything keyed by the hash costs nothing extra.
+
+### 3.2 Storage
+
+- **The table** ([server/include/kvnode.inc](../../server/include/kvnode.inc),
+  `struc Table`, line 100):
+  - a 64-byte-aligned bucket array in an anonymous NORESERVE mapping, with
+    transparent huge pages, prefaulted at creation (store.asm line 117);
+  - `nbuckets = next_pow2(max(2, ceil(capacity / 5)))` (store.asm line
+    159), so at most ~83% of the 6-slot buckets are ever used;
+  - **the capacity is fixed at creation:** the table never rehashes.
+  - **The header is grouped by writer,** so readers never share a line with
+    state that writers update on every operation. Immutable fields, the
+    writer mutex, the QSBR epoch, memory accounting, the writer's
+    statistics and the Download pins each sit on their own cache lines.
+- **A bucket** (`struc Bucket`, line 76) is one 64-byte line:
+  - an 8-byte version (a seqlock: odd while the writer changes it);
+  - 8 tag bytes, 6 used;
+  - 6 record pointers.
+- **A record** (`struc Rec`, line 61):
+  - `next` and `aux` (writer-only), `key_len`, `val_len`;
+  - the key, zero-padded to 8, then the value.
+  - It is malloc'd and immutable once published.
+  - Memory is reserved with `LOCK XADD` on `Table.mem_used` before the
+    malloc (store.asm line 463), so concurrent writers cannot overshoot the
+    limit.
+  - The value is 8-aligned, which is what makes in-place cells possible
+    (§2.3).
+- **A read** (`kv_cuckoo_get_sse2`, cuckoo.asm line 358) is lock-free:
+  1. both versions must be even (PAUSE while odd);
+  2. both tag words go in one XMM register, and one `PCMPEQB` + `PMOVMSKB`
+     matches all 12 slots;
+  3. each candidate: slot non-zero, same `key_len`, `kv_keyeq`;
+  4. a hit is final;
+  5. a miss re-checks both versions and retries if either moved, because a
+     relocation may have been moving the key.
+
+  QSBR keeps every record a reader can hold alive until the reader's next
+  quiescent state.
+- **A write** (`kv_store_put`, store.asm line 432):
+  1. allocate and fill the record **outside** the lock;
+  2. take the futex mutex (wlock.asm);
+  3. `kv_cuckoo_upsert` (line 449). Records are published only inside an
+     odd-version window, so readers never accept a half-updated bucket:
+     - **replace:** one slot store;
+     - **insert:** into a free slot of either bucket;
+     - **otherwise:** a breadth-first relocation search bounded by
+       `MAX_BFS = 256` buckets (`cuckoo_bfs_insert`, line 710). Each move
+       makes both buckets odd, copies the record into the hole, clears the
+       old slot, makes both even, and counts itself in `Table.st_moves`, so
+       a key is never in neither bucket;
+  4. retire the replaced record to limbo, stamped with the epoch;
+  5. free up to `RECLAIM_BATCH = 8` records whose grace period has ended.
+- **Downloads pin a record** across event-loop passes (a pin table), so
+  reclamation defers it instead of freeing it under the transfer (ADR
+  0010).
+- **The server's GET pipeline** (grpc.asm):
+  1. hash and prefetch at parse;
+  2. after the read, `kv_grpc_run_batch` (line 936) prefetches every
+     batched GET's candidate records, three lines each;
+  3. `get_execute` (line 1004) looks up and frames each response.
+
+  The value is copied once, by `memcpy`, into the output buffer. A GET
+  allocates nothing.
+- **Per-worker L1/L2 record caches** (`hcache.asm`) sit in front of the
+  table when configured. They were built, measured slower, and are off by
+  default (ADR 0006).
+- **PUTs and DELETEs are not batched:** each takes the mutex at parse time.
+  That is why write batching (§1.4, M) and flat combining (Track S, V) are
+  the write-side levers.
+
+### 3.3 Where a request's time goes
+
+| Measure | Value | Source |
+|---|---|---|
+| one GET on one core (quiet host, busy-polling client) | 269 ns of server time: 139 ns user, 130 ns kernel | [store-lookup](../../benchmarks/results/2026-09-27-store-lookup/README.md) |
+| the store's part of it | 69 ns inside the server; 43.5 ns alone (SipHash ~12, compute ~9, memory ~23) | the same |
+| user-space instructions per GET | 1,425: HTTP/2 parsing 20%, SipHash 18%, response framing 16%, stream lifecycle 15%, store lookup 11%, gRPC and protobuf 11% | [second-pass](../../benchmarks/results/2026-09-27-second-pass/README.md) (callgrind) |
+| an exact get at 10M keys | dependent 411.4 ns; plain loop 369.5 ns; batched pipeline 57.5 ns | N |
+| the hash | 12.7-13.9 ns scalar; 5.6 ns in 8 AVX2 lanes, which makes a batched get 0.943× | M, V |
+| the 100-byte value copy | ≈ 0: a length-only read, which skips it, costs 1.00× a get (J1) | N |
+
+**Instructions are not time.**
+- SipHash runs at a high IPC. The store's ~160 instructions cost ~60 ns in
+  stalls: two dependent misses, a bucket line then a record, which batching
+  overlaps.
+- The rest of a GET is protocol and kernel: HTTP/2, gRPC framing, system
+  calls.
+
+So:
+- **Inside the lookup,** only the hash is compute worth vectorizing, and
+  Track S does it.
+- **Faster GETs** come from fewer misses and less protocol work:
+  - the compact tier (H1);
+  - huge-page records (M);
+  - fewer wake-ups and system calls per request (ADR 0009).
+
+  Wider registers do not help.
+- **SIMD's leverage is in work on values.** Today that work happens on
+  clients, after the whole value has crossed the network.
+
+### 3.4 SIMD: where it is used, and where it pays
+
+| Stage | Work | Today | SIMD option | Effect |
+|---|---|---|---|---|
+| HTTP/2 and HPACK | frame and header parsing | scalar; 16-byte `MOVDQU` literal copies | Huffman decode tables | small headers, little to win (E) |
+| protobuf decode | varints, fields | scalar | SIMD varint decoding for big batches | a few ns per key in a 1,024-key GetMany (E) |
+| hash | SipHash-2-4-128 | scalar ARX | 8 AVX2 lanes, two interleaved groups, bit-exact | 0.40× the hash; batched get −5.7% (V, Track S) |
+| bucket probe | 12 tags | SSE2 `PCMPEQB` + `PMOVMSKB` | AVX2 over two keys at once | nothing: the probe waits on memory |
+| key compare | ≤ 65 bytes after compaction | 8-byte words | one 32-byte `VPCMPEQB` | nothing measurable |
+| value copy | 0.1-1024 KiB | glibc `memcpy` (AVX2, ERMS) | already SIMD | — |
+| integrity | CRC-32C | folding with `VPCLMULQDQ`: 88-91 GB/s (N); SSE4.2: 15-25 GB/s | — | an ETag on the fly costs 2.8 ns per 100 B (J3) |
+| writes | malloc, copy, mutex, upsert | scalar | flat combining (not SIMD) | 1.91× at 7 writers (V, Track S) |
+| iteration (J5) | buckets in order, records random | — | an SSE2 occupancy mask per bucket | memory-bound: 54 M keys/s per thread (N) |
+| JSON (J9, J11) | find a field | — | structural scan: `VPCMPEQB` ×6 per 32 bytes, `PCLMULQDQ` prefix XOR for strings, `TZCNT`/`BLSR` | 1.6-2.3× a scalar tokenizer; 2.4-2.8 GB/s (N) |
+| content hashes (J10) | SHA-256 | — | `SHA256RNDS2`, `SHA256MSG1/2` | 2.5 GB/s, 6.3-6.5× scalar (N) |
+| value filters (J11) | find bytes | — | first/last-byte candidates, 32 per step | 3.9-19.6 GB/s, 2.5-3.9× memmem (N) |
+| aggregates (J8) | sum / max of int64 | — | `VPADDQ`; `VPCMPGTQ` + `VPBLENDVB` | 4.6× / 2.7× scalar (N) |
+
+**Fallbacks (ADR 0006).** Every row keeps a scalar path, measured next to
+it:
+- SipHash: the scalar assembly;
+- CRC-32C: four modes, chosen at startup;
+- JSON: the scalar tokenizer, with the same walker;
+- SHA-256: the FIPS code;
+- substring search: memmem;
+- aggregates: scalar loops.
+
+**AVX-512** (absent on this CPU) would widen every lane count. It would
+also add `VPMAXSQ` for the max, `VPCOMPRESSB` to collect JSON structurals,
+and `VPOPCNTQ` for popcounts.
+
+### 3.5 What follows for new functions
+
+**Four things the measurements teach (N):**
+1. **Metadata and slices cost a get** (1.00×). Their value is on the wire
+   and at the client, not in the store (J1, J2).
+2. **A consistent multi-key read is nearly free** (1.01×), because the
+   bucket versions the readers already check are seqlocks. Under a racing
+   writer, 11% of plain 16-key reads were torn, and none of the validated
+   ones (J4).
+3. **Iterating without an index is fast:** 340 M keys/s on 7 threads, all
+   10M keys in 29 ms. Buckets stream in order; only the records are
+   random (J5).
+4. **Value work fits the golden budget.** Extracting a late field from a
+   ~1 KB JSON document costs 3.34× sending the whole document, on the
+   server, and saves the client the bytes and the parse (J9).
+
+**What does not pay, or not yet:**
+- **SIMD in the probe and the key compare:** they wait on memory. Two keys
+  per AVX2 compare, or 32-byte key compares, would not move a GET.
+- **A pull-model JSON tokenizer** reaches 1.6-2.3× scalar. simdjson's
+  flattened index, and full parses that build a tape, are the next step
+  (C).
+- **Substring search slows with common bytes.** It depends on how rare the
+  needle's first and last bytes are (19.6 against 3.9 GB/s). Picking the
+  needle's two rarest bytes by a static frequency table is Muła's
+  refinement (C).
+- **Consistent reads under constant writes need the lock fallback** (J4).
+- **SHA-256 of large blobs costs 2.5 GB/s per core.** A 1 GiB blob hashes
+  in about 0.4 s: stream it, with the digest computed on the way (J10).
+- **A server-side BulkLoad stream:** pipelined batches already reach the
+  batched write rate (J12).
 
 ---
 
@@ -3156,13 +3370,14 @@ var top = candidateKeys.Zip(scores).OrderByDescending(p => p.Second).Take(20);
 ## Group J — Endpoints from the storage design, and SIMD on values
 
 **Where these come from.**
-- **Added 2026-10-01** from
-  [storage-simd-endpoints.md](storage-simd-endpoints.md). That document
-  re-reads how the store hashes and stores (its §1-§3) and where SIMD pays
-  (§4). It holds each design's argument: the relocation-log proof, the
-  snapshot's sequence word, the tag kinds.
+- **Added 2026-10-01, merged here 2026-10-02.** They come from a revisit of
+  how the store hashes and stores, and where SIMD pays (Part II §3):
+  - the store's layout makes some reads and cells nearly free (J1-J8);
+  - SIMD makes work on values cheap (J8-J11).
 - **This section** holds what the other groups hold: why, API, semantics,
-  cost, usage and pitfalls.
+  how it works, cost, usage and pitfalls. "How it works" also carries each
+  design's argument: the tag kinds (J3), the snapshot's sequence word (J4),
+  the relocation log's proof (J5).
 - **The letter J:** Part I numbers its sections I.1-I.3, so the group skips
   I.
 - **Costs** are measured by the endpoints probe at 10M keys (N). Its bars
@@ -3404,9 +3619,20 @@ message GetManyResponse {
    `KVNODE_SNAPSHOT_ATTEMPTS` (default 4), then read under the writer
    lock, which no writer can hold at the same time.
 
-- **Atomic batches** keep the sequence word odd while they apply (§2.1).
-  Each bucket's version alone could validate a window between two of a
-  batch's mutations.
+- **Why it is correct (a double collect, Afek et al., C).** Every write
+  that changes a key's slot makes that bucket's version odd, then even
+  again: a replace, an insert, a delete, and both ends of a relocation
+  (§3.2). Unchanged even versions across the window therefore mean that no
+  such write touched these buckets, so every value read held at every
+  instant of the window.
+- **Why the sequence word.** An atomic batch (A8) applies its mutations one
+  by one under the writer lock. Each bucket's version alone could validate
+  a window that falls between two of them. Atomic batches therefore keep
+  the word odd while they apply (§2.1). They are rare, so readers almost
+  never retry on it.
+- **Why it is cheap:** the bucket versions are the seqlocks the readers
+  already check, and the second collect reads lines that are still in
+  cache.
 - **Private caches** (ADR 0006, off by default) are bypassed: a snapshot
   reads the table.
 
@@ -3494,7 +3720,18 @@ message IterateResponse {
   increments: one 8-byte store per move.
 - **After its scan,** a page re-reads every slot that a move since the
   cursor filled inside the region scanned so far, and emits the key found
-  there. The proof is in storage-simd-endpoints.md §5 J5.
+  there. Doing it after the scan also covers the moves made during the
+  page, the last page's included.
+- **Why every key is found (a proof sketch).** A key present for the whole
+  pass ends in some bucket f.
+  - If f was scanned after the key's last move into it, the scan emitted
+    it.
+  - Otherwise that move filled a slot of f after f was scanned, inside the
+    scanned region, so the log check of the next page (or of the same
+    page) emits it.
+- **Why a log, and not "rescan when `st_moves` changed":** under steady
+  inserts into a nearly full table some move happens during almost every
+  pass, so a rescan rule would never finish.
 
 **Cost (N).**
 
@@ -3609,7 +3846,8 @@ await kv.UpdateMaxAsync($"offset:{group}:{partition}", ackedOffset);
 - **Events, exports and retries** as in J6.
 
 **How it works.** The batched lookup, then a `LOCK CMPXCHG` loop that
-returns the previous word, as for max registers.
+returns the previous word, as for max registers. On a compact key (H1) the
+word sits in the bucket's line, so a flag check is one cache miss.
 
 **Cost (N, E).**
 - **47.1 ns** per update, batched: 1.00× an increment. The probe measured
@@ -3763,6 +4001,10 @@ message JsonResult {
 - **A path walker** pulls structurals with `TZCNT` / `BLSR`, skips unwanted
   values by depth, and stops once the last requested value is complete.
 - **A scalar tokenizer** with the same walker is the fallback (ADR 0006).
+- **Headroom:** the measured walker pulls one structural per call.
+  simdjson flattens each block's structurals into an index array first,
+  and parses at several GB/s (C). The 2.4-2.8 GB/s below is a floor for
+  the technique, not its ceiling.
 
 **Cost (N).**
 
@@ -4896,6 +5138,22 @@ work takes numbers in between.
   hash stage and the writer lock, changes no message, and speeds up every
   later phase. Its flat combiner is also where Phase 1's batched writes
   meet, so landing it first leaves Phase 1 less to build.
+- **Group J, by value for cost:**
+  1. **lengths, slices and ETags (J1-J3):** trivial in the store; they save
+     bandwidth for every cache and large-value client;
+  2. **consistent reads (J4):** one GetMany flag and one sequence word,
+     nearly free, and they close A8's gap (plain readers can see an atomic
+     batch half-applied);
+  3. **Iterate (J5):** backups, migrations and index rebuilds at 340 M
+     keys/s from Phase 1, before Export's cuts and without the ordered
+     index;
+  4. **max registers and flag words (J6, J7)** at the cost of an
+     increment, then **counter arrays (J8)** with the typed values;
+  5. **content-addressed blobs (J10),** ideally with Bazel's cache
+     services: a large, existing client base;
+  6. **JsonGet and value filters (J9, J11):** the most SIMD per byte, and
+     the most bandwidth saved;
+  7. **BulkLoad (J12)** in the client, any time after PutMany.
 
 ## V.11 Risks
 
@@ -4969,7 +5227,7 @@ work takes numbers in between.
     - the geo index structure.
 13. **Track S defaults:** on (proposed) once its gates hold, each with a
     switch for A/B tests and fallback (§V.3).
-14. **Group J's own decisions** (storage-simd-endpoints.md §9):
+14. **Group J's own decisions:**
     - store each record's CRC-32C at write time (+4 bytes per record):
       O(1) default ETags (J3), and downloads skip a pass (ADR 0010's next
       lever);
@@ -4979,7 +5237,10 @@ work takes numbers in between.
     - Bazel's cache services served directly (proposed, opt-in) or by a
       proxy (J10);
     - JSON extraction only (proposed), or in-place JSON edits too (J9);
-    - Export split by hash shard: n streams sharing one cut.
+    - Export split by hash shard: n parallel streams of one cut would need
+      the cut to outlive its first stream (export-watch.md §5). Proposed:
+      Iterate shards from Phase 1, and Export shards only when a customer
+      needs parallel point-in-time copies.
 
 ---
 
@@ -5044,10 +5305,32 @@ work takes numbers in between.
   Harley-Seal, SimHash and multi-index hashing, SIMD set intersection,
   Roaring, HeavyKeeper, DDSketch, learned and radix indexes, Morton codes
   with BMI2, flat combining, ffwd, and UMWAIT.
-- **Group J** cites storage-simd-endpoints.md §8: simdjson, Muła's SIMD
-  substring search, Intel's SHA extensions, Bazel's remote APIs, Redis
-  SCAN's guarantees, RFC 9110's conditional requests, Afek et al.'s atomic
-  snapshots, MemC3, and CRC folding with PCLMULQDQ.
+- **Group J and Part II §3:**
+  - **simdjson:** Langdale, Lemire, *Parsing Gigabytes of JSON per
+    Second*, VLDB Journal 28(6), 2019, <https://arxiv.org/abs/1902.08318>;
+    <https://github.com/simdjson/simdjson>.
+  - **SIMD substring search:** W. Muła, *SIMD-friendly algorithms for
+    substring searching*, 2016,
+    <http://0x80.pl/notesen/2016-11-28-simd-strfind.html>.
+  - **SHA-NI:** Intel, *Intel SHA Extensions*,
+    <https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sha-extensions.html>,
+    and its white paper,
+    <https://www.intel.com/content/dam/develop/external/us/en/documents/intel-sha-extensions-white-paper-402097.pdf>;
+    reference code, <https://github.com/noloader/SHA-Intrinsics>.
+  - **Bazel's remote cache:** the Remote Execution API (Capabilities,
+    ActionCache, ContentAddressableStorage; ByteStream for large blobs),
+    <https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto>.
+  - **Redis SCAN's guarantees:** <https://redis.io/docs/latest/commands/scan/>.
+  - **Conditional requests (ETag, If-None-Match, 304):** RFC 9110 §13;
+    <https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/If-None-Match>.
+  - **Atomic snapshots (the double collect):** Afek, Attiya, Dolev, Gafni,
+    Merritt, Shavit, *Atomic Snapshots of Shared Memory*, JACM 40(4), 1993,
+    <https://people.csail.mit.edu/shanir/publications/AADGMS.pdf>.
+  - **Partial-key cuckoo hashing and optimistic reads:** Fan, Andersen,
+    Kaminsky, *MemC3*, NSDI 2013,
+    <https://www.usenix.org/conference/nsdi13/technical-sessions/presentation/fan>.
+  - **CRC folding:** Intel, *Fast CRC Computation for Generic Polynomials
+    Using PCLMULQDQ*, 2009 (cited in crc32c.asm).
 - **GCRA:** the generic cell rate algorithm (ATM Forum traffic
   management), as implemented by redis-cell,
   <https://github.com/brandur/redis-cell>.

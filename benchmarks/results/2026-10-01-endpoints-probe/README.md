@@ -12,8 +12,10 @@
   So the next endpoints come from what the bucket and record layout makes
   O(1), and from value-level work where SIMD runs at GB/s and returns a few
   bytes instead of whole values.
-- **The proposal it supports:**
-  [docs/proposals/storage-simd-endpoints.md](../../../docs/proposals/storage-simd-endpoints.md).
+- **The plan it supports:**
+  [docs/proposals/functions-plan.md](../../../docs/proposals/functions-plan.md):
+  Part II §3 (the store as built, and where SIMD pays) and Group J (the
+  twelve functions measured here).
 - **Files:**
 
   | File | What |
@@ -85,7 +87,7 @@ control showed host load moving D and I.
   no read could tear (the first smoke run stopped on the probe's own guard).
   - The reader now spends ~0.1 µs per key, a cold miss's cost at 10M keys.
   - The writer pauses ~10 µs between rounds. A writer that never pauses
-    starves any validated read (the seqlock livelock); the proposal falls
+    starves any validated read (the seqlock livelock); the plan (J4) falls
     back to reading under the writer lock after a few attempts.
 - **The max-register row is mostly the no-write path.** Each repetition
   replays the same candidates, so after the first one a candidate rarely
@@ -116,6 +118,6 @@ control showed host load moving D and I.
   speed depends on how common the needle's first and last bytes are (3.9
   vs 19.6 GB/s here).
 - Prototypes in C next to the store, not store code. The scan's guarantee
-  under concurrent writes (cuckoo relocations), and the snapshot's
-  writer-lock fallback, are designed in the proposal but not stress-tested
-  here.
+  under concurrent writes (the relocation log, J5), and the snapshot's
+  sequence word and writer-lock fallback (J4), are designed in the plan but
+  not stress-tested here.
