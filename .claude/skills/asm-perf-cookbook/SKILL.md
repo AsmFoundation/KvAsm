@@ -340,22 +340,6 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Slabs for fixed-size records:** lower overhead, no fragmentation, can
   sit on huge pages. *KvNode:* 🔜 records (see §1: glibc arenas never got
   a huge page here).
-- **Keep cross-thread frees off the allocator's locks**
-  - *What:* when thread A allocates and thread B frees (B's write replaced
-    A's record), glibc's `free()` takes A's arena lock. Give each thread a
-    bounded cache of the blocks it frees, reused by its own next
-    allocations.
-  - *KvNode:* ✅ ADR 0011, the per-slot record cache: LIFO per glibc chunk
-    class, up to 1,032-byte records, 256 per class, 256 KiB per worker.
-    - Before it: 44% of a worker's user time at 4 workers in malloc/free,
-      including `__lll_lock_wait_private`.
-    - A 1,024-entry glibc tcache (`GLIBC_TUNABLES`) proved the cause first:
-      1.74× SET/s at 4 workers, 6/6.
-    - The store-owned cache made writes scale: `bench_write` 5.4 → 12.6M
-      writes/s from 1 to 4 threads, where per-write locking falls 1.66 →
-      1.27M.
-  - *Why not the tunable:* a user's own `GLIBC_TUNABLES` silently replaces
-    it, and it caches every size class of every thread without bound.
 - **Borrow instead of copy:** a request body that arrives whole in one
   frame can be used in place while the read buffer is still live.
   *KvNode:* ✅ native engine (`ST_BORROWED`): no request buffer, no copy
@@ -491,31 +475,14 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Amortize the lock**
   - *What:* group commit (apply a read batch's Puts under one mutex hold),
     or flat combining.
-  - *KvNode:* ✅ ADR 0011 (2026-11-15). A read's Puts and Deletes are
-    prefetched at parse time and applied under one hold (at most 64 writes).
+  - *KvNode:* 🔜. Writes are serialized; batching them like GETs is the
+    write-path analogue of §1.
   - *Evidence (2026-09-27):* a SET runs only 26% more instructions than a
     GET (1,789 vs 1,425, callgrind), yet it took ~4× the time on the same
-    host. PUTs executed at dispatch, outside the GET batch's prefetch
-    pipeline, so their bucket and old-record misses serialized.
-  - *Lesson (2026-11-15):* **amortizing the lock alone made things worse at
-    4 workers.** Batching with reclamation still inside the mutex gave 1.19×
-    SET/s at 1 worker, 1.01× at 4, and **0.85× on a 50/50 mix at 4
-    workers**. The holds grew (64 × cold frees), waiters slept on the
-    futex, and a batch's GETs waited behind their writes. Shrink the
-    critical section before you amortize it.
-- **Move the cleanup out of the lock**
-  - *What:* the lock covers the publication only. Retiring and freeing what
-    the lock unlinked happens afterwards, per thread, like per-CPU RCU
-    callback lists.
-  - *KvNode:* ✅ ADR 0011. The records a hold replaces go to the writer's
-    QSBR slot. After the unlock come ONE epoch LOCK XADD per hold (it was
-    an XCHG per record) and the worker's own limbo, freed outside the
-    mutex. Result: 4 workers 1.45× SET/s and 50/50 1.35× (from 0.85×),
-    paired 6/6.
-  - *Pitfall:* a rate limit counted in calls ("rescan every 16 calls")
-    becomes 16 seconds on a once-a-second tick. Force the rescan on the
-    housekeeping path (`itest`'s stalled-download memory checks caught
-    it).
+    host. PUTs execute at dispatch, outside the GET batch's prefetch
+    pipeline, so their bucket and old-record misses serialize. Batching
+    would prefetch them at parse time and take the writer lock once per
+    read. Measure write throughput on a quiet host first.
 - **Share nothing where possible:** per-worker sessions, pools and loops.
   *KvNode:* ✅.
 
@@ -761,7 +728,6 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *Screen, then confirm:* 2-block screens of four read sizes found the
     optimum (and that bigger lost on large uploads) before one 6-block
     confirmation — cheaper than confirming every candidate.
-
 - **Lessons of the assembly audit (2026-11-15,
   `benchmarks/results/2026-11-15-asm-audit`):**
   - *Count per source line, not per function:* callgrind with
