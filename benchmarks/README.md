@@ -5,6 +5,33 @@ Valkey, Dragonfly, Garnet and Memcached), using one client, one placement
 and one statistical method for all of them. The rules, and the reasons
 behind each, are in [METHODOLOGY.md](METHODOLOGY.md).
 
+## Writes after ADR 0011 (2026-11-15)
+
+[ADR 0011](../docs/adr/0011-batched-writes-per-worker-reclamation.md)
+batches writes per read and moved their cleanup out of the writer lock.
+
+- **Against 0.2.0, each server alone**
+  ([write-batching](results/2026-11-15-write-batching/README.md)), 4
+  workers:
+  - 1.21M → 3.21M SET/s (2.61×);
+  - 2.05M → 3.51M on 50/50 (1.77×);
+  - CPU per SET 3,071 → 1,254 ns.
+
+  Paired A/B, 6/6 blocks: 2.76× and 1.65×. Reads are unchanged.
+- **Against the other stores (W1, `--profile writes`): indicative only**
+  ([README](results/2026-11-15-writes-w1/README.md)).
+  - Every run window overlapped other work in the VM, and a median 10.3
+    CPUs were busy outside it. The other stores ran at under half their
+    2026-09-27 rates.
+  - KvNode's writes came out ahead of all five on 100% SET:
+    - Redis 2.79×, Valkey 3.76×, Dragonfly 2.91× and Memcached 4.17×
+      (6/6 blocks each);
+    - Garnet 1.72× (5/6 blocks).
+
+    On 50/50 it led all five, 1.76–3.42×, in 6/6 blocks.
+  - The 2026-09-27 ratios times the A/B gain predict the same picture.
+  - A quiet-host re-run must confirm it before the claims change.
+
 ## Why 8 cores does not double on this host (2026-09-28)
 
 E1 went from 4.98M GET/s at 4 cores to 5.99M at 8. A paired A/B gave the

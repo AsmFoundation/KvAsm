@@ -25,8 +25,8 @@ and what is deliberately *not* claimed.
   - 1.26× Redis on one core.
   - In that comparison (0.2.0) it was behind them on writes and on 16 KiB
     values (see [Performance](#performance)). Writes have since become
-    2.6× faster at 4 workers (ADR 0011, unreleased), not yet compared
-    with the other stores again.
+    2.6× faster at 4 workers (ADR 0011, unreleased). They have not yet been
+    compared with the other stores on a quiet host.
 - **Assembly data structures.** The store is a bucketized cuckoo table of
   64-byte seqlocked buckets. A measured bake-off chose it over chaining and
   a branchless binary trie, both also written in assembly
@@ -212,7 +212,9 @@ every server in all ten paired blocks):
     - Against 0.2.0, each server alone at 4 workers: 2.61× SET/s and
       1.77× on a 50/50 mix. The server's CPU per SET fell from 3,071 to
       1,254 ns.
-    - The comparison with the other stores predates it.
+    - The comparison with the other stores predates it. A first re-run ran
+      on a loaded host and is only indicative
+      ([W1](benchmarks/results/2026-11-15-writes-w1/README.md)).
   - 16 KiB values: 481k GET/s, half of Garnet's and Memcached's, and 30%
     below the old nghttp2 build (a regression, not yet explained).
 - **At 8 cores the benchmark client is the limit:** kvbench's gRPC client

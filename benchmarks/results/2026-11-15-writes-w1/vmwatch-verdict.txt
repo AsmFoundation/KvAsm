@@ -1,0 +1,74 @@
+72 runs; 0 clean, 72 flagged, 0 without monitor coverage
+  W1: side-vCPU busy per run window (interior mean), median 0.257, max 5.212 vCPU
+  FLAG W1/garnet/c4/t4/get0-v100-k1000000-uni-c64d16/r0 (block 0, ok): 4 active containers; 5 active containers; dev container 19850 ms; dev container 3042 ms; dev container 5075 ms; side vCPUs 2.01 busy (window mean)
+  FLAG W1/memcached/c4/t4/get0-v100-k1000000-uni-c64d16/r0 (block 0, ok): 4 active containers; 6 active containers
+  FLAG W1/kvnode/c4/t4/get50-v100-k1000000-uni-c64d16/r0 (block 0, ok): 4 active containers; 6 active containers; dev container 2620 ms; side vCPUs 0.49 busy (window mean)
+  FLAG W1/memcached/c4/t4/get50-v100-k1000000-uni-c64d16/r0 (block 0, ok): 6 active containers; dev container 11623 ms; dev container 30299 ms; dev container 30838 ms; side vCPUs 5.21 busy (window mean)
+  FLAG W1/dragonfly/c4/t4/get50-v100-k1000000-uni-c64d16/r0 (block 0, ok): 5 active containers; dev container 12748 ms; dev container 30349 ms; dev container 30829 ms; side vCPUs 5.07 busy (window mean)
+  FLAG W1/valkey/c4/t4/get0-v100-k1000000-uni-c64d16/r0 (block 0, ok): 6 active containers; dev container 11970 ms; dev container 6183 ms; dev container 8440 ms; side vCPUs 1.22 busy (window mean)
+  FLAG W1/redis/c4/t4/get0-v100-k1000000-uni-c64d16/r0 (block 0, ok): 5 active containers; dev container 3714 ms; dev container 772 ms; dev container 954 ms; side vCPUs 0.26 busy (window mean)
+  FLAG W1/garnet/c4/t4/get50-v100-k1000000-uni-c64d16/r0 (block 0, ok): 5 active containers; dev container 19507 ms; dev container 2283 ms; dev container 928 ms; side vCPUs 0.74 busy (window mean)
+  FLAG W1/kvnode/c4/t4/get0-v100-k1000000-uni-c64d16/r0 (block 0, ok): 3 active containers; 6 active containers; side vCPUs 0.28 busy (window mean)
+  FLAG W1/valkey/c4/t4/get50-v100-k1000000-uni-c64d16/r0 (block 0, ok): 4 active containers
+  FLAG W1/dragonfly/c4/t4/get0-v100-k1000000-uni-c64d16/r0 (block 0, ok): 4 active containers
+  FLAG W1/redis/c4/t4/get50-v100-k1000000-uni-c64d16/r0 (block 0, ok): 5 active containers; 6 active containers
+  FLAG W1/valkey/c4/t4/get0-v100-k1000000-uni-c64d16/r1 (block 1, ok): 5 active containers
+  FLAG W1/redis/c4/t4/get0-v100-k1000000-uni-c64d16/r1 (block 1, ok): 5 active containers
+  FLAG W1/garnet/c4/t4/get50-v100-k1000000-uni-c64d16/r1 (block 1, ok): 6 active containers; side vCPUs 0.27 busy (window mean)
+  FLAG W1/dragonfly/c4/t4/get0-v100-k1000000-uni-c64d16/r1 (block 1, ok): 6 active containers; side vCPUs 1.14 busy (window mean)
+  FLAG W1/redis/c4/t4/get50-v100-k1000000-uni-c64d16/r1 (block 1, ok): 4 active containers; 6 active containers; side vCPUs 0.81 busy (window mean)
+  FLAG W1/kvnode/c4/t4/get0-v100-k1000000-uni-c64d16/r1 (block 1, ok): 6 active containers; side vCPUs 0.38 busy (window mean)
+  FLAG W1/dragonfly/c4/t4/get50-v100-k1000000-uni-c64d16/r1 (block 1, ok): 5 active containers
+  FLAG W1/memcached/c4/t4/get0-v100-k1000000-uni-c64d16/r1 (block 1, ok): 4 active containers; 5 active containers
+  FLAG W1/garnet/c4/t4/get0-v100-k1000000-uni-c64d16/r1 (block 1, ok): 5 active containers; 6 active containers
+  FLAG W1/kvnode/c4/t4/get50-v100-k1000000-uni-c64d16/r1 (block 1, ok): 4 active containers; 6 active containers; side vCPUs 0.40 busy (window mean)
+  FLAG W1/memcached/c4/t4/get50-v100-k1000000-uni-c64d16/r1 (block 1, ok): 5 active containers; side vCPUs 0.47 busy (window mean)
+  FLAG W1/valkey/c4/t4/get50-v100-k1000000-uni-c64d16/r1 (block 1, ok): 5 active containers
+  FLAG W1/kvnode/c4/t4/get0-v100-k1000000-uni-c64d16/r2 (block 2, ok): 4 active containers; 5 active containers; side vCPUs 0.89 busy (window mean)
+  FLAG W1/kvnode/c4/t4/get50-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers; side vCPUs 1.27 busy (window mean)
+  FLAG W1/memcached/c4/t4/get50-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers; side vCPUs 1.38 busy (window mean)
+  FLAG W1/valkey/c4/t4/get50-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers
+  FLAG W1/redis/c4/t4/get0-v100-k1000000-uni-c64d16/r2 (block 2, ok): 3 active containers; 6 active containers; side vCPUs 0.28 busy (window mean)
+  FLAG W1/dragonfly/c4/t4/get50-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers; side vCPUs 0.63 busy (window mean)
+  FLAG W1/dragonfly/c4/t4/get0-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers
+  FLAG W1/garnet/c4/t4/get50-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers; side vCPUs 0.25 busy (window mean)
+  FLAG W1/memcached/c4/t4/get0-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers
+  FLAG W1/redis/c4/t4/get50-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers; side vCPUs 0.27 busy (window mean)
+  FLAG W1/valkey/c4/t4/get0-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers; 6 active containers; side vCPUs 0.26 busy (window mean)
+  FLAG W1/garnet/c4/t4/get0-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers
+  FLAG W1/dragonfly/c4/t4/get50-v100-k1000000-uni-c64d16/r3 (block 3, ok): 4 active containers; 5 active containers
+  FLAG W1/garnet/c4/t4/get0-v100-k1000000-uni-c64d16/r3 (block 3, ok): 6 active containers; side vCPUs 0.40 busy (window mean)
+  FLAG W1/memcached/c4/t4/get50-v100-k1000000-uni-c64d16/r3 (block 3, ok): 5 active containers
+  FLAG W1/garnet/c4/t4/get50-v100-k1000000-uni-c64d16/r3 (block 3, ok): 5 active containers
+  FLAG W1/kvnode/c4/t4/get0-v100-k1000000-uni-c64d16/r3 (block 3, ok): 5 active containers; 6 active containers; side vCPUs 0.45 busy (window mean)
+  FLAG W1/redis/c4/t4/get0-v100-k1000000-uni-c64d16/r3 (block 3, ok): 5 active containers
+  FLAG W1/kvnode/c4/t4/get50-v100-k1000000-uni-c64d16/r3 (block 3, ok): 6 active containers; side vCPUs 0.26 busy (window mean)
+  FLAG W1/memcached/c4/t4/get0-v100-k1000000-uni-c64d16/r3 (block 3, ok): 6 active containers
+  FLAG W1/dragonfly/c4/t4/get0-v100-k1000000-uni-c64d16/r3 (block 3, ok): 5 active containers; side vCPUs 0.30 busy (window mean)
+  FLAG W1/valkey/c4/t4/get50-v100-k1000000-uni-c64d16/r3 (block 3, ok): 5 active containers
+  FLAG W1/redis/c4/t4/get50-v100-k1000000-uni-c64d16/r3 (block 3, ok): 4 active containers; 5 active containers; side vCPUs 0.30 busy (window mean)
+  FLAG W1/valkey/c4/t4/get0-v100-k1000000-uni-c64d16/r3 (block 3, ok): 5 active containers
+  FLAG W1/memcached/c4/t4/get0-v100-k1000000-uni-c64d16/r4 (block 4, ok): 4 active containers
+  FLAG W1/kvnode/c4/t4/get50-v100-k1000000-uni-c64d16/r4 (block 4, ok): 5 active containers; 6 active containers
+  FLAG W1/dragonfly/c4/t4/get50-v100-k1000000-uni-c64d16/r4 (block 4, ok): 3 active containers; 5 active containers; side vCPUs 0.30 busy (window mean)
+  FLAG W1/kvnode/c4/t4/get0-v100-k1000000-uni-c64d16/r4 (block 4, ok): 6 active containers; side vCPUs 0.26 busy (window mean)
+  FLAG W1/garnet/c4/t4/get0-v100-k1000000-uni-c64d16/r4 (block 4, ok): 5 active containers; side vCPUs 0.39 busy (window mean)
+  FLAG W1/valkey/c4/t4/get0-v100-k1000000-uni-c64d16/r4 (block 4, ok): 4 active containers; side vCPUs 0.36 busy (window mean)
+  FLAG W1/valkey/c4/t4/get50-v100-k1000000-uni-c64d16/r4 (block 4, ok): 5 active containers; side vCPUs 0.29 busy (window mean)
+  FLAG W1/redis/c4/t4/get50-v100-k1000000-uni-c64d16/r4 (block 4, ok): 5 active containers; side vCPUs 0.31 busy (window mean)
+  FLAG W1/memcached/c4/t4/get50-v100-k1000000-uni-c64d16/r4 (block 4, ok): 5 active containers; 6 active containers; side vCPUs 0.37 busy (window mean)
+  FLAG W1/redis/c4/t4/get0-v100-k1000000-uni-c64d16/r4 (block 4, ok): 4 active containers; 5 active containers
+  FLAG W1/dragonfly/c4/t4/get0-v100-k1000000-uni-c64d16/r4 (block 4, ok): 4 active containers; 5 active containers; side vCPUs 0.40 busy (window mean)
+  FLAG W1/garnet/c4/t4/get50-v100-k1000000-uni-c64d16/r4 (block 4, ok): 5 active containers
+  FLAG W1/memcached/c4/t4/get50-v100-k1000000-uni-c64d16/r5 (block 5, ok): 5 active containers
+  FLAG W1/valkey/c4/t4/get0-v100-k1000000-uni-c64d16/r5 (block 5, ok): 5 active containers
+  FLAG W1/kvnode/c4/t4/get0-v100-k1000000-uni-c64d16/r5 (block 5, ok): 5 active containers; side vCPUs 0.39 busy (window mean)
+  FLAG W1/garnet/c4/t4/get0-v100-k1000000-uni-c64d16/r5 (block 5, ok): 5 active containers; 6 active containers
+  FLAG W1/valkey/c4/t4/get50-v100-k1000000-uni-c64d16/r5 (block 5, ok): 5 active containers
+  FLAG W1/redis/c4/t4/get50-v100-k1000000-uni-c64d16/r5 (block 5, ok): 4 active containers; side vCPUs 0.27 busy (window mean)
+  FLAG W1/redis/c4/t4/get0-v100-k1000000-uni-c64d16/r5 (block 5, ok): 4 active containers
+  FLAG W1/memcached/c4/t4/get0-v100-k1000000-uni-c64d16/r5 (block 5, ok): 4 active containers
+  FLAG W1/garnet/c4/t4/get50-v100-k1000000-uni-c64d16/r5 (block 5, ok): 5 active containers
+  FLAG W1/dragonfly/c4/t4/get0-v100-k1000000-uni-c64d16/r5 (block 5, ok): 5 active containers; 6 active containers
+  FLAG W1/kvnode/c4/t4/get50-v100-k1000000-uni-c64d16/r5 (block 5, ok): 5 active containers
+  FLAG W1/dragonfly/c4/t4/get50-v100-k1000000-uni-c64d16/r5 (block 5, ok): 5 active containers

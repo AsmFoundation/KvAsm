@@ -1,0 +1,203 @@
+{
+  "created": "2026-11-15T12:52:23.722644+00:00",
+  "profile": "writes",
+  "seed": 20260926,
+  "host": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.12",
+    "cpu_model": "13th Gen Intel(R) Core(TM) i9-13900K",
+    "vcpus": 32,
+    "memory_bytes": 33503916032,
+    "kernel": "5.15.153.1-microsoft-standard-WSL2",
+    "os": "Docker Desktop"
+  },
+  "docker": {
+    "server_version": "27.3.1",
+    "cgroup_version": "1",
+    "cgroup_driver": "cgroupfs",
+    "security_options": [
+      "name=seccomp,profile=unconfined"
+    ]
+  },
+  "placement": {
+    "client_cpus": "16-31",
+    "client_threads": 16,
+    "server_cpus": "0..N-1",
+    "network": "server network namespace (loopback)"
+  },
+  "cpu_clock": {
+    "factor": 1.0328894931392454,
+    "samples": [
+      1.0328894931392454,
+      1.0334905737020623,
+      1.0312175166939517
+    ]
+  },
+  "repository": {
+    "revision": "5735d7a47e54963c3d8a44ca1dfaba5f4d6d4ad1",
+    "dirty": true
+  },
+  "images": {
+    "kvnode": {
+      "image": "kvnode:adr0011",
+      "id": "sha256:b2900782814d6fa9043dcaebf91f609ed986eca622886fcce5d2fbbcf3160b22",
+      "digests": [
+        "kvnode@sha256:b2900782814d6fa9043dcaebf91f609ed986eca622886fcce5d2fbbcf3160b22"
+      ]
+    },
+    "redis": {
+      "image": "redis:8.10.2",
+      "id": "sha256:d5ac52db24d4e70566fe9944f22cf5bdc2bc739b05c0f426335161ea6c23f3b3",
+      "digests": [
+        "redis@sha256:d5ac52db24d4e70566fe9944f22cf5bdc2bc739b05c0f426335161ea6c23f3b3",
+        "redis@sha256:d5ac52db24d4e70566fe9944f22cf5bdc2bc739b05c0f426335161ea6c23f3b3"
+      ]
+    },
+    "valkey": {
+      "image": "valkey/valkey:9.1.2",
+      "id": "sha256:418652cfb58ef879d4978c33553735d7147016032d5aefaa14c828e611eb9dfd",
+      "digests": [
+        "valkey/valkey@sha256:418652cfb58ef879d4978c33553735d7147016032d5aefaa14c828e611eb9dfd"
+      ]
+    },
+    "dragonfly": {
+      "image": "ghcr.io/dragonflydb/dragonfly:v2.0.0",
+      "id": "sha256:7426fdb31ddcf7bd9499b4205f36ebaa83b26149ba1609a0d5f8f474b3631233",
+      "digests": [
+        "ghcr.io/dragonflydb/dragonfly@sha256:7426fdb31ddcf7bd9499b4205f36ebaa83b26149ba1609a0d5f8f474b3631233"
+      ]
+    },
+    "garnet": {
+      "image": "kvbench/garnet:2.1.8",
+      "id": "sha256:01209216be6be690abcd51b4e92ceadbabd48bae7b0ab8a297dea4465e17cfcc",
+      "digests": [
+        "kvbench/garnet@sha256:01209216be6be690abcd51b4e92ceadbabd48bae7b0ab8a297dea4465e17cfcc"
+      ]
+    },
+    "memcached": {
+      "image": "memcached:1.6.45",
+      "id": "sha256:405a445c7c81bca205850426288baa5655c72859ae31d3de3fa823e6482be4ad",
+      "digests": [
+        "memcached@sha256:405a445c7c81bca205850426288baa5655c72859ae31d3de3fa823e6482be4ad",
+        "memcached@sha256:405a445c7c81bca205850426288baa5655c72859ae31d3de3fa823e6482be4ad"
+      ]
+    },
+    "kvbench": {
+      "image": "kvnode-kvbench:dev",
+      "id": "sha256:952a6003559218bdb17f3b6ac3995904815278647064a4aca8cb7064e43cdf86",
+      "digests": [
+        "kvnode-kvbench@sha256:952a6003559218bdb17f3b6ac3995904815278647064a4aca8cb7064e43cdf86"
+      ]
+    },
+    "memtier": {
+      "image": "redislabs/memtier_benchmark:2.5.1",
+      "id": "sha256:5f15b74f657fd30ee73453af9caa1781de1614f4d934d46feee711dc19b758af",
+      "digests": [
+        "redislabs/memtier_benchmark@sha256:5f15b74f657fd30ee73453af9caa1781de1614f4d934d46feee711dc19b758af",
+        "redislabs/memtier_benchmark@sha256:5f15b74f657fd30ee73453af9caa1781de1614f4d934d46feee711dc19b758af"
+      ]
+    },
+    "h2load": {
+      "image": "kvnode-toolchain:latest",
+      "id": "sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d",
+      "digests": [
+        "kvnode-toolchain@sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d"
+      ]
+    }
+  },
+  "systems": {
+    "kvnode": {
+      "title": "KvNode (kvnode:adr0011)",
+      "image": "kvnode:adr0011",
+      "protocol": "grpc",
+      "notes": "gRPC over h2c; one worker thread per core (KVNODE_WORKERS).",
+      "build": "docker build --target runtime -t kvnode:adr0011 . (repository root)"
+    },
+    "redis": {
+      "title": "Redis 8.10.2",
+      "image": "redis:8.10.2",
+      "protocol": "resp",
+      "notes": "Persistence off (--save '' --appendonly no); io-threads = tuned thread count (commands still execute on the main thread).",
+      "build": null
+    },
+    "valkey": {
+      "title": "Valkey 9.1.2",
+      "image": "valkey/valkey:9.1.2",
+      "protocol": "resp",
+      "notes": "Persistence off; io-threads = tuned thread count. 9.2 was only a release candidate at test time.",
+      "build": null
+    },
+    "dragonfly": {
+      "title": "Dragonfly 2.0.0",
+      "image": "ghcr.io/dragonflydb/dragonfly:v2.0.0",
+      "protocol": "resp",
+      "notes": "Snapshots off (--dbfilename=); proactor_threads = tuned thread count; memlock unlimited as its docs require; io_uring is available on this host (seccomp unconfined), so Dragonfly uses its preferred I/O engine.",
+      "build": null
+    },
+    "garnet": {
+      "title": "Garnet 2.1.8",
+      "image": "kvbench/garnet:2.1.8",
+      "protocol": "resp",
+      "notes": "Built from Microsoft's own Dockerfile at tag v2.1.8 (the newest published image, 2.1.0, is eight releases older; 'latest' is an unreleased main build). Defaults: AOF off; the .NET thread pool sizes itself from the cpuset, so there is no thread knob to tune.",
+      "build": "docker build -t kvbench/garnet:2.1.8 https://github.com/microsoft/garnet.git#v2.1.8"
+    },
+    "memcached": {
+      "title": "Memcached 1.6.45",
+      "image": "memcached:1.6.45",
+      "protocol": "memcache",
+      "notes": "Meta protocol (mg/ms/mn); -t = tuned thread count; -m sized so nothing is evicted; UDP off.",
+      "build": null
+    }
+  },
+  "experiments": [
+    {
+      "id": "W1",
+      "title": "Writes at 4 cores",
+      "question": "E2's 100% SET and 50% GET cells: how do writes compare with every other store?",
+      "systems": [
+        "kvnode",
+        "redis",
+        "valkey",
+        "dragonfly",
+        "garnet",
+        "memcached"
+      ],
+      "cores": [
+        4
+      ],
+      "workloads": [
+        {
+          "read_ratio": 0.0,
+          "value_size": 100,
+          "keys": 1000000,
+          "zipf": null,
+          "connections": 64,
+          "depth": 16,
+          "ping": false,
+          "rate": null
+        },
+        {
+          "read_ratio": 0.5,
+          "value_size": 100,
+          "keys": 1000000,
+          "zipf": null,
+          "connections": 64,
+          "depth": 16,
+          "ping": false,
+          "rate": null
+        }
+      ],
+      "reps": 6,
+      "warmup": 5.0,
+      "duration": 10.0,
+      "threads": "tuned",
+      "kind": "kvbench"
+    }
+  ],
+  "host_load_idle": {
+    "mean": 7.69,
+    "max": 9.02,
+    "intervals": 5
+  },
+  "host_logical_cpus": 32
+}

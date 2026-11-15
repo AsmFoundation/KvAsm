@@ -52,6 +52,11 @@ so every line can be checked against the code and the measurements.
   `kv_store_rec_alloc_local`: the store's batch API (`server/tests/kvnode_abi.h`).
 - `server/bench/bench_write.c` (`make bench-write`); its `--quick`
   verification runs in `make test`.
+- Benchmarks: `run.py --profile writes` (W1, E2's write cells against
+  every store in about 35 minutes), and `KVNODE_BENCH_IMAGE` to measure an
+  unreleased KvNode build under its own tag. The first W1 run
+  (`benchmarks/results/2026-11-15-writes-w1`) put writes ahead of all five
+  stores. It ran on a loaded host and is indicative only.
 - Tests:
   - `test_store`: a batched model check and the record-cache checks;
   - `test_store_mt`: four phases with batched writers;

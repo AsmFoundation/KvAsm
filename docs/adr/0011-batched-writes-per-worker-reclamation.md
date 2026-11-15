@@ -211,6 +211,16 @@ range 0.90–1.07), but it is not a win either.
   - **Before the record cache** (step 2), the same benchmark measured 3.76,
     2.51, 2.76 and 3.37M/s: no scaling at all.
 
+- **Against the other stores** (W1, `run.py --profile writes`,
+  `benchmarks/results/2026-11-15-writes-w1`): indicative only.
+  - Every run window overlapped other work in the VM, and a median 10.3
+    CPUs were busy outside it.
+  - KvNode's writes came out ahead of all five on 100% SET, from 1.72×
+    Garnet (5/6 blocks) to 4.17× Memcached. On 50/50 it led all five,
+    1.76–3.42×.
+  - The quiet-host ratios of 2026-09-27 (0.87× Redis, 0.60× Garnet), times
+    this change's paired gain, predict the same picture.
+  - A quiet-host re-run must confirm it before docs/CLAIMS.md changes.
 - **What the final server still spends** (`profile-final-4w.out`, 4
   workers, 100% SET):
   - 3.54M SET/s at 1,185 ns of server CPU per SET: 450 ns user, 735 ns

@@ -104,7 +104,14 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
     (unreleased) has since made writes faster. Against 0.2.0, each server
     alone at 4 workers: 2.61× on 100% SET and 1.77× on 50/50
     ([results](../benchmarks/results/2026-11-15-write-batching/README.md)).
-    Both lines stay until the comparison with the other stores is re-run.
+    Both lines stay until the comparison with the other stores is re-run
+    on a quiet host.
+    - A first re-run, W1 on 2026-11-15
+      ([results](../benchmarks/results/2026-11-15-writes-w1/README.md)),
+      put KvNode's writes ahead of all five: 1.7× Garnet to 4.2× Memcached
+      on 100% SET.
+    - It does not qualify as evidence. All 72 run windows overlapped other
+      work in the VM, and a median 10.3 CPUs were busy outside it.
   - **16 KiB values:** 0.50× Garnet and 0.48× Memcached. This is a known
     regression (CHANGELOG, Known issues).
   - **Tail latency at fixed load (E4):** Valkey's p99 is lower.
