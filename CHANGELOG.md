@@ -84,10 +84,41 @@ so every line can be checked against the code and the measurements.
 
   A GET is 13.8% shorter in process again (88.3 → 76.1 ns) and runs 973
   instructions instead of 1,134.
+- **A unary request's HEADERS and DATA frames are handled together**
+  (ADR 0007, second amendment). When a request's DATA frame is right
+  behind its HEADERS in the same read — whole, unpadded, ending the
+  stream — it is taken there and then instead of going round the frame
+  loop: no second header parse, no stream lookup. A new stream id skips
+  the map lookup, and a header-block cache hit returns before a stack
+  frame is built.
+  - With the frames adjacent — a call sent on its own, or by a client that
+    writes each call's frames back to back — a GET is 9.9% shorter in
+    process (76.1 → 68.6 ns) and a health check 15.2% (50.8 → 43.1 ns);
+    93 instructions fewer per request (1,239 → 1,146 with one request in
+    flight).
+  - It does not apply to a burst whose HEADERS frames all come before its
+    DATA frames, which is how nghttp2 sends requests submitted together
+    (the benchmark client at 16 in flight). Such a burst gains only the
+    two smaller changes: 973 → 951 instructions per GET, level in time.
+  - Every other request shape is handled by the frame loop exactly as
+    before; `fuzz_h2`'s request matrix holds the engine to that.
 - **All of the above together, against the write-batching commit**
-  (5735d7a): a GET runs 973 user-space instructions instead of 1,454; in
-  process its request path takes 76.1 ns instead of 120.3 (−37%), and a
-  health check's 50.8 ns instead of 70.1 (−28%).
+  (5735d7a):
+  - in process, a GET's request path takes 68.6 ns instead of 120.3
+    (−43%) with adjacent frames and 75.9 instead of 119.7 (−37%) in
+    bursts; a health check's 43.1 ns instead of 70.1 (−39%);
+  - user-space instructions per request, in bursts: a GET 951 instead of
+    1,454, a SET 1,218 instead of 1,760, a health check 649 instead of
+    866;
+  - end to end, one worker under the benchmark client's bursts (paired
+    A/B in quads of A B B A, on a host shared with another benchmark):
+    - GETs with busy-polling clients, which show the server's own cost:
+      0.85× the server CPU per GET and 1.16× the GETs per second (4 of 4
+      quads);
+    - 100% SET: 0.91× and 1.11× (3 of 3);
+    - a 50/50 mix: 0.94× and 1.06× (3 of 3);
+    - GETs with blocking clients, whose wakeups take half of the worker's
+      time: 0.98× and 1.02× (2 of 3) — inside the runs' spread.
 
 ### Fixed
 
@@ -122,6 +153,17 @@ so every line can be checked against the code and the measurements.
   (`test_store`: they agree with the plain lookups under both tag scans);
   `test_proto`: every canonical shape of the decoder's fast path, cut at
   every byte, at a guard page.
+- `fuzz_h2`'s **request matrix**, run before the fuzzing: 506
+  conversations with exact expected answers at the frame boundaries of a
+  unary request — three Gets cut into two writes at every byte,
+  equal-length header blocks that differ, padded DATA, a body in two
+  frames, an empty END_STREAM frame, content-length right and wrong,
+  padded HEADERS with priority fields, DATA after HEADERS that ended the
+  stream, DATA for another stream, an oversized frame, an Upload in one
+  frame, and 36 MB of full-size frames against the connection window.
+- `fuzz_h2 --limits` and **itest phase 7b**: the request-size limit at
+  the frame boundary, against a server whose largest request fits one
+  DATA frame.
 - `itest_grpc`: `test_get_bursts`, bursts of Gets at every frame-count
   boundary up to the largest value, against a reader that stops reading
   (between two replies, and in the middle of one), and against the

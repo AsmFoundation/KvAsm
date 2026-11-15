@@ -51,7 +51,11 @@ flowchart LR
    `grpc-encoding` are checked. The body is buffered per stream within two
    budgets: the per-request `max_request` and the per-connection
    `KVNODE_CONN_BUFFER_MB`; a body that arrives whole in one DATA frame is
-   used in place instead. An **Upload** body is never buffered: every DATA
+   used in place instead — and when that frame is right behind the
+   request's HEADERS in the same read, the two are handled together,
+   without a second pass through the frame loop
+   ([ADR 0007](adr/0007-native-http2-engine.md), second amendment). An
+   **Upload** body is never buffered: every DATA
    payload goes to the streaming decoder as it arrives (see
    [Streaming calls](#streaming-calls-adr-0010)).
 4. **Execute.** At END_STREAM the worker validates the 5-byte gRPC framing,

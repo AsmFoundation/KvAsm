@@ -372,3 +372,100 @@ bursts against a reader that stops reading and then drains slowly, with
 16 KiB values (refused between two replies) and 300,000-byte values
 (refused in the middle of one); and against the default 65,535-byte
 windows.
+
+### A unary request's HEADERS and DATA frames are handled together (2026-11-15)
+
+A unary call arrives as two frames: HEADERS, then one DATA frame that ends
+the stream. The frame loop treated them as strangers. After the HEADERS
+frame it parsed the next frame header from scratch, re-checked the
+connection's sequencing rules, looked the stream up in the map it had just
+entered, and went through `request_end` — about 110 instructions for the
+DATA frame (counted from the listing), most of them answering questions
+the HEADERS frame had just answered. Three changes to `h2n.asm`:
+
+**1. The DATA frame right behind its HEADERS is taken with them.** When a
+HEADERS frame has opened a stream and left it open, `header_block` hands
+the stream back, and `h2_process` looks at the next frame in the buffer.
+It is handled on the spot if all of this holds:
+
+- its header and its payload have arrived whole;
+- it is a DATA frame for the same stream whose flags are exactly
+  END_STREAM (not padded);
+- its payload is not empty, not larger than the frame size limit, and
+  small enough to be borrowed (`max_request`);
+- the request declared no content-length, and it is not an Upload.
+
+The steps then taken are the DATA handler's own, in its order: the
+connection window, the stream window, the byte count, the borrowed body,
+the half-closed state, the dispatch. A frame that fails any condition is
+not touched: the frame loop parses it as it always did and raises
+whatever error is due. So there is one behaviour, reached by two routes.
+
+**2. A new stream id skips the map lookup.** An id above every id the
+connection has opened cannot be in the stream map, so `header_block`
+compares with `last_id` first and looks up only ids at or below it
+(trailers, and frames for closed streams).
+
+**3. A header-block cache hit returns before a frame is built.**
+`decode_fields` checks the cache with its arguments still in their
+registers and returns from there on a hit; only a miss saves registers and
+decodes.
+
+**Which requests it helps:** the look-ahead applies when a call's two
+frames are adjacent in a read. That is a call sent on its own, and a
+client that writes each call's HEADERS and DATA back to back. It does not
+apply when a client sends the HEADERS frames of several calls before any
+of their DATA frames — nghttp2 does that with requests submitted before
+one send, which is what the benchmark client does at 16 requests in
+flight. Those bursts are served by the frame loop as before and gain only
+changes 2 and 3.
+
+**Measured** (`benchmarks/results/2026-11-15-asm-audit`):
+
+- Instructions per GET with one request in flight (callgrind, a real
+  client): 1,239 → 1,146. The frame loop 184 → 138, both map lookups (22)
+  and `request_end` (5) gone, `decode_fields` 45 → 29, `header_block`
+  59 → 55.
+- The request path in process, frames adjacent: a GET 76.1 → 68.6 ns
+  (−9.9%), a health check 50.8 → 43.1 ns (−15.2%). The bytes on the wire
+  are identical (equal digests).
+- In bursts (all HEADERS, then all DATA): 973 → 951 instructions per GET,
+  76.2 → 75.9 ns in process — level. The failed look-ahead costs 8
+  instructions per request there.
+
+**Verified:**
+
+- The whole suite, h2spec 146/146 and the fuzzer.
+- **The request matrix** (`fuzz_h2.c`, before the fuzzing): 506
+  conversations, each with an exact expected answer derived from RFC 9113
+  and the gRPC mapping, not from the engine. It was first shown to pass
+  on the engine without these changes. The cases sit on either side of
+  every condition above: three Gets cut into two writes at each of their
+  491 byte offsets; equal-length header blocks that differ; a padded DATA
+  frame; a body in two DATA frames; an empty END_STREAM frame;
+  content-length right and wrong; a padded HEADERS frame with priority
+  fields; DATA after HEADERS that already ended the stream; DATA for an
+  idle stream; an oversized DATA frame; an Upload in one DATA frame; and
+  36 MB of full-size DATA frames, which must make the server top the
+  connection window up.
+- **The request-size limit** needs a server whose largest request fits
+  one frame: `fuzz_h2 --limits` (itest phase 7b) sends Puts on either
+  side of it and requires grpc-status 0, 3 and 8.
+- **Mutation check** (`mutate.sh` in the results folder): thirteen
+  deliberate breaks of the new path — a condition dropped, a step
+  skipped — each rebuilt and run against the matrix. Twelve are caught,
+  each by the case written for it.
+  - The thirteenth removes the check that the next frame's header has
+    arrived whole. No black-box test can see it: the payload check
+    refuses the same frames, so the decision is unchanged. What the check
+    prevents is a read of up to 8 bytes beyond the received data. It
+    stays, and its comment says why.
+  - The first run of the check reported five mutations as missed. They
+    had never been built: the copied object file and the edited source
+    carried the same timestamp, and `make` found nothing to do. The
+    script now deletes the object first.
+
+**Not done:** a shorter path for a DATA frame that is *not* behind its
+HEADERS. It would need the stream lookup and the sequencing checks the
+look-ahead gets for free; counted from the listing, it would save about
+40 of the 110 instructions per request for nghttp2-style bursts.

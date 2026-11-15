@@ -510,6 +510,29 @@ conn_window_refill:
 ;          frame's Stream* inside handlers. Frame header fields live in the
 ;          stack slots below. Whatever remains of an incomplete frame is
 ;          saved in H2.carry.
+;          Fused request: a unary call arrives as HEADERS then DATA, and on
+;          a warm connection both are in the same read. When a HEADERS frame
+;          has just opened a stream (header_block returns it) and the next
+;          frame in the buffer is that stream's DATA frame — whole, not
+;          padded, flags exactly END_STREAM, a non-empty body small enough to
+;          borrow, no declared content-length, not an Upload — it is handled
+;          right there (.f_headers) instead of going round the frame loop:
+;          no second header parse, no sequencing checks, no map lookup, no
+;          request_end. The steps taken are the DATA handler's own, in its
+;          order (connection window, stream window, data_len, borrow,
+;          SN_REMOTE_CLOSED, dispatch), so the result is the same state; any
+;          frame that fails one condition is left untouched for the loop,
+;          which then does everything it always did — errors included.
+;          Measured with one request per read (callgrind): the frame loop
+;          went from 184 to 138 instructions per request, and the DATA
+;          frame's map lookup (11) and request_end (5) are gone; in process
+;          a GET is 9.9% shorter and a health check 15.2%
+;          (benchmarks/results/2026-11-15-asm-audit).
+;          It applies only when the DATA frame is next in the buffer. A
+;          client that sends the HEADERS frames of several requests before
+;          any of their DATA frames (nghttp2 does, when the requests are
+;          submitted before one send) is served by the loop as before, at
+;          the price of the failed look-ahead: 8 instructions per request.
 ; =============================================================================
 %define L_FLAGS     0
 %define L_SID       8
@@ -726,7 +749,76 @@ h2_process:
     call    header_block
     test    eax, eax
     js      .fatal
+    ; ---- fused request: this stream's DATA frame, when it is right behind ----
+    ; rdx = the stream the block opened and left open, or 0 (see @remarks).
+    ; Every "jmp/jcc .next" below leaves the next frame untouched: the loop
+    ; parses it from scratch, so nothing here needs to be undone.
+    test    rdx, rdx
+    jz      .next
+    lea     rax, [r14 + r15]            ; where the next frame starts
+    ; Its header must have arrived whole before any of it is read: the bytes
+    ; past r13 are whatever an earlier read left in the buffer, or lie beyond
+    ; the buffer's end. The payload check further down would refuse the very
+    ; same frames, so no black-box test can tell that this check exists
+    ; (benchmarks/results/2026-11-15-asm-audit, mutate.sh) — it is here for
+    ; the reads, not for the decision, and must stay.
+    lea     rcx, [rax + FRAME_HDR]
+    cmp     rcx, r13
+    ja      .next                       ; its header is not whole: the loop carries it over
+    cmp     word [rax + 3], FT_DATA | (FF_END_STREAM << 8)
+    jne     .next                       ; another type, or flags other than exactly END_STREAM
+    mov     ecx, [rax + 5]
+    cmp     ecx, [r12 + 5]
+    jne     .next                       ; another stream (ids as sent, the reserved bit included)
+    mov     ecx, [rax]
+    bswap   ecx
+    shr     ecx, 8                      ; payload length
+    jz      .next                       ; no body: nothing to borrow
+    cmp     ecx, FRAME_MIN
+    ja      .next                       ; oversized: the loop raises FRAME_SIZE_ERROR
+    lea     rsi, [rax + FRAME_HDR]      ; its payload
+    lea     rax, [rsi + rcx]
+    cmp     rax, r13
+    ja      .next                       ; the payload is not whole yet
+    cmp     qword [rdx + Stream.method], M_UPLOAD
+    je      .next                       ; client streaming consumes DATA as it arrives
+    cmp     qword [rdx + Stream.clen], 0
+    jge     .next                       ; a declared content-length: the loop checks it
+    ; Three of the loop's checks cannot fail here and are not repeated: the
+    ; connection is not closing (kv_h2n_read never enters with H2F_CLOSING
+    ; set, and a block that raised a connection error returned no stream);
+    ; and this stream has had no DATA yet, so nothing is buffered
+    ; (req_len 0) and ST_TOO_LARGE — which only kv_grpc_stream_append sets —
+    ; is clear.
+    mov     rax, [rbx + Conn.worker]
+    mov     rax, [rax + Worker.cfg]
+    mov     rax, [rax + Config.max_request]
+    add     rax, GRPC_PREFIX
+    cmp     rcx, rax
+    ja      .next                       ; beyond max_request: the copy path marks it
+    ; Committed. From here on this is .f_data for that frame, step for step.
+    sub     [rbx + Conn.h2 + H2.recv_window], rcx
+    js      .flow_error                 ; (§6.9; the frame counts whatever the stream's state)
+    mov     rbp, rdx                    ; the frame's stream
+    mov     r14, rsi                    ; its payload and length: .next steps over
+    mov     r15, rcx                    ; the DATA frame
+    ; A fresh stream's window is STREAM_WINDOW and one frame is at most
+    ; FRAME_MIN (asserted below), so it cannot go negative here.
+    sub     [rbp + Stream.recv_window], r15
+    mov     [rbp + Stream.data_len], r15 ; (it was 0: this is the stream's first DATA)
+    mov     [rbp + Stream.req_buf], r14 ; borrowed: the read buffer outlives dispatch
+    mov     [rbp + Stream.req_len], r15 ; and the batch (ST_BORROWED)
+    or      qword [rbp + Stream.flags], ST_BORROWED
+    or      qword [rbp + Stream.h2flags], SN_REMOTE_CLOSED ; request_end's step
+    mov     rdi, rbx
+    mov     rsi, rbp
+    call    kv_grpc_dispatch wrt ..plt  ; may answer and free the stream
+    test    eax, eax
+    js      .fatal
     jmp     .next
+%if FRAME_MIN > STREAM_WINDOW
+    %error "the fused request path assumes one DATA frame fits a fresh stream window"
+%endif
 .h_open_block:
     ; The block continues in CONTINUATION frames: assemble it.
     mov     [rbx + Conn.h2 + H2.cont_flags], r9
@@ -1152,7 +1244,11 @@ h2_process:
 ; @param  rdi  Conn*   @param esi  stream id   @param rdx  block
 ; @param  rcx  block length   @param r8d  END_STREAM | CONT_SELF_DEP
 ; @returns eax = 0 (including handled protocol errors), or -1 when out of
-;          memory.
+;          memory; rdx = the Stream* this block opened and left open — a new
+;          request whose END_STREAM has not arrived — or 0 in every other
+;          case (trailers, refused, malformed, ignored, ended by this very
+;          block). h2_process uses it to take the request's DATA frame
+;          without a second lookup; a caller with no use for it ignores it.
 ; @remarks Every path decodes the block, even ones that refuse or ignore
 ;          the stream: the HPACK dynamic table must see every block, or it
 ;          diverges from the peer's encoder (§4.3). Cases:
@@ -1181,14 +1277,20 @@ header_block:
     mov     r13, rdx
     mov     r14, rcx
     mov     r15d, r8d
+    ; An id above every id this connection has opened cannot be in the map:
+    ; streams are opened only below, and each raises last_id to its own id.
+    ; So the usual block — a new request — skips the lookup.
+    xor     ebp, ebp                    ; no stream (what .ok hands back unless one is opened)
+    cmp     r12, [rbx + Conn.h2 + H2.last_id]
+    ja      .new_id
     mov     rdi, rbx
     mov     esi, r12d
     call    map_find
     mov     rbp, rax
     test    rax, rax
     jnz     .existing
-    cmp     r12, [rbx + Conn.h2 + H2.last_id]
-    jbe     .closed_id
+    jmp     .closed_id
+.new_id:
     test    r12d, 1
     jz      .even_id
     test    qword [rbx + Conn.h2 + H2.flags], H2F_GOAWAY_SENT
@@ -1334,10 +1436,14 @@ header_block:
     jmp     .out
 .fatal:
     mov     eax, -1
-    jmp     .out
+.out:
+    xor     edx, edx                    ; no open, unanswered stream to hand back
+    jmp     .ret
 .ok:
     xor     eax, eax
-.out:
+    mov     rdx, rbp                    ; the stream this block opened (0: none — rbp is
+                                        ; only ever a new request's stream on this path)
+.ret:
     add     rsp, 8
     pop     r15
     pop     r14
@@ -1381,8 +1487,48 @@ decode_discard:
 ;          and replaying them equals decoding again. Only blocks whose own
 ;          decode left the table unchanged are recorded — a block that
 ;          inserts could never be replayed under the new generation anyway.
+;          The cache is consulted before a frame is built: a hit — every
+;          request of a warm connection — saves no registers and touches no
+;          stack (blocks_equal is a leaf that leaves r9-r11 alone), which is
+;          16 instructions less per request than checking after the prologue.
 ; =============================================================================
 decode_fields:
+    ; ---- header-block cache: request blocks of a live stream only ----
+    test    rsi, rsi
+    jz      .framed
+    test    r8d, r8d
+    jnz     .framed
+    test    rcx, rcx
+    jz      .framed                     ; hc_len 0 means "empty": never match it
+    cmp     rcx, [rdi + Conn.h2 + H2.hc_len]
+    jne     .framed
+    mov     rax, [rdi + Conn.h2 + H2.hpack + HpackDec.gen]
+    cmp     rax, [rdi + Conn.h2 + H2.hc_gen]
+    jne     .framed
+    mov     r9, rdi                     ; Conn*   } blocks_equal clobbers rax, rdx, r8
+    mov     r10, rsi                    ; Stream* } only; the length stays in rcx
+    mov     r11, rdx                    ; block   }
+    lea     rdi, [r9 + Conn.h2 + H2.hc_bytes]
+    mov     rsi, rdx
+    call    blocks_equal
+    test    eax, eax
+    jz      .differs
+    mov     rax, [r9 + Conn.h2 + H2.hc_flags]
+    or      [r10 + Stream.flags], rax
+    mov     rax, [r9 + Conn.h2 + H2.hc_method]
+    mov     [r10 + Stream.method], rax
+    mov     rax, [r9 + Conn.h2 + H2.hc_h2flags]
+    or      [r10 + Stream.h2flags], rax
+    mov     rax, [r9 + Conn.h2 + H2.hc_clen]
+    mov     [r10 + Stream.clen], rax
+    mov     eax, [r9 + Conn.h2 + H2.hc_result]
+    ret
+.differs:
+    mov     rdi, r9                     ; the arguments back where the frame takes them
+    mov     rsi, r10
+    mov     rdx, r11
+    xor     r8d, r8d                    ; a request block (it was 0; blocks_equal used r8)
+.framed:
     push    rbx
     push    r12
     push    r13
@@ -1394,34 +1540,6 @@ decode_fields:
     mov     r13, rdx                    ; block
     mov     r14, rcx                    ; length
     mov     r15d, r8d                   ; HC_TRAILERS or 0
-    ; ---- header-block cache: request blocks of a live stream only ----
-    test    r12, r12
-    jz      .decode
-    test    r15d, r15d
-    jnz     .decode
-    test    r14, r14
-    jz      .decode                     ; hc_len 0 means "empty": never match it
-    cmp     r14, [rbx + Conn.h2 + H2.hc_len]
-    jne     .decode
-    mov     rax, [rbx + Conn.h2 + H2.hpack + HpackDec.gen]
-    cmp     rax, [rbx + Conn.h2 + H2.hc_gen]
-    jne     .decode
-    lea     rdi, [rbx + Conn.h2 + H2.hc_bytes]
-    mov     rsi, r13
-    mov     rcx, r14
-    call    blocks_equal
-    test    eax, eax
-    jz      .decode
-    mov     rax, [rbx + Conn.h2 + H2.hc_flags]
-    or      [r12 + Stream.flags], rax
-    mov     rax, [rbx + Conn.h2 + H2.hc_method]
-    mov     [r12 + Stream.method], rax
-    mov     rax, [rbx + Conn.h2 + H2.hc_h2flags]
-    or      [r12 + Stream.h2flags], rax
-    mov     rax, [rbx + Conn.h2 + H2.hc_clen]
-    mov     [r12 + Stream.clen], rax
-    mov     eax, [rbx + Conn.h2 + H2.hc_result]
-    jmp     .out
 
 .decode:
     mov     rax, [rbx + Conn.h2 + H2.hpack + HpackDec.gen]

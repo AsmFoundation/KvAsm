@@ -3,6 +3,8 @@
  * (h2n.asm and hpack.asm, KvNode's own engine: ADR 0007/0008).
  *
  * Usage: fuzz_h2 HOST PORT ITERATIONS SEED PID
+ *        fuzz_h2 --limits HOST PORT      (see limits_matrix; needs a server
+ *                                         started with small limits)
  *   ITERATIONS  fuzz connections to run
  *   SEED        PRNG seed (a failure reproduces with the same seed)
  *   PID         the server's pid: its resident memory is sampled from
@@ -31,6 +33,19 @@
  *      PING frames — and the connection dropped while responses are still
  *      being generated from pinned records
  * then reads whatever comes back for a short while and closes.
+ *
+ * Before the iterations, the request matrix (request_matrix): deterministic
+ * cases at the frame boundaries of a unary request, each with an exact
+ * expected answer — the same three Gets cut into two writes at every byte,
+ * equal-length header blocks that differ on one connection, a padded DATA
+ * frame, a body in two DATA frames, an empty END_STREAM frame,
+ * content-length right and wrong, a padded HEADERS frame with priority
+ * fields, DATA after a HEADERS frame that already ended the stream, DATA for
+ * another stream, an oversized DATA frame, an Upload in one DATA frame, and
+ * 36 MB of full-size DATA frames that must be counted against the connection
+ * window. It exists for h2n.asm's
+ * fused request path (a DATA frame handled right behind its HEADERS), whose
+ * conditions these cases sit on either side of.
  *
  * Checks (any failure exits 1 with the seed and iteration):
  *   * every 50 iterations, and at the end, a fresh connection gets its PING
@@ -662,10 +677,780 @@ static void build_case(Buf *b, uint64_t *s, int kind) {
   }
 }
 
+/* ========================================================================= */
+/* The request matrix: frame boundaries of a unary request, deterministic    */
+/* ========================================================================= */
+
+/** What one stream of a matrix connection got back. */
+typedef struct {
+  int status;    /* grpc-status of its last header block that carried one; -1: none */
+  int ended;     /* frames with END_STREAM received (more than 1 is a server bug) */
+  int rst;       /* RST_STREAM error code; -1: none */
+  size_t dlen;   /* DATA payload bytes received */
+  uint8_t *data; /* those bytes (heap; matrix_close frees them) */
+} StreamAnswer;
+
+/** Streams tracked one by one: ids 1, 3, .. 15 (index = id / 2). */
+enum { kMatrixStreams = 8 };
+
+/** What a matrix connection got back. */
+typedef struct {
+  StreamAnswer st[kMatrixStreams];
+  int goaway;         /* GOAWAY error code; -1: none */
+  int window_updates; /* WINDOW_UPDATE frames for the connection (stream 0) */
+  long ok_ended;      /* streams of any id ended by a block with grpc-status 0 */
+  long other_ended;   /* streams ended any other way (another status, RST_STREAM) */
+  int ping_ack;       /* the closing PING was acknowledged */
+} ConnAnswer;
+
+/** One matrix connection: socket, response HPACK decoder, unparsed input. */
+typedef struct {
+  int fd;
+  HpackDec dec;
+  uint8_t *in; /* received bytes not yet parsed into frames */
+  size_t n, cap;
+  ConnAnswer a;
+} MatrixConn;
+
+/** Opaque data of the PING that closes a matrix conversation. */
+static const uint8_t kMatrixPing[8] = "matrixpg";
+
+/**
+ * Fails the run, naming the matrix case.
+ * @param what    the case
+ * @param why     what was wrong with the answer
+ * @param detail  a number that reproduces it (the split offset; -1: none)
+ */
+static void matrix_fail(const char *what, const char *why, long detail) {
+  char msg[256];
+  if (detail >= 0)
+    snprintf(msg, sizeof msg, "request matrix, %s (cut at byte %ld): %s", what, detail, why);
+  else
+    snprintf(msg, sizeof msg, "request matrix, %s: %s", what, why);
+  fail(msg);
+}
+
+/**
+ * @return the pool the matrix decoders allocate from (created on first use).
+ * @remarks Calls kv_hpack_global_init again; check_alive has usually done so
+ *          already, which is fine — it only recomputes a static table.
+ */
+static void *matrix_pool(void) {
+  static void *pool;
+  if (!pool) {
+    kv_hpack_global_init();
+    pool = calloc(1, kv_pool_struct_size);
+    if (!pool) fail("request matrix: out of memory");
+  }
+  return pool;
+}
+
+/** kv_hpack_decode handler: the numeric grpc-status of a block into *ctx. */
+static int on_status(void *ctx, const uint8_t *name, size_t nlen, const uint8_t *value,
+                     size_t vlen, uint64_t meaning) {
+  (void)meaning;
+  if (nlen == 11 && memcmp(name, "grpc-status", 11) == 0) {
+    int v = 0;
+    for (size_t i = 0; i < vlen; i++) v = v * 10 + (value[i] - '0');
+    *(int *)ctx = v;
+  }
+  return 0;
+}
+
+/** Opens a matrix connection; fails the run when it cannot. */
+static void matrix_open(MatrixConn *c) {
+  memset(c, 0, sizeof *c);
+  for (int i = 0; i < kMatrixStreams; i++) {
+    c->a.st[i].status = -1;
+    c->a.st[i].rst = -1;
+  }
+  c->a.goaway = -1;
+  if (kv_hpack_init(&c->dec, matrix_pool(), 4096) != 0) fail("request matrix: no memory for HPACK");
+  c->fd = dial();
+  if (c->fd < 0) fail("request matrix: cannot connect");
+}
+
+/** Closes a matrix connection and frees what it collected. */
+static void matrix_close(MatrixConn *c) {
+  close(c->fd);
+  kv_hpack_free(&c->dec);
+  for (int i = 0; i < kMatrixStreams; i++) free(c->a.st[i].data);
+  free(c->in);
+}
+
+/**
+ * Parses every complete frame in c->in into c->a and drops it from the buffer.
+ * @remarks Every HEADERS block is decoded, in order: the server's first
+ *          response inserts into the dynamic table that its later blocks
+ *          index. The server never pads or fragments its frames, so payloads
+ *          are taken whole.
+ */
+static void matrix_parse(MatrixConn *c) {
+  static uint8_t scratch_buf[16384];
+  const uint64_t scratch[2] = {(uint64_t)(uintptr_t)scratch_buf, sizeof scratch_buf};
+  size_t off = 0;
+  while (c->n - off >= 9) {
+    const uint8_t *f = c->in + off;
+    uint32_t len = (uint32_t)f[0] << 16 | (uint32_t)f[1] << 8 | f[2];
+    if (c->n - off < 9 + (size_t)len) break;
+    uint8_t type = f[3], flags = f[4];
+    uint32_t sid = ((uint32_t)f[5] << 24 | (uint32_t)f[6] << 16 | (uint32_t)f[7] << 8 | f[8]) &
+                   0x7FFFFFFF;
+    const uint8_t *pl = f + 9;
+    StreamAnswer *st = (sid & 1) && sid < 2 * kMatrixStreams ? &c->a.st[sid / 2] : NULL;
+    int ends = 0, status = -1;
+    switch (type) {
+    case 0: /* DATA */
+      if (st && len) {
+        st->data = realloc(st->data, st->dlen + len);
+        if (!st->data) fail("request matrix: out of memory");
+        memcpy(st->data + st->dlen, pl, len);
+        st->dlen += len;
+      }
+      ends = flags & 1;
+      break;
+    case 1: /* HEADERS */
+      if (kv_hpack_decode(&c->dec, pl, len, &status, on_status, scratch) != 0)
+        fail("request matrix: undecodable response header block");
+      if (st && status >= 0) st->status = status;
+      ends = flags & 1;
+      break;
+    case 3: /* RST_STREAM */
+      if (len == 4) {
+        if (st)
+          st->rst = (int)((uint32_t)pl[0] << 24 | (uint32_t)pl[1] << 16 | (uint32_t)pl[2] << 8 |
+                          pl[3]);
+        c->a.other_ended++;
+      }
+      break;
+    case 6: /* PING */
+      if ((flags & 1) && len == 8 && memcmp(pl, kMatrixPing, 8) == 0) c->a.ping_ack = 1;
+      break;
+    case 7: /* GOAWAY */
+      if (len >= 8)
+        c->a.goaway = (int)((uint32_t)pl[4] << 24 | (uint32_t)pl[5] << 16 | (uint32_t)pl[6] << 8 |
+                            pl[7]);
+      break;
+    case 8: /* WINDOW_UPDATE */
+      if (sid == 0) c->a.window_updates++;
+      break;
+    default: /* SETTINGS and anything else: nothing to record */
+      break;
+    }
+    if (ends) {
+      if (st) st->ended++;
+      if (type == 1 && status == 0)
+        c->a.ok_ended++;
+      else
+        c->a.other_ended++;
+    }
+    off += 9 + (size_t)len;
+  }
+  memmove(c->in, c->in + off, c->n - off);
+  c->n -= off;
+}
+
+/** matrix_read condition: every stream in the bit mask ended or was reset, or GOAWAY. */
+static int until_streams(const MatrixConn *c, long mask) {
+  if (c->a.goaway >= 0) return 1;
+  for (int i = 0; i < kMatrixStreams; i++)
+    if (((mask >> i) & 1) && !c->a.st[i].ended && c->a.st[i].rst < 0) return 0;
+  return 1;
+}
+
+/** matrix_read condition: a GOAWAY arrived. */
+static int until_goaway(const MatrixConn *c, long unused) {
+  (void)unused;
+  return c->a.goaway >= 0;
+}
+
+/** matrix_read condition: the closing PING was acknowledged. */
+static int until_ping(const MatrixConn *c, long unused) {
+  (void)unused;
+  return c->a.ping_ack;
+}
+
+/** matrix_read condition: at least n streams ended (any way), or GOAWAY. */
+static int until_count(const MatrixConn *c, long n) {
+  return c->a.goaway >= 0 || c->a.ok_ended + c->a.other_ended >= n;
+}
+
+/**
+ * Reads and parses input until a condition holds.
+ * @param c      connection
+ * @param until  the condition (one of the until_* functions)
+ * @param arg    its argument
+ * @param ms     how long to wait at most
+ * @return 1 when the condition held; 0 when the time ran out or the server
+ *         closed the connection first.
+ */
+static int matrix_read(MatrixConn *c, int (*until)(const MatrixConn *, long), long arg, int ms) {
+  uint64_t deadline = now_ns() + (uint64_t)ms * 1000000ull;
+  for (;;) {
+    if (until(c, arg)) return 1;
+    int64_t left = (int64_t)(deadline - now_ns()) / 1000000;
+    if (left <= 0) return 0;
+    struct pollfd p = {c->fd, POLLIN, 0};
+    if (poll(&p, 1, (int)left) <= 0) continue;             /* the deadline is re-checked above */
+    if (c->cap - c->n < 65536) {
+      c->cap = c->cap * 2 + 131072;
+      c->in = realloc(c->in, c->cap);
+      if (!c->in) fail("request matrix: out of memory");
+    }
+    ssize_t k = recv(c->fd, c->in + c->n, c->cap - c->n, 0);
+    if (k <= 0) return until(c, arg);                      /* closed: nothing more will come */
+    c->n += (size_t)k;
+    matrix_parse(c);
+  }
+}
+
+/**
+ * One conversation: sends `b`, waits for the answers, then closes with a PING.
+ * @param c      an open matrix connection
+ * @param b      preface and frames to send
+ * @param split  cut `b` into two writes here, 400 us apart, so the server
+ *               reads the first part on its own (0 or >= b->n: one write)
+ * @param mask   streams to wait for, bit i = stream 2i + 1; negative: wait
+ *               for a GOAWAY instead
+ * @param what   the case, for the failure message
+ * @remarks The closing PING is what makes "answered exactly once" checkable:
+ *          its acknowledgement is queued behind everything the server had
+ *          still to say, so a second answer, a late RST_STREAM or a GOAWAY is
+ *          in c->a by the time this returns. After a GOAWAY the server
+ *          closes, so no PING is sent.
+ */
+static void matrix_talk(MatrixConn *c, const Buf *b, size_t split, long mask, const char *what) {
+  long cut = split > 0 && split < b->n ? (long)split : -1;
+  if (cut >= 0) {
+    if (send_all(c->fd, b->p, split) != 0) matrix_fail(what, "send failed", cut);
+    usleep(400);
+    if (send_all(c->fd, b->p + split, b->n - split) != 0) matrix_fail(what, "send failed", cut);
+  } else if (send_all(c->fd, b->p, b->n) != 0) {
+    matrix_fail(what, "send failed", cut);
+  }
+  if (!matrix_read(c, mask < 0 ? until_goaway : until_streams, mask, 3000))
+    matrix_fail(what, mask < 0 ? "no GOAWAY within 3 s" : "not every stream answered within 3 s", cut);
+  if (c->a.goaway >= 0) return;
+  Buf p = {0};
+  frame(&p, 6, 0, 0, kMatrixPing, 8);
+  if (send_all(c->fd, p.p, p.n) != 0) matrix_fail(what, "sending the closing PING failed", cut);
+  free(p.p);
+  if (!matrix_read(c, until_ping, 0, 3000))
+    matrix_fail(what, "the closing PING was not acknowledged", cut);
+}
+
+/**
+ * Appends a gRPC call's header block: call_block's fields, or — with a
+ * content-length — the same fields with content-length in :authority's place.
+ * @param b     destination
+ * @param path  :path
+ * @param clen  content-length to declare; negative: none (and :authority)
+ * @remarks Why content-length replaces :authority (which a request may
+ *          omit) instead of joining it: the block then stays under the 128
+ *          bytes the server's header-block cache keeps, so a second request
+ *          with it is answered from the cache and the cached content-length
+ *          is exercised too. Literals without indexing, like call_block.
+ */
+static void matrix_block(Buf *b, const char *path, long clen) {
+  char digits[24];
+  snprintf(digits, sizeof digits, "%ld", clen);
+  const struct { const char *n, *v; } f[] = {
+      {":method", "POST"}, {":scheme", "http"}, {":path", path},
+      {clen >= 0 ? "content-length" : ":authority", clen >= 0 ? digits : "fuzz"},
+      {"content-type", "application/grpc"}, {"te", "trailers"}};
+  for (size_t i = 0; i < sizeof f / sizeof f[0]; i++) {
+    uint8_t z = 0;
+    put(b, &z, 1);
+    hstr(b, f[i].n);
+    hstr(b, f[i].v);
+  }
+}
+
+/**
+ * Appends the gRPC message of a Get or Put: {1: key[, 2: value]}.
+ * @param b        destination
+ * @param key      key (NUL-terminated)
+ * @param val      value bytes (ignored unless has_val)
+ * @param vlen     value length
+ * @param has_val  1 for a Put (field 2 present, even when empty), 0 for a Get
+ */
+static void kv_message(Buf *b, const char *key, const uint8_t *val, size_t vlen, int has_val) {
+  Buf m = {0};
+  put(&m, "\x0A", 1);
+  vput(&m, strlen(key));
+  put(&m, key, strlen(key));
+  if (has_val) {
+    put(&m, "\x12", 1);
+    vput(&m, vlen);
+    if (vlen) put(&m, val, vlen);
+  }
+  grpc_msg(b, 0, &m);
+  free(m.p);
+}
+
+/**
+ * Fails unless stream index i of the connection was answered exactly once,
+ * with grpc-status 0 and GetResponse{found = true, value = v}.
+ * @param c       the finished conversation
+ * @param i       stream index (stream id 2i + 1)
+ * @param v       expected value
+ * @param vl      its length (> 0)
+ * @param what    the case
+ * @param detail  the split offset, or -1
+ */
+static void expect_get(const MatrixConn *c, int i, const uint8_t *v, size_t vl, const char *what,
+                       long detail) {
+  const StreamAnswer *st = &c->a.st[i];
+  Buf want = {0}, m = {0};
+  put(&m, "\x08\x01\x12", 3);
+  vput(&m, vl);
+  put(&m, v, vl);
+  grpc_msg(&want, 0, &m);
+  int ok = st->status == 0 && st->ended == 1 && st->rst < 0 && st->dlen == want.n &&
+           memcmp(st->data, want.p, want.n) == 0;
+  free(want.p);
+  free(m.p);
+  if (!ok) matrix_fail(what, "a Get was not answered exactly once with its value", detail);
+}
+
+/**
+ * Runs one matrix case that must end in exact Get answers.
+ * @param b      preface and frames
+ * @param split  as matrix_talk
+ * @param gets   streams that must each be a successful Get of v (bit mask)
+ * @param v      the value
+ * @param vl     its length
+ * @param what   the case
+ * @remarks For cases whose answers are all successful Gets; a case that
+ *          expects an error on some stream drives matrix_talk itself.
+ */
+static void matrix_gets(const Buf *b, size_t split, long gets, const uint8_t *v, size_t vl,
+                        const char *what) {
+  MatrixConn c;
+  matrix_open(&c);
+  matrix_talk(&c, b, split, gets, what);
+  long cut = split > 0 && split < b->n ? (long)split : -1;
+  if (c.a.goaway >= 0) matrix_fail(what, "the connection was ended with GOAWAY", cut);
+  for (int i = 0; i < kMatrixStreams; i++)
+    if ((gets >> i) & 1) expect_get(&c, i, v, vl, what, cut);
+  matrix_close(&c);
+}
+
+/**
+ * The request matrix (see the file header): every case is one or more fresh
+ * connections with an exact expected answer.
+ * @return the number of conversations held.
+ * @remarks Each expectation follows from RFC 9113 and the gRPC mapping, not
+ *          from how h2n.asm reaches it, so the matrix holds for an engine
+ *          with or without the fused request path — and pins down that the
+ *          fused path changes nothing a client can see:
+ *            - the cut cases put the boundary between two reads at every
+ *              byte, so the DATA frame is whole behind its HEADERS in some,
+ *              partly there in others (header cut, payload cut) and absent in
+ *              the rest; requests 2 and 3 come through the header-block cache;
+ *            - equal-length blocks that differ are the cache's near miss
+ *              (same length, same table generation, other bytes): the block
+ *              must be decoded, not replayed;
+ *            - padded DATA, a body in two frames, an empty END_STREAM frame
+ *              and a declared content-length are requests the fused path
+ *              must leave to the frame loop;
+ *            - a padded HEADERS frame with priority fields is one it must
+ *              step over correctly to find the DATA frame;
+ *            - HEADERS that already ended the stream must not be fused with
+ *              the DATA frame behind them (that would answer twice);
+ *            - 36 MB of full-size DATA frames must still make the server top
+ *              the connection window up: the fused path counts flow control
+ *              itself.
+ */
+static long request_matrix(void) {
+  static const char key[] = "matrix-key";
+  static const uint8_t val[] = "matrix-value-0123456789";
+  const size_t vl = sizeof val - 1;
+  long talks = 0;
+  Buf blk_get = {0}, blk_put = {0}, msg_get = {0}, msg_put = {0};
+  matrix_block(&blk_get, "/kvnode.v1.KvNode/Get", -1);
+  matrix_block(&blk_put, "/kvnode.v1.KvNode/Put", -1);
+  kv_message(&msg_get, key, NULL, 0, 0);
+  kv_message(&msg_put, key, val, vl, 1);
+
+  { /* the value every Get below expects: a Put, HEADERS and DATA in one write */
+    MatrixConn c;
+    Buf b = {0};
+    matrix_open(&c);
+    preface(&b);
+    frame(&b, 1, 0x4, 1, blk_put.p, (uint32_t)blk_put.n);
+    frame(&b, 0, 0x1, 1, msg_put.p, (uint32_t)msg_put.n);
+    matrix_talk(&c, &b, 0, 1, "the Put");
+    if (c.a.st[0].status != 0 || c.a.st[0].ended != 1 || c.a.st[0].rst >= 0)
+      matrix_fail("the Put", "not answered exactly once with grpc-status 0", -1);
+    matrix_close(&c);
+    free(b.p);
+    talks++;
+  }
+
+  { /* three Gets, the byte stream cut into two writes at every offset (0: one write) */
+    Buf b = {0};
+    preface(&b);
+    for (uint32_t i = 0; i < 3; i++) {
+      frame(&b, 1, 0x4, 1 + 2 * i, blk_get.p, (uint32_t)blk_get.n);
+      frame(&b, 0, 0x1, 1 + 2 * i, msg_get.p, (uint32_t)msg_get.n);
+    }
+    for (size_t split = 0; split < b.n; split++, talks++)
+      matrix_gets(&b, split, 7, val, vl, "three Gets");
+    free(b.p);
+  }
+
+  { /* header blocks of equal length that differ (.../Get and .../Put) on one connection:
+     * the server's header-block cache must tell them apart. Get, Put of a second key,
+     * Get, Get of the second key, in one write (a read's Puts are applied before its
+     * Gets, so the last Get sees the Put) */
+    static const char what[] = "equal-length header blocks that differ";
+    static const char key2[] = "matrix-two";
+    static const uint8_t val2[] = "second-value";
+    MatrixConn c;
+    Buf b = {0}, put2 = {0}, get2 = {0};
+    kv_message(&put2, key2, val2, sizeof val2 - 1, 1);
+    kv_message(&get2, key2, NULL, 0, 0);
+    if (blk_get.n != blk_put.n) matrix_fail(what, "the test's two blocks differ in length", -1);
+    matrix_open(&c);
+    preface(&b);
+    frame(&b, 1, 0x4, 1, blk_get.p, (uint32_t)blk_get.n);
+    frame(&b, 0, 0x1, 1, msg_get.p, (uint32_t)msg_get.n);
+    frame(&b, 1, 0x4, 3, blk_put.p, (uint32_t)blk_put.n);
+    frame(&b, 0, 0x1, 3, put2.p, (uint32_t)put2.n);
+    frame(&b, 1, 0x4, 5, blk_get.p, (uint32_t)blk_get.n);
+    frame(&b, 0, 0x1, 5, msg_get.p, (uint32_t)msg_get.n);
+    frame(&b, 1, 0x4, 7, blk_get.p, (uint32_t)blk_get.n);
+    frame(&b, 0, 0x1, 7, get2.p, (uint32_t)get2.n);
+    matrix_talk(&c, &b, 0, 15, what);
+    if (c.a.goaway >= 0) matrix_fail(what, "the connection was ended with GOAWAY", -1);
+    expect_get(&c, 0, val, vl, what, -1);
+    if (c.a.st[1].status != 0 || c.a.st[1].ended != 1 || c.a.st[1].rst >= 0)
+      matrix_fail(what, "the Put was not answered exactly once with grpc-status 0", -1);
+    expect_get(&c, 2, val, vl, what, -1);
+    expect_get(&c, 3, val2, sizeof val2 - 1, what, -1);
+    matrix_close(&c);
+    free(b.p);
+    free(put2.p);
+    free(get2.p);
+    talks++;
+  }
+
+  { /* a padded DATA frame: pad length 5, the message, 5 bytes of padding */
+    Buf b = {0}, pad = {0};
+    static const uint8_t five[6] = {5, 0, 0, 0, 0, 0};
+    put(&pad, five, 1);
+    put(&pad, msg_get.p, msg_get.n);
+    put(&pad, five + 1, 5);
+    preface(&b);
+    frame(&b, 1, 0x4, 1, blk_get.p, (uint32_t)blk_get.n);
+    frame(&b, 0, 0x1 | 0x8, 1, pad.p, (uint32_t)pad.n);
+    matrix_gets(&b, 0, 1, val, vl, "padded DATA");
+    free(b.p);
+    free(pad.p);
+    talks++;
+  }
+
+  { /* the body in two DATA frames, and then: a whole body followed by an empty END_STREAM frame */
+    Buf b = {0};
+    preface(&b);
+    frame(&b, 1, 0x4, 1, blk_get.p, (uint32_t)blk_get.n);
+    frame(&b, 0, 0, 1, msg_get.p, 7);
+    frame(&b, 0, 0x1, 1, msg_get.p + 7, (uint32_t)msg_get.n - 7);
+    frame(&b, 1, 0x4, 3, blk_get.p, (uint32_t)blk_get.n);
+    frame(&b, 0, 0, 3, msg_get.p, (uint32_t)msg_get.n);
+    frame(&b, 0, 0x1, 3, "", 0);
+    matrix_gets(&b, 0, 3, val, vl, "a body in two DATA frames, an empty END_STREAM frame");
+    free(b.p);
+    talks++;
+  }
+
+  { /* content-length that matches the body */
+    Buf b = {0}, blk = {0};
+    matrix_block(&blk, "/kvnode.v1.KvNode/Get", (long)msg_get.n);
+    preface(&b);
+    frame(&b, 1, 0x4, 1, blk.p, (uint32_t)blk.n);
+    frame(&b, 0, 0x1, 1, msg_get.p, (uint32_t)msg_get.n);
+    frame(&b, 1, 0x4, 3, blk.p, (uint32_t)blk.n);          /* again: now from the block cache */
+    frame(&b, 0, 0x1, 3, msg_get.p, (uint32_t)msg_get.n);
+    matrix_gets(&b, 0, 3, val, vl, "content-length equal to the body");
+    free(b.p);
+    free(blk.p);
+    talks++;
+  }
+
+  { /* content-length one short of the body: that stream is malformed (RFC 9113 8.1.1),
+     * RST_STREAM(PROTOCOL_ERROR), unanswered; the connection and the next stream live on */
+    static const char what[] = "content-length shorter than the body";
+    MatrixConn c;
+    Buf b = {0}, blk = {0};
+    matrix_block(&blk, "/kvnode.v1.KvNode/Get", (long)msg_get.n - 1);
+    matrix_open(&c);
+    preface(&b);
+    frame(&b, 1, 0x4, 1, blk.p, (uint32_t)blk.n);
+    frame(&b, 0, 0x1, 1, msg_get.p, (uint32_t)msg_get.n);
+    frame(&b, 1, 0x4, 3, blk_get.p, (uint32_t)blk_get.n);
+    frame(&b, 0, 0x1, 3, msg_get.p, (uint32_t)msg_get.n);
+    matrix_talk(&c, &b, 0, 3, what);
+    if (c.a.goaway >= 0) matrix_fail(what, "the connection was ended with GOAWAY", -1);
+    if (c.a.st[0].rst != 1 || c.a.st[0].ended != 0 || c.a.st[0].status >= 0)
+      matrix_fail(what, "the stream was not reset with PROTOCOL_ERROR and left unanswered", -1);
+    expect_get(&c, 1, val, vl, what, -1);
+    matrix_close(&c);
+    free(b.p);
+    free(blk.p);
+    talks++;
+  }
+
+  { /* HEADERS with padding and priority fields (flags END_HEADERS | PADDED | PRIORITY):
+     * pad length 4, stream dependency 0, weight 15, the block, 4 bytes of padding */
+    Buf b = {0}, h = {0};
+    static const uint8_t lead[6] = {4, 0, 0, 0, 0, 15}, tail[4] = {0, 0, 0, 0};
+    put(&h, lead, sizeof lead);
+    put(&h, blk_get.p, blk_get.n);
+    put(&h, tail, sizeof tail);
+    preface(&b);
+    frame(&b, 1, 0x4 | 0x8 | 0x20, 1, h.p, (uint32_t)h.n);
+    frame(&b, 0, 0x1, 1, msg_get.p, (uint32_t)msg_get.n);
+    frame(&b, 1, 0x4 | 0x8 | 0x20, 3, h.p, (uint32_t)h.n);
+    frame(&b, 0, 0x1, 3, msg_get.p, (uint32_t)msg_get.n);
+    matrix_gets(&b, 0, 3, val, vl, "padded HEADERS with priority fields");
+    free(b.p);
+    free(h.p);
+    talks++;
+  }
+
+  { /* HEADERS that end the stream (a call without a message: answered with an error
+     * status at once), then a DATA frame for it: the stream is closed, so the frame
+     * draws RST_STREAM(STREAM_CLOSED) and never a second answer; stream 3 is served */
+    static const char what[] = "DATA after HEADERS that ended the stream";
+    MatrixConn c;
+    Buf b = {0};
+    matrix_open(&c);
+    preface(&b);
+    frame(&b, 1, 0x4 | 0x1, 1, blk_get.p, (uint32_t)blk_get.n);
+    frame(&b, 0, 0x1, 1, msg_get.p, (uint32_t)msg_get.n);
+    frame(&b, 1, 0x4, 3, blk_get.p, (uint32_t)blk_get.n);
+    frame(&b, 0, 0x1, 3, msg_get.p, (uint32_t)msg_get.n);
+    matrix_talk(&c, &b, 0, 3, what);
+    if (c.a.goaway >= 0) matrix_fail(what, "the connection was ended with GOAWAY", -1);
+    if (c.a.st[0].ended != 1 || c.a.st[0].status <= 0 || c.a.st[0].dlen != 0)
+      matrix_fail(what, "the empty call was not answered once with an error status", -1);
+    if (c.a.st[0].rst != 5)
+      matrix_fail(what, "the late DATA frame did not draw RST_STREAM(STREAM_CLOSED)", -1);
+    expect_get(&c, 1, val, vl, what, -1);
+    matrix_close(&c);
+    free(b.p);
+    talks++;
+  }
+
+  { /* DATA for a stream that was never opened, right behind another stream's HEADERS:
+     * a connection error, PROTOCOL_ERROR (RFC 9113 5.1) */
+    static const char what[] = "DATA for an idle stream behind HEADERS";
+    MatrixConn c;
+    Buf b = {0};
+    matrix_open(&c);
+    preface(&b);
+    frame(&b, 1, 0x4, 1, blk_get.p, (uint32_t)blk_get.n);
+    frame(&b, 0, 0x1, 3, msg_get.p, (uint32_t)msg_get.n);
+    matrix_talk(&c, &b, 0, -1, what);
+    if (c.a.goaway != 1) matrix_fail(what, "GOAWAY did not carry PROTOCOL_ERROR", -1);
+    if (c.a.st[0].ended || c.a.st[1].ended) matrix_fail(what, "a stream was answered", -1);
+    matrix_close(&c);
+    free(b.p);
+    talks++;
+  }
+
+  { /* a DATA frame of 16,385 bytes (one more than the frame size the server allows):
+     * FRAME_SIZE_ERROR on the connection. The whole frame is sent — a valid message,
+     * then zeros — so an engine that forgot the limit would have a request to answer */
+    static const char what[] = "oversized DATA frame behind HEADERS";
+    enum { kOver = 16385 };
+    MatrixConn c;
+    Buf b = {0};
+    uint8_t *zeros = calloc(1, kOver);
+    if (!zeros) fail("request matrix: out of memory");
+    matrix_open(&c);
+    preface(&b);
+    frame(&b, 1, 0x4, 1, blk_get.p, (uint32_t)blk_get.n);
+    frame_hdr(&b, kOver, 0, 0x1, 1);
+    put(&b, msg_get.p, msg_get.n);
+    put(&b, zeros, kOver - msg_get.n);
+    free(zeros);
+    matrix_talk(&c, &b, 0, -1, what);
+    if (c.a.goaway != 6) matrix_fail(what, "GOAWAY did not carry FRAME_SIZE_ERROR", -1);
+    if (c.a.st[0].ended) matrix_fail(what, "the stream was answered", -1);
+    matrix_close(&c);
+    free(b.p);
+    talks++;
+  }
+
+  { /* an Upload whose whole message stream — key, size, the one chunk, crc32c — is a
+     * single DATA frame right behind its HEADERS. Client streaming consumes DATA as it
+     * arrives, so the engine must not take that frame for a buffered unary body. The
+     * value is then read back on a second connection */
+    static const char what[] = "Upload in one DATA frame";
+    static const char ukey[] = "matrix-up";
+    static const uint8_t uval[] = "uploaded-in-one-frame";
+    const size_t ul = sizeof uval - 1;
+    uint32_t crc = crc32c(0, uval, ul);
+    const uint8_t crcf[5] = {0x25, (uint8_t)crc, (uint8_t)(crc >> 8), (uint8_t)(crc >> 16),
+                             (uint8_t)(crc >> 24)};
+    MatrixConn c;
+    Buf b = {0}, blk = {0}, m = {0}, body = {0}, get = {0};
+    matrix_block(&blk, "/kvnode.v1.KvNode/Upload", -1);
+    put(&m, "\x0A", 1);
+    vput(&m, strlen(ukey));
+    put(&m, ukey, strlen(ukey));
+    put(&m, "\x10", 1);
+    vput(&m, ul);
+    put(&m, "\x1A", 1);
+    vput(&m, ul);
+    put(&m, uval, ul);
+    put(&m, crcf, sizeof crcf);
+    grpc_msg(&body, 0, &m);
+    kv_message(&get, ukey, NULL, 0, 0);
+    matrix_open(&c);
+    preface(&b);
+    frame(&b, 1, 0x4, 1, blk.p, (uint32_t)blk.n);
+    frame(&b, 0, 0x1, 1, body.p, (uint32_t)body.n);
+    matrix_talk(&c, &b, 0, 1, what);
+    if (c.a.goaway >= 0) matrix_fail(what, "the connection was ended with GOAWAY", -1);
+    if (c.a.st[0].status != 0 || c.a.st[0].ended != 1 || c.a.st[0].rst >= 0)
+      matrix_fail(what, "the Upload was not answered exactly once with grpc-status 0", -1);
+    matrix_close(&c);
+    b.n = 0;
+    preface(&b);
+    frame(&b, 1, 0x4, 1, blk_get.p, (uint32_t)blk_get.n);
+    frame(&b, 0, 0x1, 1, get.p, (uint32_t)get.n);
+    matrix_gets(&b, 0, 1, uval, ul, what);
+    free(b.p);
+    free(blk.p);
+    free(m.p);
+    free(body.p);
+    free(get.p);
+    talks += 2;
+  }
+
+  { /* 2,200 Puts whose DATA frame is exactly the largest frame (16,384 bytes), 20 per
+     * write: 36 MB, more than half of the default 64 MiB connection window (which
+     * run.sh's fuzz phase leaves alone), so the server must have topped the window
+     * up — a second connection WINDOW_UPDATE after the one that announces the window
+     * at open. It would not if such frames went uncounted. Then the value is read
+     * back whole. */
+    static const char what[] = "full-size DATA frames and the connection window";
+    static const char bigkey[] = "matrix-big";
+    enum { kPerWrite = 20, kWrites = 110, kBig = 16364 };
+    uint8_t *big = malloc(kBig);
+    if (!big) fail("request matrix: out of memory");
+    for (int i = 0; i < kBig; i++) big[i] = (uint8_t)(i * 131 + (i >> 8));
+    Buf msg_big = {0}, msg_bigget = {0}, b = {0};
+    kv_message(&msg_big, bigkey, big, kBig, 1);
+    kv_message(&msg_bigget, bigkey, NULL, 0, 0);
+    if (msg_big.n != 16384) matrix_fail(what, "the test's frame is not 16,384 bytes", -1);
+    MatrixConn c;
+    matrix_open(&c);
+    preface(&b);
+    if (send_all(c.fd, b.p, b.n) != 0) matrix_fail(what, "send failed", -1);
+    for (int w = 0; w < kWrites; w++) {
+      b.n = 0;
+      for (int i = 0; i < kPerWrite; i++) {
+        uint32_t sid = 1 + 2 * (uint32_t)(w * kPerWrite + i);
+        frame(&b, 1, 0x4, sid, blk_put.p, (uint32_t)blk_put.n);
+        frame(&b, 0, 0x1, sid, msg_big.p, (uint32_t)msg_big.n);
+      }
+      if (send_all(c.fd, b.p, b.n) != 0) matrix_fail(what, "send failed", -1);
+      if (!matrix_read(&c, until_count, (long)(w + 1) * kPerWrite, 5000))
+        matrix_fail(what, "a write of 20 Puts was not answered within 5 s", -1);
+    }
+    if (c.a.goaway >= 0) matrix_fail(what, "the connection was ended with GOAWAY", -1);
+    if (c.a.ok_ended != (long)kPerWrite * kWrites || c.a.other_ended != 0)
+      matrix_fail(what, "not every Put was answered with grpc-status 0", -1);
+    if (c.a.window_updates < 2)
+      matrix_fail(what, "36 MB of DATA drew no connection WINDOW_UPDATE after the opening one", -1);
+    matrix_close(&c);
+    b.n = 0;
+    preface(&b);
+    frame(&b, 1, 0x4, 1, blk_get.p, (uint32_t)blk_get.n);
+    frame(&b, 0, 0x1, 1, msg_bigget.p, (uint32_t)msg_bigget.n);
+    matrix_gets(&b, 0, 1, big, kBig, what);
+    free(b.p);
+    free(msg_big.p);
+    free(msg_bigget.p);
+    free(big);
+    talks += 2;
+  }
+
+  free(blk_get.p);
+  free(blk_put.p);
+  free(msg_get.p);
+  free(msg_put.p);
+  return talks;
+}
+
+/**
+ * --limits: the request-size limit at the frame boundary. Needs a server
+ * started with KVNODE_MAX_KEY_BYTES=16 and KVNODE_MAX_VALUE_BYTES=64, so
+ * that the largest message it accepts is 16 + 64 + 64 = 144 bytes (149 with
+ * the gRPC prefix) — small enough for a single DATA frame to exceed it.
+ * Three Puts on one connection, each HEADERS + one DATA frame, in one write:
+ *   a value of 64 bytes      grpc-status 0
+ *   a value of 100 bytes     the body (116 bytes) is within the limit: the
+ *                            message is decoded and its value refused,
+ *                            INVALID_ARGUMENT (3)
+ *   a value of 1,000 bytes   the body (1,017 bytes) is over the limit: it is
+ *                            dropped undecoded, RESOURCE_EXHAUSTED (8)
+ * @return 0; any other outcome fails the run.
+ * @remarks Why its own mode and server: with the default limits no single
+ *          frame can be over max_request, so the engine's choice between
+ *          "borrow the frame" and "over the limit" — which the fused request
+ *          path makes by itself — would go untested.
+ */
+static int limits_matrix(void) {
+  static const char what[] = "the request-size limit";
+  static const char key[] = "lim-key";
+  static const size_t sizes[3] = {64, 100, 1000};
+  static const int want[3] = {0, 3, 8};
+  uint8_t value[1000];
+  memset(value, 'v', sizeof value);
+  MatrixConn c;
+  Buf b = {0}, blk = {0};
+  matrix_block(&blk, "/kvnode.v1.KvNode/Put", -1);
+  matrix_open(&c);
+  preface(&b);
+  for (uint32_t i = 0; i < 3; i++) {
+    Buf m = {0};
+    kv_message(&m, key, value, sizes[i], 1);
+    frame(&b, 1, 0x4, 1 + 2 * i, blk.p, (uint32_t)blk.n);
+    frame(&b, 0, 0x1, 1 + 2 * i, m.p, (uint32_t)m.n);
+    free(m.p);
+  }
+  matrix_talk(&c, &b, 0, 7, what);
+  if (c.a.goaway >= 0) matrix_fail(what, "the connection was ended with GOAWAY", -1);
+  for (int i = 0; i < 3; i++)
+    if (c.a.st[i].status != want[i] || c.a.st[i].ended != 1 || c.a.st[i].rst >= 0) {
+      char why[96];
+      snprintf(why, sizeof why, "the Put of %zu bytes got grpc-status %d, not %d (exactly once)",
+               sizes[i], c.a.st[i].status, want[i]);
+      matrix_fail(what, why, -1);
+    }
+  matrix_close(&c);
+  free(b.p);
+  free(blk.p);
+  printf("fuzz_h2 --limits: 64 bytes stored, 100 refused as a value (3), 1,000 as a request (8)\n");
+  return 0;
+}
+
 /** Entry point. @return 0 when every check passed. */
 int main(int argc, char **argv) {
+  if (argc == 4 && strcmp(argv[1], "--limits") == 0) {
+    g_host = argv[2];
+    g_port = argv[3];
+    return limits_matrix();
+  }
   if (argc != 6) {
-    fprintf(stderr, "usage: %s HOST PORT ITERATIONS SEED PID\n", argv[0]);
+    fprintf(stderr, "usage: %s HOST PORT ITERATIONS SEED PID\n       %s --limits HOST PORT\n",
+            argv[0], argv[0]);
     return 2;
   }
   g_host = argv[1];
@@ -675,6 +1460,10 @@ int main(int argc, char **argv) {
   long pid = atol(argv[5]);
   uint64_t s = g_seed ? g_seed : 1;
   check_alive();
+  uint64_t tm = now_ns();
+  long talks = request_matrix();                 /* exact answers at the frame boundaries */
+  printf("fuzz_h2: request matrix: %ld conversations in %.1fs, every answer exact\n", talks,
+         (double)(now_ns() - tm) / 1e9);
   fuzz_setup();                                  /* the values kind 7 downloads */
   long rss0 = rss_kib(pid);
   long counts[8] = {0};

@@ -42,7 +42,11 @@
 #      frame soup, random HPACK, truncation, split writes, Upload and
 #      Download soups), liveness checked every 50 connections and memory
 #      growth bounded; then the full suite on the same server, which must
-#      still exit 0
+#      still exit 0. Before the fuzzing, fuzz_h2's request matrix: exact
+#      answers at the frame boundaries of a unary request
+#  7b. the request-size limit at the frame boundary (fuzz_h2 --limits): a
+#      server with a 16-byte key limit and a 64-byte value limit, where one
+#      DATA frame can be over the largest request
 #   8. streaming limits: KVNODE_MAX_MEMORY_MB, the per-connection upload
 #      budget, KVNODE_CAPACITY — and every reservation and pin coming back
 #      however its call ends (cancel, reset connection, completion)
@@ -325,6 +329,17 @@ if [[ -n "${FUZZ_BIN:-}" ]]; then
     || fail "fuzz_h2 found a failure"
   "$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" "$MAX_UPLOAD" || fail "suite after fuzzing"
   stop_server                              # exit status 0 and no pin left required
+else
+  echo "  skipped: FUZZ_BIN not set (run through make itest)"
+fi
+
+echo "itest: phase 7b — the request-size limit at the frame boundary"
+if [[ -n "${FUZZ_BIN:-}" ]]; then
+  # 16 + 64 + 64 = 144 bytes is this server's largest message: fuzz_h2 --limits
+  # sends Puts on either side of it, each as one DATA frame behind its HEADERS.
+  start_server reqlimit KVNODE_WORKERS=1 KVNODE_MAX_KEY_BYTES=16 KVNODE_MAX_VALUE_BYTES=64
+  "$FUZZ_BIN" --limits 127.0.0.1 "$PORT" || fail "request-size limit at the frame boundary"
+  stop_server
 else
   echo "  skipped: FUZZ_BIN not set (run through make itest)"
 fi
