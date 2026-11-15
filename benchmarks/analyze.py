@@ -1053,7 +1053,9 @@ class Report:
         for r in recs:
             if r["m"].get("ops"):
                 by[(r["system"], r["tool"])][r["rep"]] = r["m"]["ops"]
-        for (s, tool) in sorted(by, key=lambda k: (ORDER.index(k[0]), k[1])):
+        # Systems outside ORDER (run.py --control-image's kvnode-control) sort
+        # last, as in the E0 table, instead of failing the whole report.
+        for (s, tool) in sorted(by, key=lambda k: (ORDER.index(k[0]) if k[0] in ORDER else 99, k[0], k[1])):
             self.w(f"| {self.title(s)} | {tool} | {cell_text(summary(by[(s, tool)]))} |")
         self.w("")
         pairs = [("redis", "kvbench-random", "redis-benchmark-random"),
