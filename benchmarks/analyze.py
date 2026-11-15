@@ -48,10 +48,11 @@ with Redis and Valkey (base kvnode)."""
 LEGACY_NATIVE = "kvnode-native"
 """The base system of pre-ADR 0008 N results (see NATIVE_EXPERIMENTS)."""
 
-ADJUSTED_EXPERIMENTS = ("E1", "E2", "E3", "E5", "E6", "E7")
+ADJUSTED_EXPERIMENTS = ("E1", "E2", "E3", "E5", "E6", "E7", "W1")
 """Closed-loop throughput experiments that get the outside-load adjusted
 summary. E0 is tuning, E4's throughput is fixed by design, E8 compares
-tools on one server, and S1 compares a system with itself."""
+tools on one server, and S1 compares a system with itself. W1 (the write
+profile) is E2's write cells on their own, so it gets E2's treatment."""
 
 HOST_BUSY = 2.0
 """Logical CPUs of load outside the container VM above which a run counts as
@@ -1083,6 +1084,12 @@ class Report:
                           "get90-v100-k100000-uni-c64d16": "90% GET", "get50-v100-k100000-uni-c64d16": "50% GET",
                           "get0-v100-k100000-uni-c64d16": "100% SET",
                           "get90-v100-k100000-zipf0.99-c64d16": "90% GET, Zipf 0.99"})
+        # W1 (run.py --profile writes): E2's write cells re-measured on their
+        # own; by_workload prints nothing when a results directory has none.
+        self.by_workload("W1", "Writes (4 cores)",
+                         "E2's 100% SET and 50% GET cells: 100-byte values, 1M keys, uniform keys.",
+                         {"get0-v100-k1000000-uni-c64d16": "100% SET", "get50-v100-k1000000-uni-c64d16": "50% GET",
+                          "get0-v100-k100000-uni-c64d16": "100% SET", "get50-v100-k100000-uni-c64d16": "50% GET"})
         self.e3()
         self.e4()
         self.e5()

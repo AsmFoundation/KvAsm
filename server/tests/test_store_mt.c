@@ -35,6 +35,13 @@
  * At the end no pin may remain (pinned == 0, deferred == 0) and the memory
  * accounting must still equal the live records exactly, so a deferred
  * record the last unpin forgot to free fails the phase.
+ *
+ * Batched phases (ADR 0011) make the odd writers use the server's batch
+ * path — records allocated outside the mutex, then up to 48 puts and
+ * deletes applied under one kv_store_write_begin/_end hold — beside the
+ * per-write ones, under every reader check above (torn values, monotonic
+ * versions, freshness through caches, pins), including -ENOSPC refusals
+ * inside a batch and keys written several times in one batch.
  */
 #include <pthread.h>
 #include <stdatomic.h>
@@ -46,7 +53,7 @@ enum { MAX_THREADS = 32 };
 
 typedef struct {
   KvTable *t;
-  uint32_t nids, nstable, nwriters, seconds;
+  uint32_t nids, nstable, nwriters, nreaders, seconds;
   uint32_t l1_bits, l2_bits;   /* reader caches; both 0 = readers use kv_store_get */
   uint32_t pin;                /* 1: even readers pin records they read (Download model) */
   _Atomic uint64_t *state;     /* per id: (version << 1) | present, after the write returned */
@@ -143,6 +150,92 @@ static void *writer_main(void *p) {
       else /* the put completed: readers that see this must see >= ver[id] */
         atomic_store_explicit(&sh->state[id], (ver[id] << 1) | 1, memory_order_release);
       atomic_fetch_add_explicit(&sh->writes, 1, memory_order_relaxed);
+    }
+  }
+  free(ver);
+  return NULL;
+}
+
+/** One write of a batched writer's batch. */
+typedef struct {
+  uint32_t id;
+  uint64_t version;  /**< Put: the new version; Delete: the version it ends */
+  KvRec *rec;        /**< Put: the filled record; NULL for a Delete */
+  uint8_t key[16];
+  uint64_t h[2];
+  int64_t rc;
+} BatchOp;
+
+/**
+ * Writer thread using the server's batch path (ADR 0011): batches of 1..48
+ * puts and deletes of its owned ids — records allocated and filled with
+ * kv_store_rec_alloc outside the mutex — applied in order between
+ * kv_store_write_begin and kv_store_write_end with the *_locked functions,
+ * against the same readers and invariants as writer_main. A batch may touch
+ * one id several times. The published per-id state is updated only after
+ * write_end returned, op by op in batch order, which is when the server
+ * answers: a reader that sees a state must find at least that version.
+ * @param p  ThreadArg*
+ * @returns NULL
+ */
+static void *writer_batch_main(void *p) {
+  ThreadArg *a = p;
+  Shared *sh = a->sh;
+  uint64_t s = 0xBA7C4ED + a->idx, *ver = calloc(sh->nids, sizeof(uint64_t));
+  uint8_t val[128];
+  BatchOp ops[48];
+  /* Its own QSBR slot, after the readers' (run_phase creates nreaders +
+   * nwriters slots). It never reads, so the slot stays offline and holds no
+   * grace period back; it only collects and frees this writer's retirements. */
+  const uint32_t rid = sh->nreaders + a->idx;
+  while (!atomic_load_explicit(&sh->stop, memory_order_relaxed)) {
+    uint32_t n = 0, want = 1 + (uint32_t)(rng_next(&s) % 48);
+    while (n < want) {
+      uint32_t id = (uint32_t)(rng_next(&s) % sh->nids);
+      id -= id % sh->nwriters;
+      id += a->idx;
+      if (id >= sh->nids) continue;
+      BatchOp *o = &ops[n];
+      o->id = id;
+      key_of(id, o->key);
+      kv_store_hash(sh->t, o->key, 16, o->h);
+      o->rec = NULL;
+      if (id >= sh->nstable && rng_next(&s) % 100 < 15) {
+        o->version = ver[id];
+      } else {
+        o->version = ++ver[id];
+        size_t len = value_of(id, o->version, val);
+        KvRec *r = kv_store_rec_alloc_local(sh->t, rid, o->key, 16, len);
+        if (kv_is_err(r)) {
+          atomic_fetch_add_explicit(&sh->errors, 1, memory_order_relaxed);
+          continue;
+        }
+        memcpy((uint8_t *)kv_rec_value(r), val, len);
+        o->rec = r;
+      }
+      n++;
+    }
+    kv_store_write_begin(sh->t);
+    for (uint32_t i = 0; i < n; i++) {
+      BatchOp *o = &ops[i];
+      o->rc = o->rec ? kv_store_put_locked(sh->t, rid, o->rec, o->h[0], o->h[1])
+                     : kv_store_delete_locked(sh->t, rid, o->key, 16, o->h[0], o->h[1]);
+    }
+    kv_store_write_end(sh->t, rid);
+    for (uint32_t i = 0; i < n; i++) {
+      BatchOp *o = &ops[i];
+      if (!o->rec) {
+        atomic_store_explicit(&sh->state[o->id], o->version << 1, memory_order_release);
+        atomic_fetch_add_explicit(&sh->deletes, 1, memory_order_relaxed);
+      } else if (o->rc == -ENOSPC) {
+        kv_store_rec_free(sh->t, o->rec);   /* refused: still ours */
+        atomic_fetch_add_explicit(&sh->full, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&sh->writes, 1, memory_order_relaxed);
+      } else {
+        if (o->rc < 0) atomic_fetch_add_explicit(&sh->errors, 1, memory_order_relaxed);
+        else atomic_store_explicit(&sh->state[o->id], (o->version << 1) | 1, memory_order_release);
+        atomic_fetch_add_explicit(&sh->writes, 1, memory_order_relaxed);
+      }
     }
   }
   free(ver);
@@ -253,19 +346,21 @@ static void *reader_main(void *p) {
  * @param l1_bits,l2_bits private cache sizes of the odd readers (0,0 = none).
  * @param scan KV_SCAN_SWAR or KV_SCAN_SSE2, set while no thread runs.
  * @param pin 1: even readers pin and hold records (the Download model).
+ * @param batch 1: odd writers use the batched write API (writer_batch_main),
+ *        even writers the per-write one, against the same keys' readers.
  */
 static void run_phase(const char *name, uint64_t capacity, uint32_t nids, uint32_t nstable,
                       uint32_t nw, uint32_t nr, uint32_t seconds, uint32_t l1_bits,
-                      uint32_t l2_bits, int scan, int pin) {
+                      uint32_t l2_bits, int scan, int pin, int batch) {
   uint8_t seed[16];
   uint64_t s = 99;
   rng_fill(&s, seed, 16);
-  Shared sh = {.nids = nids, .nstable = nstable, .nwriters = nw, .seconds = seconds,
+  Shared sh = {.nids = nids, .nstable = nstable, .nwriters = nw, .nreaders = nr, .seconds = seconds,
                .l1_bits = l1_bits, .l2_bits = l2_bits, .pin = (uint32_t)pin};
   sh.state = calloc(nids, sizeof *sh.state);
   CHECK(sh.state != NULL);
   CHECK(kv_set_scan_mode(scan) >= 0);
-  sh.t = kv_store_create(capacity, nr, seed, 0);
+  sh.t = kv_store_create(capacity, nr + nw, seed, 0); /* + a slot per (batched) writer */
   CHECK(sh.t != NULL);
   /* Few generation slots on purpose: unrelated keys share them, which must
    * only cost misses. Enabled for every phase (writers bump either way). */
@@ -287,7 +382,8 @@ static void run_phase(const char *name, uint64_t capacity, uint32_t nids, uint32
   }
   for (uint32_t i = 0; i < nw; i++) {
     args[nr + i] = (ThreadArg){&sh, i};
-    pthread_create(&th[nr + i], NULL, writer_main, &args[nr + i]);
+    pthread_create(&th[nr + i], NULL, (batch && (i & 1)) ? writer_batch_main : writer_main,
+                   &args[nr + i]);
   }
   sleep(seconds);
   atomic_store(&sh.stop, 1);
@@ -299,7 +395,12 @@ static void run_phase(const char *name, uint64_t capacity, uint32_t nids, uint32
    * still wait, so drain in a loop: a busy host can end a phase with tens of
    * thousands in limbo. With every reader offline each call makes progress;
    * the cap only guards against a store that stopped freeing. */
-  for (int round = 0; round < 1000 && kv_store_reclaim(sh.t) > 0; round++) {
+  for (int round = 0; round < 1000; round++) {
+    /* The global limbo, then every slot's own (batched writers retired into
+     * theirs; their owners have exited, so draining them from here is safe). */
+    uint64_t left = kv_store_reclaim(sh.t);
+    for (uint32_t r = 0; r < nr + nw; r++) left += kv_store_reclaim_local(sh.t, r, 4096);
+    if (left == 0) break;
   }
   KvStats st;
   kv_store_stats(sh.t, &st);
@@ -356,16 +457,23 @@ static void run_phase(const char *name, uint64_t capacity, uint32_t nids, uint32
 /** Entry point. @return 0 when no invariant was violated. */
 int main(void) {
   /* capacity = 5 * 32768 => up to 83% index load; ids > capacity => ENOSPC churn */
-  run_phase("near-full", 163840, 180000, 20000, 4, 8, 4, 0, 0, KV_SCAN_SWAR, 0);
-  run_phase("hot-keys", 1024, 16, 4, 4, 8, 2, 0, 0, KV_SCAN_SWAR, 0);
+  run_phase("near-full", 163840, 180000, 20000, 4, 8, 4, 0, 0, KV_SCAN_SWAR, 0, 0);
+  run_phase("hot-keys", 1024, 16, 4, 4, 8, 2, 0, 0, KV_SCAN_SWAR, 0, 0);
   /* Same workloads through private caches (L1 256, L2 4096 entries) and SSE2. */
-  run_phase("near-full/c", 163840, 180000, 20000, 4, 8, 3, 8, 12, KV_SCAN_SSE2, 0);
-  run_phase("hot-keys/c", 1024, 16, 4, 4, 8, 2, 8, 12, KV_SCAN_SSE2, 0);
-  run_phase("hot-keys/l2", 1024, 16, 4, 4, 8, 1, 0, 6, KV_SCAN_SWAR, 0); /* L2 only */
+  run_phase("near-full/c", 163840, 180000, 20000, 4, 8, 3, 8, 12, KV_SCAN_SSE2, 0, 0);
+  run_phase("hot-keys/c", 1024, 16, 4, 4, 8, 2, 8, 12, KV_SCAN_SSE2, 0, 0);
+  run_phase("hot-keys/l2", 1024, 16, 4, 4, 8, 1, 0, 6, KV_SCAN_SWAR, 0, 0); /* L2 only */
   /* Download model: pinned records outlive constant replacement (hot keys:
    * nearly every pinned record is retired while held, so most pins end in a
    * deferral) and relocation churn near full load. */
-  run_phase("hot-keys/pin", 1024, 16, 4, 4, 8, 2, 0, 0, KV_SCAN_SSE2, 1);
-  run_phase("near-full/pin", 163840, 180000, 20000, 4, 8, 2, 0, 0, KV_SCAN_SWAR, 1);
+  run_phase("hot-keys/pin", 1024, 16, 4, 4, 8, 2, 0, 0, KV_SCAN_SSE2, 1, 0);
+  run_phase("near-full/pin", 163840, 180000, 20000, 4, 8, 2, 0, 0, KV_SCAN_SWAR, 1, 0);
+  /* Batched writers (ADR 0011) beside per-write ones: relocation churn near
+   * full load and -ENOSPC, hot keys hit several times per batch, then the
+   * same through private caches (freshness) and with pinning readers. */
+  run_phase("near-full/b", 163840, 180000, 20000, 4, 8, 3, 0, 0, KV_SCAN_SSE2, 0, 1);
+  run_phase("hot-keys/b", 1024, 16, 4, 4, 8, 2, 0, 0, KV_SCAN_SWAR, 0, 1);
+  run_phase("hot-keys/bc", 1024, 16, 4, 4, 8, 2, 8, 12, KV_SCAN_SSE2, 0, 1);
+  run_phase("hot-keys/bp", 1024, 16, 4, 4, 8, 2, 0, 0, KV_SCAN_SSE2, 1, 1);
   return test_finish("test_store_mt");
 }

@@ -99,6 +99,12 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
   - **Writes (E2, 100% SET):** 2.23M SET/s, which is 0.87× Redis, 0.90×
     Dragonfly and 0.60× Garnet.
   - **50/50 mix:** level with Garnet (0.99×).
+  - **Both lines describe 0.2.0.**
+    [ADR 0011](adr/0011-batched-writes-per-worker-reclamation.md)
+    (unreleased) has since made writes faster. Against 0.2.0, each server
+    alone at 4 workers: 2.61× on 100% SET and 1.77× on 50/50
+    ([results](../benchmarks/results/2026-11-15-write-batching/README.md)).
+    Both lines stay until the comparison with the other stores is re-run.
   - **16 KiB values:** 0.50× Garnet and 0.48× Memcached. This is a known
     regression (CHANGELOG, Known issues).
   - **Tail latency at fixed load (E4):** Valkey's p99 is lower.
@@ -212,11 +218,20 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
   - **More than 4 cores is unmeasured.** kvbench's gRPC client tops out
     near 9.3M requests/s. At 8 cores KvNode reached 9.72M GET/s while its
     cores were only 69% busy.
-- **Not claimed:** linear scaling, or any scaling of writes.
+- **Not claimed:** linear scaling, or scaling of writes in the standard
+  suite.
   - Writes are serialized by one lock (ADR 0003).
-  - In a store-level probe, total Put throughput fell from 4.51M/s with
-    one writer to 2.07–2.24M/s with four to seven
-    ([golden-services P3](proposals/golden-services.md)).
+  - **Per-write locking (0.2.0):** in a store-level probe, total Put
+    throughput fell from 4.51M/s with one writer to 2.07–2.24M/s with four
+    to seven ([golden-services P3](proposals/golden-services.md)).
+  - **Batched writes (ADR 0011, unreleased)** take the lock once per batch
+    of up to 64 writes.
+    - At the store level (`bench_write`): 5.42M → 12.58M/s from 1 to 4
+      threads (2.32×), falling back to 6.89M at 7.
+    - End to end, each server alone (`solo.sh`): 0.78M → 3.21M SET/s from
+      1 to 4 workers, in one session on a loaded host
+      ([results](../benchmarks/results/2026-11-15-write-batching/README.md)).
+    - The standard suite has not measured it yet.
 
 ## 8. Thread-safe by construction
 
@@ -228,6 +243,8 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
   - **The design:** [ADR 0003](adr/0003-concurrency-model.md).
   - **`server/tests/test_store_mt.c`:** 8 readers and 4 writers, with
     relocations near a full table and constant reclamation. Zero errors.
+    Since ADR 0011, four more phases run batched writers beside per-write
+    ones, under the same reader checks.
   - **The end-to-end concurrency and streaming-race phases of `make itest`:**
     errors 0 and torn 0 on every build. The CI log shows them.
   - **The .NET `ConcurrentCallsOverOneClientStayConsistent` test.**

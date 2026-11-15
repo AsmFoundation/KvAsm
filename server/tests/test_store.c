@@ -21,6 +21,18 @@
  *     pins; unpinning a live or still-in-limbo record frees nothing early;
  *     a thousand pins grow and shrink the pin table; destroy frees deferred
  *     records.
+ *  9. Batched writes (ADR 0011): the random workload of test 1 applied in
+ *     batches of 1..64 between kv_store_write_begin and kv_store_write_end
+ *     with the *_locked functions, keys repeated within a batch; return
+ *     codes in order, the final state, the slot's own limbo kept short by
+ *     write_end's reclamation, exact memory accounting once the slot is
+ *     drained; -ENOSPC leaves the record with the caller untouched.
+ * 10. The record cache (ADR 0011): a record reclaimed in a slot is handed
+ *     back by that slot's next allocation of the same chunk class (and not
+ *     of another class, nor above the largest class); the per-class cap
+ *     sends the excess to free(); cached blocks are not counted in mem_used;
+ *     destroy frees what is still cached (checked under ASan-free builds by
+ *     the accounting and by the absence of crashes).
  */
 #include "kvnode_abi.h"
 #include "test_common.h"
@@ -434,6 +446,256 @@ static void test_pins(void) {
   kv_store_destroy(t);
 }
 
+/** One write of a batch in test_batched_model. */
+typedef struct {
+  uint32_t id;
+  int put;          /**< 1: Put (rec holds the new value), 0: Delete */
+  KvRec *rec;       /**< the Put's filled record; NULL for a Delete */
+  uint32_t vlen;    /**< the Put's value length */
+  uint8_t val[MAXV];
+  uint8_t key[64];
+  size_t klen;
+  uint64_t h[2];
+} BatchOp;
+
+/**
+ * Test 9: batched writes (ADR 0011) against the model.
+ *
+ * The same random workload as test 1, but every write goes through the
+ * server's batch path: a batch of 1..64 Puts and Deletes is prepared outside
+ * the mutex (records allocated and filled with kv_store_rec_alloc), then
+ * applied in order between kv_store_write_begin and kv_store_write_end with
+ * kv_store_put_locked / kv_store_delete_locked. Batches often hit one key
+ * several times, so the order within a batch is checked too: each locked
+ * call must return what the model says at that point, and the final state
+ * must be the model's. Gets between batches see every write of the batch.
+ * At the end: counts, limbo and the exact memory accounting, as in test 1 —
+ * which catches a record that a batch published but never retired, or a
+ * reclamation step write_end skipped.
+ */
+static void test_batched_model(void) {
+  uint8_t seed[16] = {9, 1};
+  static ModelEntry model[NIDS];
+  memset(model, 0, sizeof model);
+  KvTable *t = kv_store_create(NIDS * 2, 1, seed, 0);
+  CHECK(t != NULL);
+  kv_qsbr_online(t, 0);
+  static BatchOp ops[64];
+  uint64_t s = 4242, live = 0, bytes = 0, batches = 0, writes = 0;
+  for (int round = 0; round < 6000; round++) {
+    uint32_t n = 1 + (uint32_t)(rng_next(&s) % 64);
+    /* Prepare outside the mutex, as kv_grpc_dispatch does. Ids are drawn from
+     * a narrow window half the time, so one batch often touches a key twice. */
+    for (uint32_t i = 0; i < n; i++) {
+      BatchOp *o = &ops[i];
+      uint32_t span = (rng_next(&s) & 1) ? 64 : NIDS;
+      o->id = (uint32_t)(rng_next(&s) % span);
+      o->klen = make_key(o->id, o->key);
+      kv_store_hash(t, o->key, o->klen, o->h);
+      o->put = (uint32_t)(rng_next(&s) % 10) < 7;
+      o->rec = NULL;
+      if (o->put) {
+        o->vlen = (uint32_t)(rng_next(&s) % MAXV);
+        rng_fill(&s, o->val, o->vlen);
+        o->rec = kv_store_rec_alloc_local(t, 0, o->key, o->klen, o->vlen);
+        CHECK(!kv_is_err(o->rec));
+        if (kv_is_err(o->rec)) return;
+        memcpy((uint8_t *)kv_rec_value(o->rec), o->val, o->vlen);
+      }
+    }
+    kv_store_write_begin(t);
+    for (uint32_t i = 0; i < n; i++) {
+      BatchOp *o = &ops[i];
+      ModelEntry *m = &model[o->id];
+      if (o->put) {
+        int64_t rc = kv_store_put_locked(t, 0, o->rec, o->h[0], o->h[1]);
+        CHECK(rc == (m->present ? 0 : 1));
+        if (!m->present) { live++; } else { bytes -= rec_size(o->klen, m->vlen); }
+        bytes += rec_size(o->klen, o->vlen);
+        m->present = 1;
+        m->vlen = o->vlen;
+        memcpy(m->val, o->val, o->vlen);
+      } else {
+        int64_t rc = kv_store_delete_locked(t, 0, o->key, o->klen, o->h[0], o->h[1]);
+        CHECK(rc == (m->present ? 1 : 0));
+        if (m->present) { live--; bytes -= rec_size(o->klen, m->vlen); }
+        m->present = 0;
+      }
+    }
+    kv_store_write_end(t, 0);
+    batches++;
+    writes += n;
+    /* Between batches: a few gets, and the reader's quiescent announcement
+     * that lets reclamation (driven by write_end) free retired records. */
+    for (int g = 0; g < 8; g++) {
+      uint32_t id = (uint32_t)(rng_next(&s) % NIDS);
+      uint8_t key[64];
+      size_t klen = make_key(id, key);
+      expect_get(t, key, klen, model[id].present, model[id].val, model[id].vlen);
+    }
+    kv_qsbr_quiescent(t, 0);
+  }
+  for (uint32_t id = 0; id < NIDS; id++) {
+    uint8_t key[64];
+    size_t klen = make_key(id, key);
+    expect_get(t, key, klen, model[id].present, model[id].val, model[id].vlen);
+  }
+  /* Reclamation keeps pace with batched writes as it did with single ones:
+   * with the reader announcing quiescent states between batches, limbo must
+   * stay short (a write_end that skipped its steps would leave ~writes). */
+  KvStats mid;
+  kv_store_stats(t, &mid);
+  CHECK(mid.limbo_count < 4096);
+  kv_qsbr_offline(t, 0);
+  /* Batched writes retired into slot 0's own limbo (this thread's), so the
+   * global sweep alone would leave them: drain both. */
+  for (int round = 0; round < 1000; round++) {
+    uint64_t left = kv_store_reclaim(t) + kv_store_reclaim_local(t, 0, 4096);
+    if (left == 0) break;
+  }
+  KvStats st;
+  kv_store_stats(t, &st);
+  CHECK_EQ_U64(st.count, live);
+  CHECK_EQ_U64(st.limbo_count, 0);
+  CHECK_EQ_U64(st.mem_used, bytes);
+  printf("  batched: %llu batches, %llu writes, %llu live, limbo before drain %llu\n",
+         (unsigned long long)batches, (unsigned long long)writes, (unsigned long long)st.count,
+         (unsigned long long)mid.limbo_count);
+
+  /* -ENOSPC under the mutex leaves the record with the caller, unchanged;
+   * rec_free returns its reservation. An empty batch (n = 0) is legal. */
+  KvTable *f = kv_store_create(1, 1, seed, 0); /* room for exactly one key; slot 0 */
+  KvRec *a = kv_store_rec_alloc(f, "a", 1, 1), *b = kv_store_rec_alloc(f, "b", 1, 1);
+  CHECK(!kv_is_err(a) && !kv_is_err(b));
+  if (kv_is_err(a) || kv_is_err(b)) return;
+  memcpy((uint8_t *)kv_rec_value(a), "1", 1);
+  memcpy((uint8_t *)kv_rec_value(b), "2", 1);
+  uint64_t ha[2], hb[2];
+  kv_store_hash(f, "a", 1, ha);
+  kv_store_hash(f, "b", 1, hb);
+  kv_store_write_begin(f);
+  CHECK(kv_store_put_locked(f, 0, a, ha[0], ha[1]) == 1);
+  CHECK(kv_store_put_locked(f, 0, b, hb[0], hb[1]) == -ENOSPC);
+  CHECK(kv_store_delete_locked(f, 0, "b", 1, hb[0], hb[1]) == 0);  /* never stored */
+  kv_store_write_end(f, 0);
+  CHECK(b->key_len == 1 && kv_rec_value(b)[0] == '2');          /* untouched */
+  kv_store_rec_free(f, b);
+  CHECK_EQ_U64(mem_used(f), rec_size(1, 1));
+  kv_store_write_begin(f);                                       /* an empty hold */
+  kv_store_write_end(f, 0);
+  expect_get(f, (const uint8_t *)"a", 1, 1, (const uint8_t *)"1", 1);
+  expect_get(f, (const uint8_t *)"b", 1, 0, NULL, 0);
+  kv_store_destroy(f);
+  kv_store_destroy(t);
+}
+
+/**
+ * Retires and reclaims one record through slot 0, so that it lands in the
+ * slot's record cache: publish it, replace it, then end the grace period.
+ * @param t     store (slot 0 is this thread's, offline)
+ * @param key   key bytes   @param klen  key length
+ * @param vlen  value length of the record that gets cached
+ * @returns the record that was reclaimed (now cached or freed)
+ */
+static KvRec *cycle_into_cache(KvTable *t, const void *key, size_t klen, size_t vlen) {
+  uint64_t h[2];
+  kv_store_hash(t, key, klen, h);
+  KvRec *old = kv_store_rec_alloc_local(t, 0, key, klen, vlen);
+  KvRec *repl = kv_store_rec_alloc_local(t, 0, key, klen, 1);
+  CHECK(!kv_is_err(old) && !kv_is_err(repl));
+  memset((uint8_t *)kv_rec_value(old), 'o', vlen);
+  memset((uint8_t *)kv_rec_value(repl), 'r', 1);
+  kv_store_write_begin(t);
+  CHECK(kv_store_put_locked(t, 0, old, h[0], h[1]) >= 0);
+  CHECK(kv_store_put_locked(t, 0, repl, h[0], h[1]) == 0);   /* old is retired */
+  kv_store_write_end(t, 0);
+  /* Slot 0 is offline and no reader is online: the next forced pass frees. */
+  CHECK(kv_store_reclaim_local(t, 0, 4096) == 0);
+  return old;
+}
+
+/** Test 10: the per-slot record cache. */
+static void test_record_cache(void) {
+  uint8_t seed[16] = {10, 1};
+  KvTable *t = kv_store_create(4096, 1, seed, 0);
+  CHECK(t != NULL);
+  if (!t) return;
+  /* 24-byte header + 8-byte key + 100-byte value = 132 bytes: chunk 144. */
+  KvRec *cached = cycle_into_cache(t, "cache-k1", 8, 100);
+  KvRec *again = kv_store_rec_alloc_local(t, 0, "cache-k2", 8, 100);
+  CHECK(again == cached);                                     /* the same block back */
+  CHECK(again->key_len == 8 && memcmp(again->data, "cache-k2", 8) == 0);
+  CHECK(again->val_len == 100);
+  /* A size in the same chunk class (132 + 8 = 140 -> still 144) fits it;
+   * a size in another class must not get it. */
+  kv_store_rec_free(t, again);                                /* plain free: not cached */
+  cached = cycle_into_cache(t, "cache-k3", 8, 100);
+  KvRec *bigger = kv_store_rec_alloc_local(t, 0, "cache-k4", 8, 200);   /* chunk 240 */
+  CHECK(bigger != cached);
+  KvRec *same_class = kv_store_rec_alloc_local(t, 0, "cache-k5", 8, 104); /* 136: chunk 144 */
+  CHECK(same_class == cached);
+  memset((uint8_t *)kv_rec_value(same_class), 'x', 104);      /* fits: no overflow */
+  kv_store_rec_free(t, bigger);
+  kv_store_rec_free(t, same_class);
+  /* Above the largest class (1,032 bytes) nothing is cached. */
+  KvRec *large = cycle_into_cache(t, "cache-k6", 8, 2000);
+  KvRec *large2 = kv_store_rec_alloc_local(t, 0, "cache-k7", 8, 2000);
+  CHECK(!kv_is_err(large2));
+  (void)large;   /* freed, not cached: whatever malloc returns is fine */
+  kv_store_rec_free(t, large2);
+  /* The per-class cap: retire 300 records of one class (chunk 144) with no
+   * allocation of that class in between — the replacements are 1-byte values
+   * (chunk 48) — so the cache keeps 256 of them and frees the other 44. The
+   * next 256 allocations of the class must all be those cached blocks. */
+  enum { NCAP = 300 };
+  static KvRec *olds[NCAP];
+  static KvRec *got[256];
+  char ck[16];
+  for (int i = 0; i < NCAP; i++) {
+    int kl = snprintf(ck, sizeof ck, "cap%05d", i);
+    uint64_t h[2];
+    kv_store_hash(t, ck, (size_t)kl, h);
+    olds[i] = kv_store_rec_alloc_local(t, 0, ck, (size_t)kl, 100);
+    CHECK(!kv_is_err(olds[i]));
+    if (kv_is_err(olds[i])) return;
+    kv_store_write_begin(t);
+    CHECK(kv_store_put_locked(t, 0, olds[i], h[0], h[1]) == 1);
+    kv_store_write_end(t, 0);
+  }
+  for (int i = 0; i < NCAP; i++) {
+    int kl = snprintf(ck, sizeof ck, "cap%05d", i);
+    uint64_t h[2];
+    kv_store_hash(t, ck, (size_t)kl, h);
+    KvRec *r = kv_store_rec_alloc_local(t, 0, ck, (size_t)kl, 1);
+    CHECK(!kv_is_err(r));
+    if (kv_is_err(r)) return;
+    kv_store_write_begin(t);
+    CHECK(kv_store_put_locked(t, 0, r, h[0], h[1]) == 0);
+    kv_store_write_end(t, 0);
+  }
+  CHECK(kv_store_reclaim_local(t, 0, 4096) == 0);
+  int from_cache = 0;
+  for (int i = 0; i < 256; i++) {
+    got[i] = kv_store_rec_alloc_local(t, 0, "probe", 5, 100);   /* 132 bytes: chunk 144 */
+    CHECK(!kv_is_err(got[i]));
+    for (int j = 0; j < NCAP; j++) {
+      if (got[i] == olds[j]) {
+        from_cache++;
+        break;
+      }
+    }
+  }
+  CHECK(from_cache == 256);
+  for (int i = 0; i < 256; i++) kv_store_rec_free(t, got[i]);
+  KvStats st;
+  kv_store_stats(t, &st);
+  CHECK_EQ_U64(st.limbo_count, 0);
+  /* Live: 1 record per cycled key (its 1-byte replacement), 24 + 8 + 1. */
+  CHECK_EQ_U64(st.count, 300 + 3);
+  CHECK_EQ_U64(st.mem_used, (300 + 3) * rec_size(8, 1));
+  kv_store_destroy(t);                                        /* frees the cached blocks */
+}
+
 /** Entry point. @return 0 when every check passed. */
 int main(void) {
   test_model();
@@ -443,5 +705,7 @@ int main(void) {
   test_qsbr();
   test_write_once();
   test_pins();
+  test_batched_model();
+  test_record_cache();
   return test_finish("test_store");
 }

@@ -10,6 +10,19 @@
 ;     serialized by one futex mutex. Record allocation and copying happen
 ;     BEFORE taking the mutex, so the critical section is only the index
 ;     update plus bounded reclamation.
+;   * A batch of writes may share one acquisition (ADR 0011): the server's
+;     workers allocate and fill each Put's record (kv_store_rec_alloc) and
+;     prefetch every write's buckets and old record while parsing a read,
+;     then apply them all between kv_store_write_begin and
+;     kv_store_write_end with kv_store_put_locked / kv_store_delete_locked.
+;     The mutex changes hands once per batch, and the index updates under it
+;     hit warm cache lines instead of stalling every other writer on DRAM.
+;     Retirement and reclamation leave the mutex entirely: the records a
+;     hold unlinks go to the writer's own QSBR slot, are stamped with one
+;     epoch increment after the unlock, and are freed by that writer from
+;     its slot's own limbo (slot_reclaim) — in parallel with other writers.
+;     The global limbo below remains for the per-write functions (snapshot
+;     load, Upload's publish, tests).
 ;   * A replaced or deleted record is never freed immediately: readers on
 ;     other cores may still be reading it. It is "retired" into a FIFO limbo
 ;     list stamped with the current epoch; once every online reader has
@@ -99,6 +112,12 @@ global kv_store_rec_free
 global kv_store_publish
 global kv_store_pin
 global kv_store_unpin
+global kv_store_write_begin
+global kv_store_write_end
+global kv_store_put_locked
+global kv_store_delete_locked
+global kv_store_reclaim_local
+global kv_store_rec_alloc_local
 
 %define PIN_HASH_MUL        0x9E3779B97F4A7C15  ; Fibonacci hashing of record pointers
 %define PIN_MIN_SLOTS       16                  ; first pin table (grows by doubling)
@@ -216,13 +235,15 @@ kv_store_create:
     jmp     .prefault
 .prefaulted:
 
-    ; QSBR reader slots, one cache line each (at least one, never read if 0)
+    ; QSBR reader slots (at least one, never read if 0): the shared observed
+    ; line plus the owner's private reclamation lines (QsbrSlot, ADR 0011),
+    ; zeroed = offline, empty limbo, nothing pending.
     mov     rax, r13
     test    rax, rax
     jnz     .have_readers
     mov     eax, 1
 .have_readers:
-    shl     rax, 6
+    imul    rax, rax, QsbrSlot_size
     mov     rbp, rax
     mov     edi, 64
     mov     rsi, rbp
@@ -287,10 +308,12 @@ kv_store_destroy:
     test    rdi, rdi
     jz      .none
     push    rbx
+    push    rbp                         ; walks the record-cache classes
     push    r12
     push    r13
     push    r14
     push    r15
+    sub     rsp, 8                      ; 6 pushes + 8: rsp 16-aligned for calls
     mov     rbx, rdi
     mov     r12, [rbx + Table.buckets]
     test    r12, r12
@@ -319,18 +342,62 @@ kv_store_destroy:
     mov     r12, [rbx + Table.limbo_head]
 .limbo_next:
     test    r12, r12
-    jz      .pins
+    jz      .slots
     mov     r13, [r12 + Rec.next]
     mov     rdi, r12
     call    free wrt ..plt
     mov     r12, r13
     jmp     .limbo_next
+.slots:
+    ; Each slot's own limbo (ADR 0011): records its owner's batched writes
+    ; retired and the owner had not freed yet. Every owner is gone by now
+    ; (main destroys the store after joining the workers), so nothing else
+    ; touches these lists. A partly created store may have no slots.
+    mov     r14, [rbx + Table.readers]
+    test    r14, r14
+    jz      .pins
+    mov     r15, [rbx + Table.n_readers]
+.slot_next:
+    test    r15, r15
+    jz      .pins
+    mov     r12, [r14 + QsbrSlot.limbo_head]
+.slot_rec:
+    test    r12, r12
+    jz      .slot_cache
+    mov     r13, [r12 + Rec.next]
+    mov     rdi, r12
+    call    free wrt ..plt
+    mov     r12, r13
+    jmp     .slot_rec
+.slot_cache:
+    ; Then the slot's record cache: freed records kept for reuse, one list
+    ; per class through Rec.next; rbp walks the classes.
+    xor     ebp, ebp
+.cache_class:
+    cmp     ebp, REC_CLASSES
+    jae     .slot_done
+    mov     r12, [r14 + QsbrSlot.cache_head + rbp*8]
+.cache_rec:
+    test    r12, r12
+    jz      .cache_next
+    mov     r13, [r12 + Rec.next]
+    mov     rdi, r12
+    call    free wrt ..plt
+    mov     r12, r13
+    jmp     .cache_rec
+.cache_next:
+    inc     ebp
+    jmp     .cache_class
+.slot_done:
+    add     r14, QsbrSlot_size
+    dec     r15
+    jmp     .slot_next
 .pins:
     ; A record whose grace period ended while pinned is in neither the index
-    ; nor limbo: its deferred pin entry is its only owner. (A pinned record
-    ; still live or still in limbo was freed above, and its entry is not
-    ; deferred, so nothing is freed twice.) Normally empty: main destroys the
-    ; store after every worker — and so every Download — is gone.
+    ; nor any limbo: its deferred pin entry is its only owner. (A pinned
+    ; record still live or still in a limbo was freed above, and its entry is
+    ; not deferred, so nothing is freed twice.) Normally empty: main destroys
+    ; the store after every worker — and so every Download — is gone.
     mov     r12, [rbx + Table.pins]
     test    r12, r12
     jz      .scratch
@@ -360,10 +427,12 @@ kv_store_destroy:
     call    free wrt ..plt
     mov     rdi, rbx
     call    free wrt ..plt
+    add     rsp, 8
     pop     r15
     pop     r14
     pop     r13
     pop     r12
+    pop     rbp
     pop     rbx
 .none:
     ret
@@ -617,14 +686,17 @@ kv_store_delete:
     ret
 
 ; =============================================================================
-; kv_store_reclaim — maintenance: free every retired record whose grace
-; period has ended.
+; kv_store_reclaim — maintenance: free every record in the GLOBAL limbo whose
+; grace period has ended.
 ;
 ; @param  rdi  Table*
-; @returns rax = number of records still waiting in limbo afterwards.
+; @returns rax = number of records still waiting in the global limbo
+;          afterwards.
 ; @remarks Writes normally drain limbo incrementally; call this periodically
 ;          (e.g. from a worker timer) so memory is returned even when writes
-;          stop. Takes the writer mutex.
+;          stop. Takes the writer mutex. It does not touch the slots' own
+;          limbos (ADR 0011): those are their owners' unsynchronized state,
+;          reclaimed by kv_store_write_end and kv_store_reclaim_local.
 ; =============================================================================
 kv_store_reclaim:
     push    rbx
@@ -683,6 +755,24 @@ kv_store_stats:
     mov     [rsi + KvStats.pinned], rax
     mov     rax, [rdi + Table.pin_deferred]
     mov     [rsi + KvStats.deferred], rax
+    ; Since ADR 0011 most retired records wait in their writer's own slot,
+    ; and that slot frees them: limbo and freed add every slot's counters
+    ; (racy reads of owner state, as approximate as the rest of this set).
+    mov     r8, [rdi + Table.readers]
+    test    r8, r8
+    jz      .out                        ; a partly created store
+    mov     r9, [rdi + Table.n_readers]
+.slot:
+    test    r9, r9
+    jz      .out
+    mov     rax, [r8 + QsbrSlot.limbo_count]
+    add     [rsi + KvStats.limbo_count], rax
+    mov     rax, [r8 + QsbrSlot.freed]
+    add     [rsi + KvStats.freed], rax
+    add     r8, QsbrSlot_size
+    dec     r9
+    jmp     .slot
+.out:
     ret
 
 ; =============================================================================
@@ -698,7 +788,7 @@ kv_store_stats:
 kv_qsbr_online:
     mov     rax, [rdi + Table.readers]
     mov     esi, esi
-    shl     rsi, 6
+    imul    rsi, rsi, QsbrSlot_size     ; slot address (QsbrSlot is 640 bytes)
     mov     rcx, [rdi + Table.epoch]
     xchg    [rax + rsi + QsbrSlot.observed], rcx
     ret
@@ -716,7 +806,7 @@ kv_qsbr_online:
 kv_qsbr_quiescent:
     mov     rax, [rdi + Table.readers]
     mov     esi, esi
-    shl     rsi, 6
+    imul    rsi, rsi, QsbrSlot_size     ; slot address (QsbrSlot is 640 bytes)
     mov     rcx, [rdi + Table.epoch]
     mov     [rax + rsi + QsbrSlot.observed], rcx
     ret
@@ -733,7 +823,7 @@ kv_qsbr_quiescent:
 kv_qsbr_offline:
     mov     rax, [rdi + Table.readers]
     mov     esi, esi
-    shl     rsi, 6
+    imul    rsi, rsi, QsbrSlot_size     ; slot address (QsbrSlot is 640 bytes)
     mov     qword [rax + rsi + QsbrSlot.observed], 0
     ret
 
@@ -825,13 +915,18 @@ inval_bump:
 ;
 ; @param  rdi  Table*   @param rsi  Rec* (already unlinked from the index)
 ; @returns nothing. Clobbers rax, rcx.
-; @remarks Stamps the record with the current epoch, then advances the epoch
-;          with XCHG — the full fence that orders the unlink before any later
-;          scan of reader slots (see the file header).
+; @remarks Advances the epoch E -> E+1 with LOCK XADD and stamps the record
+;          with E: the locked instruction is the full fence that orders the
+;          unlink before any later scan of reader slots (see the file header).
+;          Why an atomic increment and not load + XCHG: since ADR 0011 the
+;          writers' slots also advance the epoch outside the mutex
+;          (kv_store_write_end), and a load + store pair could then move the
+;          epoch backwards between them.
 ; =============================================================================
 store_retire:
-    mov     rax, [rdi + Table.epoch]
     mov     qword [rsi + Rec.next], 0
+    mov     eax, 1
+    lock xadd [rdi + Table.epoch], rax  ; rax = E, the epoch before the increment
     mov     [rsi + Rec.aux], rax
     mov     rcx, [rdi + Table.limbo_tail]
     test    rcx, rcx
@@ -843,8 +938,6 @@ store_retire:
 .linked:
     mov     [rdi + Table.limbo_tail], rsi
     inc     qword [rdi + Table.limbo_count]
-    inc     rax
-    xchg    [rdi + Table.epoch], rax
     ret
 
 ; =============================================================================
@@ -1047,6 +1140,189 @@ kv_store_rec_alloc:
     ret
 
 ; =============================================================================
+; kv_store_rec_alloc_local — kv_store_rec_alloc for a worker, served from
+; its slot's record cache when it can be (ADR 0011).
+;
+; @param  rdi  Table*   @param esi  the caller's own QSBR slot id
+; @param  rdx  key      @param rcx  key len
+; @param  r8   value len (the value area is left uninitialized)
+; @returns rax = Rec* with header and key written (the value area is at
+;          data + align8(key_len)), or -E2BIG / -ENOMEM: kv_store_rec_alloc's
+;          contract, and the record is published, abandoned (kv_store_rec_free)
+;          or later freed exactly like one of its records.
+; @remarks A record of up to 1,032 bytes comes from the slot's cache of
+;          records its own reclamation freed — LIFO, so the most recently
+;          freed and warmest one — or else from malloc asked for its class's
+;          whole chunk, so a later request of the same class fits the block
+;          whoever ends up caching it. Bigger records are malloc'd exactly.
+;          Only the slot's owner may call this: the cache is unsynchronized.
+;          The memory reservation is kv_store_rec_alloc's LOCK XADD; a cached
+;          block is not counted while it waits, like free memory.
+; =============================================================================
+kv_store_rec_alloc_local:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8                      ; [0] record size; 6 pushes + 8: aligned
+    mov     rbx, rdi                    ; Table*
+    mov     ebp, esi                    ; slot id
+    mov     r12, rdx                    ; key
+    mov     r13, rcx                    ; key len
+    mov     r14, r8                     ; value len
+    mov     eax, MAX_FIELD_LEN
+    cmp     r13, rax
+    ja      .e2big
+    cmp     r14, rax
+    ja      .e2big
+    lea     r15, [r13 + 7]
+    and     r15, -8                     ; key area, padded to 8
+    lea     rax, [r15 + r14 + Rec_size]
+    mov     [rsp], rax
+    ; Reserve first, as kv_store_rec_alloc does, so concurrent writers cannot
+    ; overshoot the limit between check and allocation.
+    mov     rcx, rax
+    lock xadd [rbx + Table.mem_used], rcx
+    add     rcx, rax
+    cmp     rcx, [rbx + Table.mem_limit]
+    ja      .nomem_release
+    mov     rdi, [rsp]
+    call    rec_class                   ; rax = class or -1, rdx = chunk bytes
+    test    rax, rax
+    js      .malloc_exact               ; above the cached classes
+    mov     r8, rax                     ; class
+    mov     r9, rdx                     ; chunk
+    mov     rdi, rbx
+    mov     esi, ebp
+    call    slot_of                     ; rax = QsbrSlot* (clobbers only rax)
+    mov     rcx, [rax + QsbrSlot.cache_head + r8*8]
+    test    rcx, rcx
+    jz      .malloc_class
+    mov     rdx, [rcx + Rec.next]       ; pop the warmest
+    mov     [rax + QsbrSlot.cache_head + r8*8], rdx
+    dec     dword [rax + QsbrSlot.cache_count + r8*4]
+    sub     [rax + QsbrSlot.cache_bytes], r9
+    mov     rax, rcx
+    jmp     .fill
+.malloc_class:
+    lea     rdi, [r9 - 8]               ; the class's whole chunk, glibc's usable size
+    call    malloc wrt ..plt
+    test    rax, rax
+    jz      .nomem_release
+    jmp     .fill
+.malloc_exact:
+    mov     rdi, [rsp]
+    call    malloc wrt ..plt
+    test    rax, rax
+    jz      .nomem_release
+.fill:
+    mov     qword [rax + Rec.next], 0
+    mov     qword [rax + Rec.aux], 0
+    mov     [rax + Rec.key_len], r13d
+    mov     [rax + Rec.val_len], r14d
+    test    r13, r13
+    jz      .out
+    ; Zero the last word of the padded key area before copying the key, so
+    ; padding bytes are deterministic (never stale heap or cached contents).
+    mov     qword [rax + Rec.data + r15 - 8], 0
+    mov     r14, rax                    ; (the value length is stored already)
+    lea     rdi, [rax + Rec.data]
+    mov     rsi, r12
+    mov     rdx, r13
+    call    memcpy wrt ..plt
+    mov     rax, r14
+    jmp     .out
+.nomem_release:
+    mov     rcx, [rsp]
+    neg     rcx
+    lock xadd [rbx + Table.mem_used], rcx
+    mov     rax, -ENOMEM
+    jmp     .out
+.e2big:
+    mov     rax, -E2BIG
+.out:
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; rec_class — the record-cache class of an allocation size. Internal, leaf.
+; @param  rdi  bytes requested (Rec header + padded key + value)
+; @returns rax = class (0 .. REC_CLASSES-1), or -1 when the size is above the
+;          cached classes; rdx = glibc's chunk size for the request.
+; @remarks glibc rounds every request to a chunk of max(32, align16(n + 8))
+;          bytes and its usable size is the chunk minus 8, so two requests
+;          with the same chunk size fit each other's blocks: the class is the
+;          chunk size. This binary links glibc statically, so the rounding is
+;          fixed with it; blocks this store asks for itself are requested at
+;          the full chunk anyway (kv_store_rec_alloc_local).
+; =============================================================================
+rec_class:
+    lea     rdx, [rdi + 8 + 15]
+    and     rdx, -16
+    mov     eax, 32
+    cmp     rdx, rax
+    cmovb   rdx, rax                    ; glibc's minimum chunk
+    mov     rax, rdx
+    shr     rax, 4
+    sub     rax, 2                      ; 32 -> 0, 48 -> 1, ..., 1040 -> 63
+    cmp     rax, REC_CLASSES
+    jb      .ok
+    mov     rax, -1
+.ok:
+    ret
+
+; =============================================================================
+; slot_cache_put — keep a freed record in the slot's record cache, or free
+; it. Internal; the caller owns the slot, and the record is past its grace
+; period (no reader can reach it).
+; @param  rdi  QsbrSlot*   @param rsi  Rec*
+; @param  rdx  its size (Rec header + padded key + value)
+; @returns nothing. Clobbers the caller-saved registers.
+; @remarks Kept only within the caps (REC_CACHE_PER_CLASS records per class,
+;          REC_CACHE_BYTES per slot), so a worker that frees much more than
+;          it allocates of some size hands the excess back to glibc instead
+;          of hoarding it. The link goes into Rec.next of the dead record.
+; =============================================================================
+slot_cache_put:
+    push    rbx
+    push    r12
+    sub     rsp, 8                      ; 2 pushes + 8: rsp 16-aligned for the call
+    mov     rbx, rdi
+    mov     r12, rsi
+    mov     rdi, rdx
+    call    rec_class                   ; rax = class or -1, rdx = chunk bytes
+    test    rax, rax
+    js      .free
+    cmp     dword [rbx + QsbrSlot.cache_count + rax*4], REC_CACHE_PER_CLASS
+    jae     .free
+    mov     rcx, [rbx + QsbrSlot.cache_bytes]
+    add     rcx, rdx
+    cmp     rcx, REC_CACHE_BYTES
+    ja      .free
+    mov     [rbx + QsbrSlot.cache_bytes], rcx
+    mov     rcx, [rbx + QsbrSlot.cache_head + rax*8]
+    mov     [r12 + Rec.next], rcx
+    mov     [rbx + QsbrSlot.cache_head + rax*8], r12
+    inc     dword [rbx + QsbrSlot.cache_count + rax*4]
+    jmp     .out
+.free:
+    mov     rdi, r12
+    call    free wrt ..plt
+.out:
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
 ; kv_store_rec_free — abandon a record from kv_store_rec_alloc that was never
 ; published (a failed, cancelled or interrupted upload).
 ;
@@ -1146,6 +1422,464 @@ kv_store_publish:
     pop     r12
     pop     rbx
     ret
+
+; =============================================================================
+; kv_store_write_begin — take the writer mutex for a batch of writes.
+;
+; @param  rdi  Table*
+; @returns nothing; returns once the caller holds the writer mutex.
+; @remarks The batched write path (grpc.asm kv_grpc_run_batch, ADR 0011): a
+;          worker applies every Put and Delete of one read under ONE
+;          acquisition with kv_store_put_locked / kv_store_delete_locked,
+;          then calls kv_store_write_end. Why: per-write locking moves the
+;          mutex's cache line between cores on every write and serializes
+;          each write's cache misses behind it (a store probe fell from 4.51M
+;          puts/s with one writer to 2.07M with four, golden-services P3).
+;          Only index updates happen under the mutex: the records a hold
+;          replaces are handed to the caller's QSBR slot and retired and
+;          freed by kv_store_write_end after the mutex is released. Hold it
+;          briefly — every other writer waits meanwhile — and for at most
+;          SLOT_PENDING_MAX writes (more still work, but the excess is retired
+;          the old way, under the mutex). Not recursive. Clobbers the
+;          caller-saved registers.
+; =============================================================================
+kv_store_write_begin:
+    lea     rdi, [rdi + Table.wlock]
+    jmp     kv_mutex_lock wrt ..plt
+
+; =============================================================================
+; slot_of — the address of QSBR slot `rid`. Internal, leaf.
+; @param  rdi  Table*   @param esi  slot id (< n_readers)
+; @returns rax = QsbrSlot*. Clobbers nothing else.
+; =============================================================================
+slot_of:
+    mov     eax, esi
+    imul    rax, rax, QsbrSlot_size
+    add     rax, [rdi + Table.readers]
+    ret
+
+; =============================================================================
+; slot_pend — hand a record the current hold unlinked to the caller's slot,
+; to be retired once the hold ends. Internal; the caller holds the writer
+; mutex.
+; @param  rdi  Table*   @param esi  slot id   @param rdx  Rec* (unlinked)
+; @returns nothing. Clobbers rax, rcx, rsi.
+; @remarks The record must not be freed before kv_store_write_end retires it
+;          and its grace period passes: readers may still hold it. A full
+;          pending list (a hold of more than SLOT_PENDING_MAX writes) retires
+;          the record into the global limbo instead, under the mutex as before
+;          ADR 0011 — correct, merely slower.
+; =============================================================================
+slot_pend:
+    call    slot_of
+    mov     rcx, [rax + QsbrSlot.pending_n]
+    cmp     rcx, SLOT_PENDING_MAX
+    jae     .global
+    mov     [rax + QsbrSlot.pending + rcx*8], rdx
+    inc     rcx
+    mov     [rax + QsbrSlot.pending_n], rcx
+    ret
+.global:
+    mov     rsi, rdx
+    jmp     store_retire                ; rdi = Table*; clobbers rax, rcx
+
+; =============================================================================
+; kv_store_put_locked — insert or replace; the caller holds the writer mutex
+; (kv_store_write_begin).
+;
+; @param  rdi  Table*
+; @param  esi  the caller's QSBR slot id (the same for the whole hold)
+; @param  rdx  Rec* from kv_store_rec_alloc, key and value fully written
+; @param  rcx  h1   @param r8  h2 (kv_store_hash of the record's key)
+; @returns rax = 1 if the key was created, 0 if an existing value was
+;          replaced — the store owns the record in both cases — or -ENOSPC
+;          if the key is new and the store is at capacity: the record is then
+;          still the caller's, to free with kv_store_rec_free.
+; @remarks Same order as kv_store_publish (hcache.asm's proof needs it): the
+;          index update publishes the record with one pointer store, then the
+;          key's invalidation generation is bumped, and only after that can
+;          the replaced record ever be freed — it goes to the slot's pending
+;          list now and is retired by kv_store_write_end. Prefetch the key's
+;          buckets and old record first (kv_store_prefetch, then
+;          kv_store_prefetch_records), or this stalls on them while every
+;          other writer waits.
+; =============================================================================
+kv_store_put_locked:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 8                      ; 4 pushes + 8: rsp 16-aligned for calls
+    mov     rbx, rdi
+    mov     r12d, esi                   ; slot id
+    mov     r13, rcx                    ; h1, for the invalidation bump
+    mov     rsi, rdx                    ; kv_cuckoo_upsert(Table*, rec, h1, h2)
+    mov     rdx, rcx
+    mov     rcx, r8
+    call    kv_cuckoo_upsert wrt ..plt
+    test    rax, rax
+    js      .out                        ; -ENOSPC: the record stays the caller's
+    jz      .created
+    mov     r14, rax                    ; replaced: the old record
+    mov     rdi, rbx
+    mov     rsi, r13
+    call    inval_bump
+    mov     rdi, rbx
+    mov     esi, r12d
+    mov     rdx, r14
+    call    slot_pend                   ; retired when the hold ends
+    xor     eax, eax
+    jmp     .out
+.created:
+    mov     eax, 1
+.out:
+    add     rsp, 8
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
+; kv_store_delete_locked — remove a key; the caller holds the writer mutex
+; (kv_store_write_begin).
+;
+; @param  rdi  Table*   @param esi  the caller's QSBR slot id
+; @param  rdx  key      @param rcx  key len
+; @param  r8   h1       @param r9   h2 (kv_store_hash of the key)
+; @returns rax = 1 if the key existed and was removed, 0 if it was absent.
+; @remarks kv_store_delete without the mutex and the reclamation. The
+;          unlinked record goes to the slot's pending list (see
+;          kv_store_put_locked), never freed here: readers that found it may
+;          still be copying its value.
+; =============================================================================
+kv_store_delete_locked:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 8                      ; 4 pushes + 8: rsp 16-aligned for calls
+    mov     rbx, rdi
+    mov     r12d, esi                   ; slot id
+    mov     r13, r8                     ; h1, for the invalidation bump
+    mov     rsi, rdx                    ; kv_cuckoo_remove(Table*, key, len, h1, h2)
+    mov     rdx, rcx
+    mov     rcx, r8
+    mov     r8, r9
+    call    kv_cuckoo_remove wrt ..plt
+    test    rax, rax
+    jz      .out                        ; absent: 0
+    mov     r14, rax                    ; the unlinked record
+    mov     rdi, rbx
+    mov     rsi, r13
+    call    inval_bump
+    mov     rdi, rbx
+    mov     esi, r12d
+    mov     rdx, r14
+    call    slot_pend
+    mov     eax, 1
+.out:
+    add     rsp, 8
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
+; kv_store_write_end — release the writer mutex, then retire the hold's
+; unlinked records into the caller's slot and free what is due there.
+;
+; @param  rdi  Table*
+; @param  esi  the caller's QSBR slot id (as passed to this hold's *_locked
+;              calls)
+; @returns nothing; the mutex is released.
+; @remarks Everything after the unlock runs in parallel with other writers:
+;          * ONE LOCK XADD advances the epoch E -> E+1 for the whole hold, and
+;            every record the hold unlinked is stamped E and appended to the
+;            slot's own limbo. The unlinks happened before the unlock and the
+;            locked increment is a full fence after them, so a reader that
+;            loads an epoch > E loads it after the unlinks and cannot reach
+;            any of them — the file header's QSBR argument, with the stamp
+;            taken after the unlinks instead of under the mutex. (Per-write
+;            retirement advanced the epoch once per record, and every
+;            advance invalidated the epoch line every worker reads at each
+;            quiescent announcement.)
+;          * slot_reclaim then frees up to 2n + RECLAIM_BATCH of the slot's
+;            records whose grace period ended: twice the hold's own n, so a
+;            backlog drains while the steady state keeps pace.
+; =============================================================================
+kv_store_write_end:
+    push    rbx
+    push    r12
+    push    r13                         ; 3 pushes: rsp 16-aligned for calls
+    mov     rbx, rdi
+    mov     r12d, esi
+    lea     rdi, [rbx + Table.wlock]
+    call    kv_mutex_unlock wrt ..plt
+    mov     rdi, rbx
+    mov     esi, r12d
+    call    slot_of
+    mov     r13, rax                    ; QsbrSlot*, owned by this thread
+    mov     rcx, [r13 + QsbrSlot.pending_n]
+    test    rcx, rcx
+    jz      .reclaim                    ; nothing replaced (inserts, misses)
+    mov     eax, 1
+    lock xadd [rbx + Table.epoch], rax  ; rax = E: the stamp for the whole hold
+    xor     edx, edx                    ; i
+    mov     r8, [r13 + QsbrSlot.limbo_tail]
+.append:
+    mov     rsi, [r13 + QsbrSlot.pending + rdx*8]
+    mov     qword [rsi + Rec.next], 0   ; the record's line is warm: the hold
+    mov     [rsi + Rec.aux], rax        ; just compared its key
+    test    r8, r8
+    jz      .first
+    mov     [r8 + Rec.next], rsi
+    jmp     .linked
+.first:
+    mov     [r13 + QsbrSlot.limbo_head], rsi
+.linked:
+    mov     r8, rsi
+    inc     rdx
+    cmp     rdx, rcx
+    jb      .append
+    mov     [r13 + QsbrSlot.limbo_tail], r8
+    add     [r13 + QsbrSlot.limbo_count], rcx
+    mov     qword [r13 + QsbrSlot.pending_n], 0
+.reclaim:
+    lea     rdx, [rcx*2 + RECLAIM_BATCH]
+    mov     rdi, rbx
+    mov     rsi, r13
+    xor     ecx, ecx                    ; rate-limited: this runs after every hold
+    call    slot_reclaim
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
+; kv_store_reclaim_local — free records of one slot's limbo whose grace
+; period ended (ADR 0011).
+;
+; @param  rdi  Table*   @param esi  slot id   @param rdx  budget: the most
+;              records to free (or hand to a pin) in this call
+; @returns rax = records still waiting in the slot's limbo.
+; @remarks Only the slot's owner may call this — or anyone once the owner is
+;          gone (tests drain finished writers' slots this way): the slot's
+;          limbo is unsynchronized owner state. Workers call it from their
+;          housekeeping tick, so the records of a worker that stopped writing
+;          come back within a tick; kv_store_write_end runs the same code
+;          after every hold. Unlike that call, this one always rescans the
+;          readers (forced, as kv_store_reclaim is): the rate limit counts
+;          calls, and at one tick per second it would hold an idle worker's
+;          last records for SCAN_EVERY seconds. kv_store_reclaim covers only
+;          the global limbo.
+; =============================================================================
+kv_store_reclaim_local:
+    push    rbx
+    push    r12
+    push    r13                         ; 3 pushes: rsp 16-aligned for calls
+    mov     rbx, rdi
+    mov     r13, rdx
+    call    slot_of
+    mov     r12, rax
+    mov     rdi, rbx
+    mov     rsi, r12
+    mov     rdx, r13
+    mov     ecx, 1                      ; forced: always rescan the readers
+    call    slot_reclaim
+    mov     rax, [r12 + QsbrSlot.limbo_count]
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; =============================================================================
+; slot_reclaim — free records of one slot's limbo whose grace period ended.
+; Internal; the caller owns the slot (or the owner is gone).
+;
+; @param  rdi  Table*   @param rsi  QsbrSlot*
+; @param  rdx  budget: the most records to free or defer in this call
+; @param  ecx  force: 1 = rescan the readers whenever the cached bound does
+;              not cover the head; 0 = rate-limited (the per-hold call)
+; @returns rax = records freed.
+; @remarks The bound is the slot's own: min(epoch at scan time, observed
+;          epoch of every online reader), rescanned when the head's stamp is
+;          not below the cached bound — when forced, else at most every
+;          SCAN_EVERY calls unless SCAN_LIMBO_FORCE records wait. The cap by the scan-time epoch
+;          matters as in store_reclaim_step: records stamped after the scan
+;          wait for the next one even with no reader online.
+;          Frees happen OUTSIDE the writer mutex (workers reclaim in
+;          parallel), one record ahead prefetched so the next stamp check does
+;          not stall after free() returns; the bytes come back to mem_used
+;          with one LOCK XADD per call.
+;          Pins: a record a Download pinned must be deferred, not freed, and
+;          the pin table is writer-mutex state. pin_used is read AFTER the
+;          reader scan: a Download pins under the mutex before its worker's
+;          next quiescent announcement, and x86-TSO makes that worker's
+;          stores visible in program order, so once the scan has seen the
+;          announcement that ended a record's grace period, that pin is
+;          visible too (and a record past its grace period can no longer be
+;          found, hence never newly pinned). With no pin anywhere — the
+;          common case — records are freed without the mutex; otherwise this
+;          call takes the mutex and checks each one, as store_reclaim_step
+;          does. Bounded: budget records plus one O(n_readers) scan.
+; =============================================================================
+slot_reclaim:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8                      ; [0] next record (pinned path); aligned
+    mov     rbx, rdi                    ; Table*
+    mov     r12, rsi                    ; QsbrSlot*
+    mov     r13, rdx                    ; budget
+    xor     r14d, r14d                  ; bytes freed
+    xor     r15d, r15d                  ; records freed
+    mov     rax, [r12 + QsbrSlot.limbo_head]
+    test    rax, rax
+    jz      .done
+    mov     rdx, [rax + Rec.aux]
+    cmp     rdx, [r12 + QsbrSlot.min_epoch]
+    jb      .bound_ok                   ; the cached bound already covers the head
+    test    ecx, ecx
+    jnz     .scan                       ; forced (the housekeeping tick)
+    cmp     qword [r12 + QsbrSlot.limbo_count], SCAN_LIMBO_FORCE
+    jae     .scan
+    cmp     qword [r12 + QsbrSlot.scan_budget], 0
+    je      .scan
+    dec     qword [r12 + QsbrSlot.scan_budget]
+    jmp     .done
+.scan:
+    mov     qword [r12 + QsbrSlot.scan_budget], SCAN_EVERY
+    mov     r8, [rbx + Table.epoch]     ; cap (see remarks)
+    mov     r9, [rbx + Table.readers]
+    mov     r10, [rbx + Table.n_readers]
+.scan_next:
+    test    r10, r10
+    jz      .scan_done
+    mov     r11, [r9 + QsbrSlot.observed]
+    test    r11, r11
+    jz      .scan_skip                  ; offline readers hold nothing
+    cmp     r11, r8
+    cmovb   r8, r11
+.scan_skip:
+    add     r9, QsbrSlot_size
+    dec     r10
+    jmp     .scan_next
+.scan_done:
+    mov     [r12 + QsbrSlot.min_epoch], r8
+.bound_ok:
+    cmp     qword [rbx + Table.pin_used], 0 ; after the scan (see remarks)
+    jne     .pinned_path
+
+    ; ---- no pin anywhere: free without the mutex ----
+    mov     rbp, [r12 + QsbrSlot.limbo_head]
+.free_next:
+    test    rbp, rbp
+    jz      .emptied
+    test    r13, r13
+    jz      .stop
+    mov     rcx, [rbp + Rec.aux]
+    cmp     rcx, [r12 + QsbrSlot.min_epoch]
+    jae     .stop                       ; FIFO: everything behind is newer
+    dec     r13
+    mov     rdi, rbp
+    mov     rbp, [rbp + Rec.next]
+    test    rbp, rbp
+    jz      .no_prefetch
+    prefetcht0 [rbp]                    ; the next stamp, while free() runs
+.no_prefetch:
+    mov     ecx, [rdi + Rec.key_len]
+    add     rcx, 7
+    and     rcx, -8
+    mov     edx, [rdi + Rec.val_len]
+    add     rcx, rdx
+    add     rcx, Rec_size
+    add     r14, rcx
+    inc     r15
+    mov     rsi, rdi                    ; the record
+    mov     rdx, rcx                    ; its size
+    mov     rdi, r12                    ; this slot
+    call    slot_cache_put              ; kept for this slot's next allocation, or freed
+    jmp     .free_next
+.stop:
+    mov     [r12 + QsbrSlot.limbo_head], rbp
+    jmp     .account
+.emptied:
+    mov     qword [r12 + QsbrSlot.limbo_head], 0
+    mov     qword [r12 + QsbrSlot.limbo_tail], 0
+.account:
+    sub     [r12 + QsbrSlot.limbo_count], r15
+    add     [r12 + QsbrSlot.freed], r15
+    test    r14, r14
+    jz      .done
+    neg     r14
+    lock xadd [rbx + Table.mem_used], r14
+.done:
+    mov     rax, r15
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+    ; ---- some record is pinned somewhere: check each under the mutex ----
+.pinned_path:
+    lea     rdi, [rbx + Table.wlock]
+    call    kv_mutex_lock wrt ..plt
+    mov     rbp, [r12 + QsbrSlot.limbo_head]
+.p_next:
+    test    rbp, rbp
+    jz      .p_emptied
+    test    r13, r13
+    jz      .p_stop
+    mov     rcx, [rbp + Rec.aux]
+    cmp     rcx, [r12 + QsbrSlot.min_epoch]
+    jae     .p_stop
+    dec     r13
+    mov     rax, [rbp + Rec.next]
+    mov     [rsp], rax                  ; pin_find clobbers rcx, rdx, r8, r9
+    mov     rdi, rbx
+    mov     rsi, rbp
+    call    pin_find
+    test    rax, rax
+    jz      .p_free
+    ; Pinned: its pin entry takes it over (deferred) and the last
+    ; kv_store_unpin frees it; its bytes stay counted until then.
+    mov     qword [rax + PinEnt.deferred], 1
+    inc     qword [rbx + Table.pin_deferred]
+    dec     qword [r12 + QsbrSlot.limbo_count]
+    jmp     .p_advance
+.p_free:
+    mov     ecx, [rbp + Rec.key_len]
+    add     rcx, 7
+    and     rcx, -8
+    mov     edx, [rbp + Rec.val_len]
+    add     rcx, rdx
+    add     rcx, Rec_size
+    add     r14, rcx
+    inc     r15
+    mov     rdi, rbp
+    call    free wrt ..plt
+.p_advance:
+    mov     rbp, [rsp]
+    jmp     .p_next
+.p_stop:
+    mov     [r12 + QsbrSlot.limbo_head], rbp
+    jmp     .p_unlock
+.p_emptied:
+    mov     qword [r12 + QsbrSlot.limbo_head], 0
+    mov     qword [r12 + QsbrSlot.limbo_tail], 0
+.p_unlock:
+    lea     rdi, [rbx + Table.wlock]
+    call    kv_mutex_unlock wrt ..plt
+    jmp     .account
 
 ; =============================================================================
 ; kv_store_pin — keep a record alive across quiescent states (Download).

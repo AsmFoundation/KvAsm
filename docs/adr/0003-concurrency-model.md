@@ -8,6 +8,15 @@
   input, rather than per connection. That cuts co-located clients'
   wakeups: +4% to +26% GET/s on one core, depending on how many
   connections each client thread owns.
+  Amended by [ADR 0011](0011-batched-writes-per-worker-reclamation.md):
+  writers are still serialized by the one mutex below, but a worker now
+  applies a whole read's Puts and Deletes under one hold (at most 64
+  writes), and retirement and reclamation left the mutex. Each worker
+  retires the records its writes replaced into its own QSBR slot, with one
+  epoch increment per hold, frees them there, and reuses them through a
+  per-worker record cache. Writes now scale with workers at the store
+  level, where per-write locking made them slower with every thread
+  added.
 - **Date:** 2026-09-26
 
 ## Context

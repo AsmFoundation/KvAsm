@@ -66,6 +66,30 @@ int64_t kv_store_publish(KvTable *t, KvRec *rec, uint64_t h1, uint64_t h2);
 int64_t kv_store_pin(KvTable *t, const KvRec *rec); /* 0 or -ENOMEM */
 void kv_store_unpin(KvTable *t, const KvRec *rec);
 
+/* store.asm — batched writes (ADR 0011): many writes under one mutex hold.
+ * Records come from kv_store_rec_alloc (value filled by the caller); between
+ * write_begin and write_end the caller holds the writer mutex, so only the
+ * *_locked functions may run there (kv_store_put/delete/publish would
+ * deadlock). rid is the caller's own QSBR slot (one per thread): the records
+ * a hold replaces go there, and write_end — after releasing the mutex —
+ * retires them with one epoch increment and frees what is due in that slot.
+ * At most 64 writes per hold keep every retirement outside the mutex. */
+void kv_store_write_begin(KvTable *t);
+/** @return 1 created, 0 replaced (the store owns rec), -ENOSPC (rec stays the caller's). */
+int64_t kv_store_put_locked(KvTable *t, uint32_t rid, KvRec *rec, uint64_t h1, uint64_t h2);
+/** @return 1 removed, 0 absent. */
+int64_t kv_store_delete_locked(KvTable *t, uint32_t rid, const void *key, size_t len,
+                               uint64_t h1, uint64_t h2);
+void kv_store_write_end(KvTable *t, uint32_t rid);
+/** Frees up to budget records of slot rid's own limbo whose grace period ended;
+ * only that slot's owner may call it (or anyone once the owner is gone).
+ * @return records still waiting in that slot. */
+uint64_t kv_store_reclaim_local(KvTable *t, uint32_t rid, uint64_t budget);
+/** kv_store_rec_alloc served from slot rid's record cache (records up to 1,032
+ * bytes its own reclamation freed); only the slot's owner may call it. */
+KvRec *kv_store_rec_alloc_local(KvTable *t, uint32_t rid, const void *key, size_t klen,
+                                size_t vlen);
+
 /** @return 1 when p is one of the negative -errno values the store returns. */
 static inline int kv_is_err(const void *p) {
   return (intptr_t)p < 0 && (intptr_t)p >= -4095;

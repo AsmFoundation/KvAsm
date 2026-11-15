@@ -57,17 +57,27 @@ flowchart LR
 4. **Execute.** At END_STREAM the worker validates the 5-byte gRPC framing,
    decodes the protobuf (zero-copy, `proto.asm`), checks limits and hashes
    the key (SipHash-2-4-128, secret key).
-   - Puts, Deletes and health checks execute right there.
-   - **GETs are deferred:** their two candidate buckets are prefetched
-     immediately, and the stream joins the connection's batch.
-   - When the whole read has been parsed, `kv_grpc_run_batch` runs two
-     passes over the batch: prefetch the first three cache lines of each
-     candidate record, then look up and answer. The cache misses of up to a
-     whole read's GETs thus overlap instead of stalling one after another
-     (ADR 0005: +28% at 4 cores and +35% at 1 core, paired medians; the
-     third line covers a whole record of up to 144 bytes, so the value copy
-     no longer waits on DRAM).
-   - A GET the peer resets within the same read is freed, not answered.
+   - Health checks execute right there.
+   - **Gets, Puts and Deletes are deferred:** their two candidate buckets are
+     prefetched immediately, and the stream joins the connection's batch. A
+     Put's record is allocated (from the worker's own record cache) and
+     filled right away, outside the writer mutex, while the value is hot.
+   - When the whole read has been parsed, `kv_grpc_run_batch` runs three
+     passes over the batch:
+     1. prefetch the first three cache lines of each candidate record (for
+        a write, the old record its update compares);
+     2. apply every Put and Delete, in arrival order, under one hold of the
+        writer mutex (at most 64 writes per hold, ADR 0011);
+     3. look up the Gets and answer every call, in arrival order.
+
+     The cache misses of up to a whole read's calls thus overlap instead of
+     stalling one after another (ADR 0005: +28% at 4 cores and +35% at 1
+     core for GETs; the third line covers a whole record of up to 144
+     bytes, so the value copy no longer waits on DRAM). Writes take effect
+     before the Gets of the same read, as they did when Puts ran at
+     dispatch.
+   - A call the peer resets within the same read is freed, not answered —
+     and a reset Put or Delete is not applied.
 5. **Respond.** HEADERS, then DATA (the message, within the peer's
    flow-control windows), then trailer HEADERS (`grpc-status: 0`). Errors
    are a single Trailers-Only HEADERS frame.
@@ -221,11 +231,22 @@ flowchart LR
   in two steps — reserved (`kv_store_rec_alloc`), filled chunk by chunk,
   then published (`kv_store_publish`) — so a record is still written once
   and never changes after it becomes visible.
-- **Reclamation:** old records go to a limbo list stamped with a global
-  epoch. They are freed once every online worker has announced a quiescent
-  state since then (QSBR). A worker announces between event batches and is
-  offline while it blocks in `epoll_wait`. A record pinned by a Download is
-  deferred to its last unpin instead.
+- **Reclamation:** old records are stamped with the global epoch and freed
+  once every online worker has announced a quiescent state since then
+  (QSBR). A worker announces between event batches and is offline while it
+  blocks in `epoll_wait`. A record pinned by a Download is deferred to its
+  last unpin instead.
+  - **Since ADR 0011 this happens per worker, outside the writer mutex.**
+    The records one mutex hold replaces go to the writing worker's own QSBR
+    slot. After unlocking, the worker advances the epoch once for the whole
+    hold, stamps them, appends them to its slot's own limbo, and frees what
+    is due there.
+  - **Freed records feed the worker's record cache.** It keeps them per size
+    class for its next Puts. Records are allocated by the writing worker and
+    freed by the worker whose write replaced them, so returning them to
+    glibc took another worker's arena lock on nearly every write.
+  - **The global limbo** remains for the per-write functions: snapshot load
+    and Upload's publish.
 
 ## Lifecycle
 
@@ -252,11 +273,11 @@ flowchart LR
 | `server/src/h2n.asm` | native HTTP/2 engine: frames, stream states and map, flow control, precomputed responses, flood defenses |
 | `server/src/hpack.asm` | HPACK decoder (RFC 7541): Huffman FSM, dynamic table, per-field meanings |
 | `server/include/huffman.inc` | the Huffman decoding table, generated and self-verified by `server/tools/gen_huffman.py` |
-| `server/src/grpc.asm` | request logic: body budgets, validation, dispatch, batched GET execution, health service; Upload (decode, reserve, verify, publish) and Download (pin, generated body) |
+| `server/src/grpc.asm` | request logic: body budgets, validation, dispatch, batched execution of Gets, Puts and Deletes (one writer-mutex hold per batch), health service; Upload (decode, reserve, verify, publish) and Download (pin, generated body) |
 | `server/src/pool.asm` | per-worker size-class allocator (malloc-shaped, no locks) |
 | `server/src/proto.asm` | protobuf decode (zero-copy, skips unknown fields), varint encode, and the resumable message-stream decoder `kv_pb_stream_feed` (`server/include/pbstream.inc`) |
 | `server/src/crc32c.asm` | CRC-32C: SSE4.2 and assembly-time slicing-by-8 tables, fused copy + checksum |
-| `server/src/store.asm` | table lifecycle, Put/Delete, write-once records for Upload, Download pins, memory accounting, QSBR |
+| `server/src/store.asm` | table lifecycle, Put/Delete and their batched forms, write-once records for Upload, Download pins, memory accounting, QSBR with per-worker slots (limbo, record cache) |
 | `server/src/cuckoo.asm` | lock-free lookup (SWAR or SSE2 tag scan), insert with BFS displacement, remove, prefetch stages |
 | `server/src/hcache.asm` | optional per-worker private L1/L2 record cache, generation-validated |
 | `server/src/siphash.asm`, `util.asm` | SipHash-2-4-128; exact key compare and SWAR tag match |

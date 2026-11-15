@@ -89,9 +89,50 @@ struc BfsEntry
 endstruc
 
 ; ---- QSBR reader slot (one per reader thread, own cache line) -------------------
+; Replaced records one hold of the writer mutex can hand to its slot
+; (kv_store_put_locked / kv_store_delete_locked); a hold with more falls back
+; to the global limbo. grpc.asm bounds a hold to exactly this many writes.
+%define SLOT_PENDING_MAX    64
+
+; Each slot's record cache (ADR 0011): records its own reclamation freed,
+; kept for its own next allocations (kv_store_rec_alloc_local) instead of
+; going back to glibc. Why: a record is allocated by the worker that wrote
+; it and freed by the worker whose write replaced it, so with several workers
+; nearly every free() crossed threads and took another worker's malloc arena
+; lock — 44% of a worker's user time at 4 workers. Classes are glibc's
+; chunk sizes, 32..1040 bytes in 16-byte steps (records up to 1,032 bytes:
+; a 100-byte value with a 16-byte key is 140); bigger records bypass it.
+; Bounded so a skewed worker cannot hoard memory: per class and per slot.
+%define REC_CLASSES         64
+%define REC_CACHE_PER_CLASS 256
+%define REC_CACHE_BYTES     262144
+
+; One thread's QSBR slot. Line 0 is the shared part: the owner stores its
+; observed epoch there at every quiescent announcement, and every reclaiming
+; thread's reader scan loads it. The rest is PRIVATE to the owner (ADR 0011):
+; the records its batched writes replaced or deleted wait in this slot's own
+; limbo and are freed by the owner, outside the writer mutex — on separate
+; lines, so the owner's limbo bookkeeping never invalidates the line the
+; scans read.
 struc QsbrSlot
-    .observed:  resq 1              ; 0 = offline, else last observed epoch
-    .pad:       resb 56
+    .observed:      resq 1          ; 0 = offline, else last observed epoch
+    .pad:           resb 56
+    ; line 1: owner-private reclamation state
+    .limbo_head:    resq 1          ; oldest retired record (FIFO through Rec.next)
+    .limbo_tail:    resq 1
+    .limbo_count:   resq 1
+    .min_epoch:     resq 1          ; records stamped below this are free-able
+    .scan_budget:   resq 1          ; batches until the next reader scan is due
+    .freed:         resq 1          ; records this slot reclaimed (statistic)
+    .pending_n:     resq 1          ; replaced records of the current mutex hold
+    .pad1:          resq 1
+    ; lines 2-9: those records, retired when the hold ends (kv_store_write_end)
+    .pending:       resq SLOT_PENDING_MAX
+    ; lines 10-22: the record cache, LIFO per class, linked through Rec.next
+    .cache_bytes:   resq 1          ; chunk bytes held (<= REC_CACHE_BYTES)
+    .cache_pad:     resq 7
+    .cache_head:    resq REC_CLASSES
+    .cache_count:   resd REC_CLASSES
 endstruc
 
 ; ---- Table ---------------------------------------------------------------------

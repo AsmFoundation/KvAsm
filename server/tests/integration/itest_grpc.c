@@ -1196,6 +1196,66 @@ static void test_pipelined(Client *cl) {
 }
 
 /**
+ * Writes are applied in arrival order within a batch (ADR 0011).
+ *
+ * Seven calls on one key go out back to back on one connection, none
+ * awaited: Put v1, Put v2, Get, Delete, Get, Put v3, Get. The server batches
+ * the calls one read carries and applies the writes of a batch, in order,
+ * before its Gets — and a read boundary can fall anywhere. So:
+ *   * the writes' answers are fixed whatever the reads: created, replaced,
+ *     deleted, created (any reordering of writes would change one of them);
+ *   * a Get answers from a state at or after every write sent before it —
+ *     possibly also after writes sent after it in the same read, which is
+ *     valid because they were in flight together;
+ *   * the last Get sees v3.
+ * Repeated with fresh keys so different read splits get a chance to occur.
+ * @param cl  connection
+ */
+static void test_batch_order(Client *cl) {
+  enum { N = 7, ROUNDS = 50 };
+  static const char *const kPath[N] = {PATH_PUT, PATH_PUT, PATH_GET, PATH_DELETE,
+                                       PATH_GET, PATH_PUT, PATH_GET};
+  static const char *const kVal[N] = {"v1", "v2", NULL, NULL, NULL, "v3", NULL};
+  static Call calls[N];
+  int writes_ok = 0, gets_ok = 0;
+  for (int round = 0; round < ROUNDS; round++) {
+    char k[64];
+    size_t kl = mkkey(k, sizeof k, "order", (uint64_t)round);
+    Msg msgs[N];
+    for (int i = 0; i < N; i++) {
+      msgs[i] = msg_kv(k, kl, kVal[i], kVal[i] ? 2 : 0);
+      calls[i].defer_at = 0;
+      CHECK(call_submit(cl, &calls[i], "POST", kPath[i], GRPC_CT, NULL, msgs[i].p,
+                        msgs[i].len) == 0);
+    }
+    CHECK(run_until_idle(cl, CALL_TIMEOUT_MS) == 0);
+    Reply r[N];
+    for (int i = 0; i < N; i++) {
+      CHECK(call_ok("batch order", &calls[i]));
+      r[i] = parse_reply(&calls[i]);
+      CHECK(r[i].ok);
+    }
+    /* Writes: exactly the sequential outcomes. */
+    if (r[0].flag == 1 && r[1].flag == 0 && r[3].flag == 1 && r[5].flag == 1) writes_ok++;
+    /* Get 2: v2, absent (after the Delete) or v3. Get 4: absent or v3.
+     * Get 6: v3. Never v1: Put v2 was sent before every Get. */
+#define IS_VAL(rr, s) ((rr).flag && (rr).value_len == 2 && memcmp((rr).value, (s), 2) == 0)
+    int g2 = IS_VAL(r[2], "v2") || !r[2].flag || IS_VAL(r[2], "v3");
+    int g4 = !r[4].flag || IS_VAL(r[4], "v3");
+    int g6 = IS_VAL(r[6], "v3");
+#undef IS_VAL
+    if (g2 && g4 && g6) gets_ok++;
+    for (int i = 0; i < N; i++) {
+      call_free(&calls[i]);
+      free(msgs[i].p);
+    }
+    CHECK(op_delete(cl, k, kl) == 1);
+  }
+  CHECK(writes_ok == ROUNDS);
+  CHECK(gets_ok == ROUNDS);
+}
+
+/**
  * A Put cancelled with RST_STREAM after 32 KiB of a 256 KiB body: the server
  * must release the partial request, store nothing, and keep the connection.
  * @param cl  connection
@@ -4359,6 +4419,7 @@ int main(int argc, char **argv) {
     RUN_ON_MAIN(test_errors(&cl));
     RUN_ON_MAIN(test_health(&cl));
     RUN_ON_MAIN(test_pipelined(&cl));
+    RUN_ON_MAIN(test_batch_order(&cl));
     RUN_ON_MAIN(test_cancel(&cl));
     RUN_ON_MAIN(test_reset_in_batch(&cl));
   }

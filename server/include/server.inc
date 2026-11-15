@@ -233,7 +233,8 @@ endstruc
 ; resp_buf points at static read-only text (never freed), and the response
 ; ends on its last DATA frame: a plain HTTP error (405/415), no gRPC trailers.
 %define ST_STATIC_RESP      32
-; Queued in Conn.batch: answered by kv_grpc_run_batch after the current read.
+; Queued in Conn.batch: executed and answered by kv_grpc_run_batch after the
+; current read (Get, Put and Delete; ADR 0005, ADR 0011).
 %define ST_BATCHED          64
 ; The peer reset a batched stream: run_batch frees it instead of answering.
 %define ST_CLOSED           128
@@ -241,7 +242,7 @@ endstruc
 ; native engine's zero-copy path for a body that arrived whole in one DATA
 ; frame): never freed, never counted in Conn.buffered, and valid only until
 ; the read that carried it has been fully processed — which covers dispatch
-; and the GET batch answered right after it.
+; and the batch (Get, Put, Delete) executed right after it.
 %define ST_BORROWED         256
 ; The response body is generated on demand by kv_grpc_gen_fill instead of
 ; being read from resp_buf (Download: the value is framed straight from its
@@ -267,12 +268,21 @@ struc Stream
     .resp_buf:          resq 1          ; complete gRPC response message (prefix + protobuf)
     .resp_len:          resq 1
     .resp_off:          resq 1
-    ; A batched GET (ST_BATCHED) keeps what its deferred lookup needs.
-    .key:               resq 1          ; points into req_buf
+    ; A batched call (ST_BATCHED: Get, Put or Delete) keeps what its deferred
+    ; store operation needs.
+    .key:               resq 1          ; points into req_buf (Get, Delete)
     .key_len:           resq 1
     .h1:                resq 1
     .h2:                resq 1
     .batch_next:        resq 1
+    ; A batched Put's record, allocated and filled at dispatch, owned by the
+    ; Stream until kv_grpc_run_batch publishes it (then 0). stream_free
+    ; returns an unpublished one (kv_store_rec_free), so a stream reset or a
+    ; connection lost before its batch ran stores nothing and leaks nothing.
+    .wrec:              resq 1
+    ; A batched Put's or Delete's outcome, set under the writer mutex and
+    ; answered after it is released (kv_store_put_locked/_delete_locked).
+    .wres:              resq 1
     ; HTTP/2 stream state, owned by h2n.asm.
     .send_window:       resq 1          ; signed: what the peer lets us send here
     .recv_window:       resq 1          ; signed: what we still let the peer send

@@ -1,0 +1,8 @@
+# faults_set.sh on the original server (0.2.0), 1 worker: page faults and CPU per request.
+# Part 1: 100% SET, default glibc vs heap trimming disabled (trim_threshold/top_pad);
+# single runs each, so the throughput difference between them is not a result.
+env []: 382420 SET/s; minor faults 0.000 per SET, major 0; CPU per SET 2635 ns (user 1412, kernel 1222); RSS 170 -> 170 MiB
+env [GLIBC_TUNABLES=glibc.malloc.trim_threshold=4294967295:glibc.malloc.top_pad=67108864]: 430943 SET/s; minor faults 0.000 per SET, major 0; CPU per SET 2326 ns (user 1056, kernel 1270); RSS 174 -> 174 MiB
+# Part 2: READ_RATIO=1 (100% GET) against READ_RATIO=0 (100% SET)
+read-ratio 1 env []: 675493 req/s; minor faults 0.000 per request, major 0; CPU per request 1503 ns (user 394, kernel 1108); RSS 170 -> 170 MiB
+read-ratio 0 env []: 419743 req/s; minor faults 0.000 per request, major 0; CPU per request 2382 ns (user 1105, kernel 1278); RSS 170 -> 170 MiB

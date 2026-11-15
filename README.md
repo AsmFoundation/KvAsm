@@ -23,8 +23,10 @@ and what is deliberately *not* claimed.
   - 8.84M GET/s on 4 cores: 2.29–3.68× each of them, ahead of every one
     in all ten paired blocks.
   - 1.26× Redis on one core.
-  - It is behind them on writes and on 16 KiB values (see
-    [Performance](#performance)).
+  - In that comparison (0.2.0) it was behind them on writes and on 16 KiB
+    values (see [Performance](#performance)). Writes have since become
+    2.6× faster at 4 workers (ADR 0011, unreleased), not yet compared
+    with the other stores again.
 - **Assembly data structures.** The store is a bucketized cuckoo table of
   64-byte seqlocked buckets. A measured bake-off chose it over chaining and
   a branchless binary trie, both also written in assembly
@@ -41,7 +43,9 @@ and what is deliberately *not* claimed.
 - **Reads scale across cores.** Readers take no lock and write no shared
   memory, and each worker thread owns its connections. Measured from 1 to
   4 cores: 1.76M → 8.84M GET/s.
-  - Writes share one lock.
+  - Writes share one lock, taken once per batch of up to 64 writes
+    ([ADR 0011](docs/adr/0011-batched-writes-per-worker-reclamation.md),
+    unreleased).
   - Above 4 cores the benchmark client saturates first.
 - **Thread-safe by construction.** Reads are lock-free (seqlocked buckets),
   writes are serialized, records are immutable, and reclamation is QSBR. A
@@ -201,8 +205,14 @@ every server in all ten paired blocks):
 - **Per-request floor:** a gRPC health check costs 472 ns of server CPU,
   level with a Redis `PING` (479 ns). With nghttp2 it was 1,086 ns.
 - **Where it is behind:**
-  - writes: 2.23M SETs/s at 4 cores through the single writer lock (0.87×
-    Redis, 0.60× Garnet);
+  - writes, as of 0.2.0: 2.23M SETs/s at 4 cores through the single writer
+    lock (0.87× Redis, 0.60× Garnet).
+    - Since then, [ADR 0011](docs/adr/0011-batched-writes-per-worker-reclamation.md)
+      (unreleased) batches writes and moved their cleanup out of the lock.
+    - Against 0.2.0, each server alone at 4 workers: 2.61× SET/s and
+      1.77× on a 50/50 mix. The server's CPU per SET fell from 3,071 to
+      1,254 ns.
+    - The comparison with the other stores predates it.
   - 16 KiB values: 481k GET/s, half of Garnet's and Memcached's, and 30%
     below the old nghttp2 build (a regression, not yet explained).
 - **At 8 cores the benchmark client is the limit:** kvbench's gRPC client
@@ -296,8 +306,10 @@ Version 0.2.0, the first public release ([CHANGELOG](CHANGELOG.md)).
 - **Clients:** .NET is done. Two more languages are planned. They must
   implement [docs/PROTOCOL.md](docs/PROTOCOL.md), including long-key
   compaction and the snapshot conformance vector.
-- **Next:** the store speedups (8-lane AVX2 hashing, flat-combining writes)
-  and the functions plan, phase by phase, as
+- **Unreleased:** batched writes with per-worker reclamation (ADR 0011).
+- **Next:** the store speedups (8-lane AVX2 hashing; flat combining, if the
+  writer lock becomes the limit again) and the functions plan, phase by
+  phase, as
   [docs/proposals](docs/proposals/functions-plan.md) lays out. Each lands
   with its tests and a paired measurement.
 

@@ -9,6 +9,7 @@
 #            (limits, stalls, drain, fairness), shutdown, idle timeout,
 #            snapshot loading, startup refusals, h2spec, fuzzing
 #   bench    run the full data-structure bake-off (build/bench/bench_ds)
+#   bench-store / bench-write   the store-level lookup and write benchmarks
 #   clean    remove build/
 #
 # Variables:
@@ -83,6 +84,12 @@ BENCH_BIN := $(BUILD)/bench/bench_ds
 # where it verifies every variant's answers; `make bench-store` is the full run.
 BENCH_STORE_BIN := $(BUILD)/bench/bench_store
 
+# Store-level write benchmark (docs/adr/0011): the per-write path against the
+# batched one with slot reclamation, at 1-7 writer threads. Runs in --quick
+# mode in `test`, where it verifies the values and the exact memory
+# accounting after draining every slot; `make bench-write` is the full run.
+BENCH_WRITE_BIN := $(BUILD)/bench/bench_write
+
 # End-to-end tools: an nghttp2-based gRPC client, a snapshot writer, and a
 # black-box HTTP/2 fuzzer (raw frames; decodes responses with hpack.asm).
 ITEST_BIN  := $(BUILD)/tests/itest_grpc
@@ -90,7 +97,7 @@ MKSNAP_BIN := $(BUILD)/tests/mksnap
 FUZZ_BIN   := $(BUILD)/tests/fuzz_h2
 ITEST_DEPS := tests/integration/snapgen.h tests/test_common.h
 
-.PHONY: all test itest bench bench-store clean
+.PHONY: all test itest bench bench-store bench-write clean
 
 all: $(SERVER_BIN)
 
@@ -105,10 +112,11 @@ $(SERVER_BIN): $(CORE_OBJ) $(SERVER_OBJ)
 
 # The bake-off runs in --quick mode as part of `test`: it verifies every
 # answer of every structure, which keeps the benchmark code honest.
-test: $(TEST_BINS) $(BENCH_BIN) $(BENCH_STORE_BIN) $(SERVER_BIN)
+test: $(TEST_BINS) $(BENCH_BIN) $(BENCH_STORE_BIN) $(BENCH_WRITE_BIN) $(SERVER_BIN)
 	@set -e; for t in $(TEST_BINS); do $$t; done
 	@$(BENCH_BIN) --quick > /dev/null && echo "bench_ds --quick: all checks passed"
 	@$(BENCH_STORE_BIN) --quick > /dev/null && echo "bench_store --quick: all checks passed"
+	@$(BENCH_WRITE_BIN) --quick > /dev/null && echo "bench_write --quick: all checks passed"
 
 # bash explicitly: the script may lack its exec bit on a Windows checkout.
 # FUZZ_ITERATIONS sizes run.sh's fuzz phase (a short pass in every build;
@@ -124,7 +132,13 @@ bench: $(BENCH_BIN)
 bench-store: $(BENCH_STORE_BIN)
 	$(BENCH_STORE_BIN)
 
+bench-write: $(BENCH_WRITE_BIN)
+	$(BENCH_WRITE_BIN)
+
 $(BENCH_STORE_BIN): bench/bench_store.c $(CORE_OBJ) tests/test_common.h tests/kvnode_abi.h | $(BUILD)/bench
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(CORE_OBJ) $(LDLIBS) -lm
+
+$(BENCH_WRITE_BIN): bench/bench_write.c $(CORE_OBJ) tests/test_common.h tests/kvnode_abi.h | $(BUILD)/bench
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(CORE_OBJ) $(LDLIBS) -lm
 
 $(BUILD)/obj/%.o: src/%.asm $(INCLUDES) | $(BUILD)/obj

@@ -9,11 +9,15 @@
 ; module does the rest:
 ;   kv_grpc_stream_append   buffer a request body within per-stream and
 ;                           per-connection budgets
-;   kv_grpc_dispatch        END_STREAM => validate framing, decode protobuf,
-;                           run the store operation and answer it (a GET is
-;                           queued in the connection's batch instead)
-;   kv_grpc_run_batch       answer the GETs one read queued, as one
-;                           software-pipelined batch
+;   kv_grpc_dispatch        END_STREAM => validate framing, decode protobuf;
+;                           Get, Put and Delete join the connection's batch
+;                           (a Put's record is allocated and filled here),
+;                           health checks and streaming calls are answered
+;                           here
+;   kv_grpc_run_batch       execute and answer the Gets, Puts and Deletes one
+;                           read queued, as one software-pipelined batch: the
+;                           writes under one hold of the writer mutex
+;                           (ADR 0011), then every answer in arrival order
 ;   kv_grpc_stream_release  unlink and free one Stream
 ;   kv_grpc_free_streams    free every Stream of a connection (teardown)
 ;
@@ -68,6 +72,13 @@ bits 64
 ; First request-buffer size: 240 + the pool's 16-byte header fills a 256-byte
 ; block exactly (a GetRequest is 23 bytes; a Put of a 100-byte value ~130).
 %define MIN_REQ_CAP             240
+; Most writes one hold of the writer mutex applies (batch_apply_writes). A
+; 256 KiB read can carry ~1,500 Puts; applying them all in one hold would make
+; every other worker's writes wait for it. 64 warm index updates hold the
+; mutex for a few microseconds while still amortizing each acquisition over
+; 64 writes. It equals the slot's pending capacity (kvnode.inc), so every
+; record a hold replaces is retired outside the mutex (ADR 0011).
+%define WRITE_HOLD_MAX          SLOT_PENDING_MAX
 
 ; Download chunking: data bytes per response message. 64 KiB keeps every
 ; message far below gRPC clients' default 4 MiB receive limit and gives the
@@ -178,11 +189,14 @@ extern memcpy
 extern kv_keyeq
 extern kv_store_hash
 extern kv_store_get
-extern kv_store_put
-extern kv_store_delete
+extern kv_store_write_begin
+extern kv_store_write_end
+extern kv_store_put_locked
+extern kv_store_delete_locked
 extern kv_store_prefetch
 extern kv_store_prefetch_records
 extern kv_store_rec_alloc
+extern kv_store_rec_alloc_local
 extern kv_store_rec_free
 extern kv_store_publish
 extern kv_store_pin
@@ -412,6 +426,19 @@ stream_free:
     mov     rdi, rbx
     call    xfer_release
 .no_xfer:
+    ; A batched Put whose record was never published — the peer reset the
+    ; stream, the connection died before its batch ran, or the store was full
+    ; — returns it here, with its memory reservation. Published records were
+    ; handed to the store (wrec = 0) and are retired by it instead.
+    mov     rsi, [rbx + Stream.wrec]
+    test    rsi, rsi
+    jz      .no_wrec                    ; every other call: one compare
+    mov     rax, [rbx + Stream.conn]
+    mov     rax, [rax + Conn.worker]
+    mov     rdi, [rax + Worker.table]
+    call    kv_store_rec_free wrt ..plt
+    mov     qword [rbx + Stream.wrec], 0
+.no_wrec:
     test    qword [rbx + Stream.flags], ST_BORROWED
     jnz     .borrowed                   ; points into the read buffer: not ours
     mov     rdi, [rbx + Stream.req_buf]
@@ -579,8 +606,10 @@ stream_unlink_free:
 ;          memory in h2n's output buffer: the engine ends the connection).
 ; @remarks The Stream may be answered and freed before this returns (h2n
 ;          closes a stream whose response is complete), so the caller must
-;          not touch it afterwards; a GET instead joins the connection's
-;          batch and is answered by kv_grpc_run_batch after the read.
+;          not touch it afterwards; a Get, Put or Delete instead joins the
+;          connection's batch and is executed and answered by
+;          kv_grpc_run_batch after the read (a Put's record is built here,
+;          outside the writer mutex; ADR 0011).
 ;          Validation order follows the gRPC HTTP/2 spec: method/content-type
 ;          are HTTP-level (405/415), then routing (UNIMPLEMENTED), then the
 ;          5-byte message framing, then the protobuf payload and field limits.
@@ -669,55 +698,51 @@ kv_grpc_dispatch:
     lea     rcx, [rsp + 40]
     call    kv_store_hash wrt ..plt
 
-    mov     rax, [rbx + Stream.method]
-    cmp     rax, M_GET
-    je      .get
-    cmp     rax, M_PUT
-    je      .put
+    cmp     qword [rbx + Stream.method], M_PUT
+    jne     .defer                      ; Get, Delete: nothing to build first
 
-    ; ---- Delete ----
-    mov     rdi, r14
-    mov     rsi, [rsp + PbKv.key]
-    mov     rdx, [rsp + PbKv.key_len]
-    mov     rcx, [rsp + 40]
-    mov     r8, [rsp + 48]
-    call    kv_store_delete wrt ..plt
-    mov     rdi, rax                    ; 1 => DeleteResponse{deleted=true}
-    jmp     .bool_reply
-
-    ; ---- Put ----
-.put:
+    ; ---- Put: build the record now; the batch publishes it (ADR 0011) ----
+    ; Allocation (with its memory reservation) and both copies happen here,
+    ; outside the writer mutex, while the value is still hot from parsing.
+    ; The record usually comes from this worker's own record cache — records
+    ; its reclamation freed — so no glibc arena lock is shared with the
+    ; worker that will free it.
+    ; Refusals that need no index (value too large, memory limit) are
+    ; answered at once; a full store (-ENOSPC) is only known when the batch
+    ; publishes. From here until it is published the record belongs to the
+    ; Stream: stream_free returns it if the stream or connection dies first.
     mov     rax, [rsp + PbKv.value_len]
     cmp     rax, [r13 + Config.max_value]
     ja      .e_value
+    mov     r8, rax                     ; value length
     mov     rdi, r14
-    mov     rsi, [rsp + PbKv.key]
-    mov     rdx, [rsp + PbKv.key_len]
-    mov     rcx, [rsp + PbKv.value]
-    mov     r8, [rsp + PbKv.value_len]
-    mov     r9, [rsp + 40]
-    sub     rsp, 16
-    mov     rax, [rsp + 16 + 48]
-    mov     [rsp], rax                  ; 7th argument: h2
-    call    kv_store_put wrt ..plt
-    add     rsp, 16
-    cmp     rax, -ENOSPC
-    je      .e_full
+    mov     rax, [r12 + Conn.worker]
+    mov     esi, [rax + Worker.id]      ; this worker's slot: its record cache
+    mov     rdx, [rsp + PbKv.key]
+    mov     rcx, [rsp + PbKv.key_len]
+    call    kv_store_rec_alloc_local wrt ..plt  ; header + key written
     cmp     rax, -ENOMEM
     je      .e_memory
     test    rax, rax
     js      .e_value                    ; -E2BIG
-    mov     rdi, rax                    ; 1 => PutResponse{created=true}
-    jmp     .bool_reply
+    mov     [rbx + Stream.wrec], rax
+    mov     rcx, [rsp + PbKv.key_len]
+    add     rcx, 7
+    and     rcx, -8                     ; the value follows the key padded to 8
+    lea     rdi, [rax + Rec.data + rcx]
+    mov     rsi, [rsp + PbKv.value]
+    mov     rdx, [rsp + PbKv.value_len]
+    call    memcpy wrt ..plt            ; (an empty value copies nothing)
 
-    ; ---- Get: deferred into the connection's batch ----
-    ; The lookup itself runs in kv_grpc_run_batch once the whole read is
-    ; parsed. Here: remember the key (it points into req_buf, which lives as
-    ; long as the Stream, or into the read buffer for a borrowed body, which
-    ; lives until the batch has run) and its hashes, and start loading both
-    ; candidate buckets now, so the cache misses of every GET in this read
-    ; overlap.
-.get:
+    ; ---- Get, Put, Delete: deferred into the connection's batch ----
+    ; The store operation itself runs in kv_grpc_run_batch once the whole
+    ; read is parsed. Here: remember the key (it points into req_buf, which
+    ; lives as long as the Stream, or into the read buffer for a borrowed
+    ; body, which lives until the batch has run) and its hashes, and start
+    ; loading both candidate buckets now, so the cache misses of every call
+    ; in this read overlap — and, for writes, land before the writer mutex
+    ; is taken instead of while every other writer waits on it.
+.defer:
     mov     rax, [rsp + PbKv.key]
     mov     [rbx + Stream.key], rax
     mov     rax, [rsp + PbKv.key_len]
@@ -916,7 +941,8 @@ kv_grpc_dispatch:
     ret
 
 ; =============================================================================
-; kv_grpc_run_batch — answer every GET queued while parsing the last read.
+; kv_grpc_run_batch — execute and answer every Get, Put and Delete queued
+; while parsing the last read.
 ;
 ; @param  rdi  Conn*
 ; @returns eax = 0, or -1 if a response could not be queued (out of memory
@@ -924,21 +950,32 @@ kv_grpc_dispatch:
 ; @remarks Called by kv_h2n_read right after the read's frames were parsed,
 ;          on the connection's thread, while the worker is QSBR-online
 ;          (records stay valid while their values are copied).
-;          Two passes, a software pipeline across requests:
+;          Three passes, a software pipeline across requests:
 ;            1. prefetch the candidate records (the buckets were prefetched at
-;               parse time and have arrived by now);
-;            2. run each lookup — bucket and record lines are warm — and
-;               frame its response.
+;               parse time and have arrived by now) — for a write, the old
+;               record whose key the index update compares;
+;            2. apply every Put and Delete in arrival order under ONE hold of
+;               the writer mutex (batch_apply_writes, ADR 0011) — their lines
+;               are warm, so the mutex is held for a few dozen ns per write
+;               instead of the DRAM misses it used to wait out;
+;            3. run each Get and frame every response, in arrival order.
+;          Writes take effect before the Gets of the same read, as when Puts
+;          ran at dispatch: every call of one read was in flight at once (none
+;          was answered before the read ended), so this order is a valid
+;          linearization (ADR 0005, ADR 0011).
 ;          Streams the peer reset meanwhile (ST_CLOSED) are freed, not
-;          answered. The batch is detached before pass 2, so nothing can
-;          observe a half-processed list.
+;          answered — a reset Put is not applied, and its record is returned
+;          by stream_free. The batch is detached before pass 2, so nothing
+;          can observe a half-processed list.
 ; =============================================================================
 kv_grpc_run_batch:
     push    rbx
     push    rbp
     push    r12
     push    r13
-    push    r14                         ; 5 pushes: rsp 16-aligned for calls
+    push    r14
+    push    r15
+    sub     rsp, 8                      ; 6 pushes + 8: rsp 16-aligned for calls
     mov     r12, rdi
     mov     rbx, [r12 + Conn.batch_head]
     xor     ebp, ebp                    ; result
@@ -946,11 +983,16 @@ kv_grpc_run_batch:
     jz      .out
     mov     rax, [r12 + Conn.worker]
     mov     r13, [rax + Worker.table]
+    xor     r15d, r15d                  ; writes in the batch
 .prefetch:
     mov     rdi, r13
     mov     rsi, [rbx + Stream.h1]
     mov     rdx, [rbx + Stream.h2]
     call    kv_store_prefetch_records wrt ..plt
+    cmp     qword [rbx + Stream.method], M_GET
+    je      .prefetch_next
+    inc     r15                         ; a Put or a Delete
+.prefetch_next:
     mov     rbx, [rbx + Stream.batch_next]
     test    rbx, rbx
     jnz     .prefetch
@@ -958,6 +1000,13 @@ kv_grpc_run_batch:
     xor     eax, eax
     mov     [r12 + Conn.batch_head], rax
     mov     [r12 + Conn.batch_tail], rax
+    test    r15, r15
+    jz      .answer                     ; a read of Gets only: no mutex at all
+    mov     rdi, r13
+    mov     rax, [r12 + Conn.worker]
+    mov     esi, [rax + Worker.id]      ; the worker's QSBR slot takes the old records
+    mov     rdx, rbx
+    call    batch_apply_writes
 .answer:
     mov     r14, [rbx + Stream.batch_next]
     and     qword [rbx + Stream.flags], ~ST_BATCHED
@@ -965,7 +1014,13 @@ kv_grpc_run_batch:
     jnz     .closed
     mov     rdi, r12
     mov     rsi, rbx
+    cmp     qword [rbx + Stream.method], M_GET
+    jne     .write
     call    get_execute
+    jmp     .answered
+.write:
+    call    write_reply
+.answered:
     test    eax, eax
     jz      .next
     mov     ebp, -1                     ; keep answering the rest; report at the end
@@ -980,10 +1035,162 @@ kv_grpc_run_batch:
     jnz     .answer
 .out:
     mov     eax, ebp
+    add     rsp, 8
+    pop     r15
     pop     r14
     pop     r13
     pop     r12
     pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; batch_apply_writes — apply a detached batch's Puts and Deletes, in arrival
+; order, under as few holds of the writer mutex as WRITE_HOLD_MAX allows.
+; Internal.
+;
+; @param  rdi  Table*   @param esi  the worker's QSBR slot id (Worker.id)
+; @param  rdx  first Stream* of the detached batch list
+; @returns nothing. Each write's outcome is left in Stream.wres:
+;          Put 1 created / 0 replaced / -ENOSPC (store full), Delete 1 / 0.
+; @remarks Gets and streams the peer reset (ST_CLOSED) are skipped: a reset
+;          write is not applied (gRPC cancellation is best effort either way,
+;          and nobody waits for its answer). A published Put's record now
+;          belongs to the store (Stream.wrec = 0); a refused one stays with
+;          the Stream, which frees it. Nothing here frames a response or
+;          calls into h2n: the mutex covers index updates only, so its
+;          hold stays short. The records a hold replaces go to the worker's
+;          slot, and kv_store_write_end retires and frees them there after
+;          the unlock (ADR 0011). A batch longer than WRITE_HOLD_MAX writes
+;          releases and retakes the mutex between chunks, so another worker's
+;          writes wait for at most one chunk.
+; =============================================================================
+batch_apply_writes:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14                         ; 5 pushes: rsp 16-aligned for calls
+    mov     r12, rdi                    ; Table*
+    mov     r13d, esi                   ; slot id
+    mov     rbx, rdx                    ; Stream*
+    xor     ebp, ebp                    ; writes applied in the current hold
+    mov     rdi, r12
+    call    kv_store_write_begin wrt ..plt
+.loop:
+    test    rbx, rbx
+    jz      .end
+    mov     rax, [rbx + Stream.method]
+    cmp     rax, M_GET
+    je      .next
+    test    qword [rbx + Stream.flags], ST_CLOSED
+    jnz     .next                       ; reset by the peer: not applied
+    cmp     rax, M_PUT
+    jne     .delete
+    mov     rdi, r12
+    mov     esi, r13d
+    mov     rdx, [rbx + Stream.wrec]
+    mov     rcx, [rbx + Stream.h1]
+    mov     r8, [rbx + Stream.h2]
+    call    kv_store_put_locked wrt ..plt
+    mov     [rbx + Stream.wres], rax
+    test    rax, rax
+    js      .counted                    ; refused: the record stays the Stream's
+    mov     qword [rbx + Stream.wrec], 0    ; published: the store's now
+    jmp     .counted
+.delete:
+    mov     rdi, r12
+    mov     esi, r13d
+    mov     rdx, [rbx + Stream.key]
+    mov     rcx, [rbx + Stream.key_len]
+    mov     r8, [rbx + Stream.h1]
+    mov     r9, [rbx + Stream.h2]
+    call    kv_store_delete_locked wrt ..plt
+    mov     [rbx + Stream.wres], rax
+.counted:
+    inc     rbp
+    cmp     rbp, WRITE_HOLD_MAX
+    jb      .next
+    ; Bound the hold: let other writers in (retiring and freeing this chunk's
+    ; old records in the slot, outside the mutex), then retake it.
+    mov     rdi, r12
+    mov     esi, r13d
+    call    kv_store_write_end wrt ..plt
+    xor     ebp, ebp
+    mov     rdi, r12
+    call    kv_store_write_begin wrt ..plt
+.next:
+    mov     rbx, [rbx + Stream.batch_next]
+    jmp     .loop
+.end:
+    mov     rdi, r12
+    mov     esi, r13d
+    call    kv_store_write_end wrt ..plt
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+; =============================================================================
+; write_reply — answer a batched Put or Delete from its Stream.wres. Internal.
+;
+; @param  rdi  Conn*   @param rsi  Stream* (its write was applied)
+; @returns eax = 0, or -1 if the response could not be queued (out of memory
+;          in h2n's output buffer).
+; @remarks PutResponse{created} / DeleteResponse{deleted}: the bool field as
+;          08 01, or the empty message for false — 5 or 7 bytes built on the
+;          stack and framed by kv_h2n_reply_parts, exactly like dispatch's
+;          immediate replies (no response buffer, no allocation). A Put the
+;          full store refused (-ENOSPC) gets RESOURCE_EXHAUSTED; its record
+;          is freed with the Stream. The Stream may be closed and freed
+;          before this returns.
+; =============================================================================
+write_reply:
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 16                     ; [0..16) message; 3 pushes + 16: aligned
+    mov     r12, rdi                    ; Conn*
+    mov     rbx, rsi                    ; Stream*
+    mov     rax, [rbx + Stream.wres]
+    cmp     rax, -ENOSPC
+    je      .full
+    xor     esi, esi                    ; protobuf payload length
+    test    rax, rax
+    jz      .head                       ; false: the empty message
+    mov     byte [rsp + GRPC_PREFIX], 0x08      ; field 1, wire type varint
+    mov     byte [rsp + GRPC_PREFIX + 1], 1     ; true
+    mov     esi, 2
+.head:
+    lea     r13, [rsi + GRPC_PREFIX]    ; whole message length
+    mov     rdi, rsp
+    call    write_prefix
+    mov     rdi, r12
+    mov     rsi, rbx
+    mov     rdx, rsp
+    mov     rcx, r13
+    xor     r8d, r8d                    ; no body: the head is the message
+    xor     r9d, r9d
+    call    kv_h2n_reply_parts wrt ..plt
+    jmp     .out
+.full:
+    mov     rax, [r12 + Conn.worker]
+    inc     qword [rax + Worker.st_errors]
+    mov     rdi, r12
+    mov     rsi, rbx
+    lea     rdx, [nv_e_full]
+    mov     ecx, 4                      ; :status, content-type, grpc-status, grpc-message
+    call    kv_h2n_reply_headers wrt ..plt
+.out:
+    test    eax, eax
+    jz      .ret
+    mov     eax, -1                     ; normalize, as dispatch does
+.ret:
+    add     rsp, 16
+    pop     r13
+    pop     r12
     pop     rbx
     ret
 

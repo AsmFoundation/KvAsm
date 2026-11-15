@@ -1,0 +1,51 @@
+# profile_set.sh on the step-2 server (batching + slot reclamation, no record cache),
+# 1 worker and 4 workers, 100% SET. User-time samples; head of each list.
+=== B, 1 worker
+SET/s: 727653
+server CPU per SET: 1446 ns (user 484, kernel 962); cores busy 1.05
+    15.85%  [.] slot_reclaim.no_prefetch               -      -            
+     9.56%  [.] _int_malloc                            -      -            
+     8.77%  [.] kv_cuckoo_prefetch_records.sse2_slot   -      -            
+     6.85%  [.] kv_cuckoo_prefetch                     -      -            
+     5.88%  [.] slot_reclaim.free_next                 -      -            
+     4.49%  [.] _int_free_create_chunk                 -      -            
+     3.53%  [.] _int_free_chunk                        -      -            
+     3.46%  [.] kv_siphash128.final                    -      -            
+     1.83%  [.] kv_store_rec_alloc                     -      -            
+     1.67%  [.] free                                   -      -            
+     1.39%  [.] conn_flush.send_pending                -      -            
+     1.39%  [.] malloc                                 -      -            
+     1.36%  [.] worker_main.next_flush                 -      -            
+     1.22%  [.] _int_free_merge_chunk                  -      -            
+     1.08%  [.] batch_apply_writes.loop                -      -            
+     0.95%  [.] kv_grpc_dispatch                       -      -            
+     0.92%  [.] __memmove_avx_unaligned_erms           -      -            
+     0.91%  [.] ..@70.done                             -      -            
+     0.91%  [.] kv_grpc_run_batch.answer               -      -            
+     0.84%  [.] kv_cuckoo_upsert                       -      -            
+
+=== B, 4 workers
+SET/s: 1774665
+server CPU per SET: 2044 ns (user 737, kernel 1307); cores busy 3.63
+    19.25%  [.] _int_malloc                            -      -            
+     8.24%  [.] _int_free_create_chunk                 -      -            
+     6.47%  [.] kv_cuckoo_prefetch_records.sse2_slot   -      -            
+     5.68%  [.] slot_reclaim.no_prefetch               -      -            
+     5.56%  [.] _int_free_chunk                        -      -            
+     4.38%  [.] kv_cuckoo_prefetch                     -      -            
+     3.97%  [.] kv_store_rec_alloc                     -      -            
+     2.94%  [.] malloc                                 -      -            
+     2.55%  [.] kv_siphash128.final                    -      -            
+     2.17%  [.] _int_free_merge_chunk                  -      -            
+     2.17%  [.] free                                   -      -            
+     1.83%  [.] __lll_lock_wait_private                -      -            
+     1.83%  [.] slot_reclaim.free_next                 -      -            
+     1.07%  [.] conn_flush.send_pending                -      -            
+     0.98%  [.] kv_grpc_run_batch.answer               -      -            
+     0.97%  [.] __memmove_avx_unaligned_erms           -      -            
+     0.91%  [.] cuckoo_scan_bucket.next                -      -            
+     0.91%  [.] unlink_chunk.isra.0                    -      -            
+     0.84%  [.] kv_grpc_dispatch                       -      -            
+     0.74%  [.] kv_siphash128.block                    -      -            
+     0.73%  [.] __memset_avx2_unaligned_erms           -      -            
+     0.73%  [.] __lll_lock_wake_private                -      -

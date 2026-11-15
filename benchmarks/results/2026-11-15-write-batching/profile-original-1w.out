@@ -1,0 +1,45 @@
+# profile_set.sh /tmp/kvnode-A 1 10 -- the original server (0.2.0), 1 worker, 100% SET
+# perf cpu-clock samples of user time only (WSL2: no PMU, no kernel symbols); the
+# second line is the user/kernel split from /proc. Head of the symbol list.
+SET/s: 388835
+server CPU per SET: 2711 ns (user 1425, kernel 1286); cores busy 1.05
+    25.68%  [.] cuckoo_scan_bucket.next           -      -            
+    14.16%  [.] store_reclaim_step.free_next      -      -            
+    13.21%  [.] cuckoo_scan_bucket                -      -            
+    11.78%  [.] _int_malloc                       -      -            
+     4.39%  [.] _int_free_create_chunk            -      -            
+     1.90%  [.] kv_siphash128.final               -      -            
+     1.59%  [.] kv_mutex_lock                     -      -            
+     1.43%  [.] _int_free_chunk                   -      -            
+     1.27%  [.] _int_free_merge_chunk             -      -            
+     1.10%  [.] kv_store_put                      -      -            
+     1.08%  [.] malloc                            -      -            
+     1.07%  [.] kv_keyeq.last                     -      -            
+     1.04%  [.] worker_main.next_flush            -      -            
+     0.96%  [.] free                              -      -            
+     0.82%  [.] conn_flush.send_pending           -      -            
+     0.81%  [.] store_retire.linked               -      -            
+     0.76%  [.] store_reclaim_step.free_it        -      -            
+     0.75%  [.] kv_siphash128.block               -      -            
+     0.74%  [.] map_find.probe                    -      -            
+     0.73%  [.] conn_event                        -      -            
+     0.68%  [.] kv_mutex_unlock                   -      -            
+     0.64%  [.] ..@70.done                        -      -            
+     0.60%  [.] kv_grpc_dispatch                  -      -            
+     0.53%  [.] decode_fields                     -      -            
+     0.46%  [.] header_block                      -      -            
+     0.43%  [.] __memmove_avx_unaligned_erms      -      -            
+     0.42%  [.] h2_process.frame                  -      -            
+     0.35%  [.] kv_h2n_read.read                  -      -            
+     0.31%  [.] store_reclaim_step.scan           -      -            
+     0.29%  [.] __memset_avx2_unaligned_erms      -      -            
+     0.28%  [.] map_find.out                      -      -            
+     0.28%  [.] h2_process.d_append               -      -            
+     0.27%  [.] h2_process.d_unpadded             -      -            
+     0.27%  [.] put_hdr                           -      -            
+     0.24%  [.] kv_grpc_dispatch.put              -      -            
+     0.24%  [.] kv_cuckoo_upsert                  -      -            
+     0.24%  [.] kv_grpc_stream_release            -      -            
+     0.24%  [.] stream_close                      -      -            
+     0.20%  [.] kv_pb_decode_kv.field             -      -            
+     0.20%  [.] reply_fast                        -      -

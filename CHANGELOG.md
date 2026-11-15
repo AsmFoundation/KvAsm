@@ -10,6 +10,54 @@ protocol `kvnode.v1` only grows backward-compatibly.
 Each entry names the commits and decision records (`docs/adr`) behind it,
 so every line can be checked against the code and the measurements.
 
+## [Unreleased]
+
+### Changed
+
+- **Writes are batched, and their cleanup left the writer lock** (ADR 0011).
+  - **The batch:** a read's Puts and Deletes join its Get batch. Their
+    buckets and old records are prefetched while the read is parsed, and up
+    to 64 of them are applied under one hold of the writer mutex.
+  - **Retirement and reclamation per worker:** the records a hold replaces
+    are retired to the writer's own QSBR slot, with one epoch increment per
+    hold, and freed outside the mutex.
+  - **A bounded record cache per worker** (256 per size class, 256 KiB)
+    reuses the freed blocks. Cross-thread `free()` calls no longer queue on
+    other workers' glibc arena locks.
+  - **Measured against 0.2.0, each server alone** (4 workers, 100-byte
+    values, 1M keys):
+    - 100% SET: 1.21M → 3.21M SET/s (2.61×);
+    - 50/50: 2.05M → 3.51M requests/s (1.77×);
+    - 1 worker: 0.65M → 0.78M SET/s (1.19×).
+
+    Paired A/B: 2.76× and 1.65× at 4 workers, 1.25× at 1 worker (6/6
+    blocks each). Reads are unchanged (1.00).
+  - **Server CPU per SET** at 4 workers fell from 3,071 to 1,254 ns. A SET
+    now costs 1.16× a GET, down from 3.3×.
+  - **Writes scale across workers:** 4.1× from 1 to 4 workers end to end,
+    and 2.32× at the store level (`server/bench/bench_write.c`).
+- **The global limbo's epoch bump is a LOCK XADD** (it was a load and an
+  XCHG under the mutex), because slots now advance the epoch from outside
+  it.
+- **A write reset by its peer within the same read is not applied.**
+  Before, a Put ran as soon as it was parsed. gRPC cancellation promises
+  nothing either way.
+- **Per-worker memory** grows by up to 256 KiB of cached records, plus a
+  1,472-byte QSBR slot (it was 64 bytes; docs/OPERATIONS.md).
+
+### Added
+
+- `kv_store_write_begin`, `kv_store_put_locked`, `kv_store_delete_locked`,
+  `kv_store_write_end`, `kv_store_reclaim_local` and
+  `kv_store_rec_alloc_local`: the store's batch API (`server/tests/kvnode_abi.h`).
+- `server/bench/bench_write.c` (`make bench-write`); its `--quick`
+  verification runs in `make test`.
+- Tests:
+  - `test_store`: a batched model check and the record-cache checks;
+  - `test_store_mt`: four phases with batched writers;
+  - `itest_grpc`: `test_batch_order`, mixed writes and reads on one key in
+    one read.
+
 ## [0.2.0] — 2026-11-15
 
 The first public release, under the Apache License 2.0.

@@ -18,6 +18,8 @@ See METHODOLOGY.md for the reasoning behind each rule.
 
 from __future__ import annotations
 
+import os
+
 import math
 from dataclasses import dataclass, field, replace
 from typing import Callable
@@ -139,6 +141,22 @@ class System:
     build: str | None = None
 
 
+KVNODE_RELEASE_IMAGE = "kvnode:0.2.0"
+"""The local tag of the released KvNode that the standard suite measures."""
+
+KVNODE_IMAGE = os.environ.get("KVNODE_BENCH_IMAGE") or KVNODE_RELEASE_IMAGE
+"""KvNode image to measure: ``KVNODE_BENCH_IMAGE``, else the release tag.
+
+Set it to measure an unreleased build (e.g. ``kvnode:adr0011``) without
+re-tagging that build as a release. The system's title then names the image
+instead of a version, so the report and environment.json cannot pass the
+build off as the release; environment.json also records its digest and the
+repository revision. Read once at import: run.py and analyze.py of one
+session must see the same value, or the report's title differs from the
+runs' (the image digest in environment.json stays the authority).
+"""
+
+
 def _memcached_mb(w: Workload) -> int:
     """memcached ``-m`` large enough that nothing is ever evicted.
 
@@ -157,7 +175,9 @@ SYSTEMS: dict[str, System] = {
     s.name: s
     for s in [
         System(
-            name="kvnode", title="KvNode 0.2.0", image="kvnode:0.2.0", protocol="grpc", port=50051,
+            name="kvnode",
+            title="KvNode 0.2.0" if KVNODE_IMAGE == KVNODE_RELEASE_IMAGE else f"KvNode ({KVNODE_IMAGE})",
+            image=KVNODE_IMAGE, protocol="grpc", port=50051,
             args=lambda t, w: [],
             env=lambda t, w: {
                 "KVNODE_WORKERS": str(t),
@@ -166,7 +186,7 @@ SYSTEMS: dict[str, System] = {
                 "KVNODE_MAX_VALUE_BYTES": str(max(1 << 20, w.value_size)),
             },
             notes="gRPC over h2c; one worker thread per core (KVNODE_WORKERS).",
-            build="docker build --target runtime -t kvnode:0.2.0 . (repository root)",
+            build=f"docker build --target runtime -t {KVNODE_IMAGE} . (repository root)",
         ),
         # (Until ADR 0008 the image also carried nghttp2, measured as the
         # variants "kvnode-native" / "kvnode-nghttp2" by N1-N3; results
@@ -233,7 +253,7 @@ class Experiment:
     """A question and the run matrix that answers it.
 
     Attributes:
-        id: short identifier (E0..E8).
+        id: short identifier (E0..E8, N1, N3, S1; W1 in the write profile).
         title: one-line name.
         question: what the experiment answers.
         systems: systems included.
@@ -360,4 +380,23 @@ def quick(experiments: list[Experiment]) -> list[Experiment]:
     return out
 
 
-PROFILES: dict[str, list[Experiment]] = {"standard": STANDARD, "quick": quick(STANDARD)}
+WRITES: list[Experiment] = [
+    Experiment(
+        "W1", "Writes at 4 cores",
+        "E2's 100% SET and 50% GET cells: how do writes compare with every other store?",
+        systems=ALL, cores=(4,),
+        workloads=(replace(BASE, read_ratio=0.0), replace(BASE, read_ratio=0.5))),
+]
+"""The write profile (``run.py --profile writes``): E2's two write-heavy cells.
+
+It re-checks a change to the write path against every other store in about
+35 minutes, fully paired (6 blocks), instead of re-running all of E2, which
+also measures read-mostly mixes such a change does not touch. It is a
+separate profile, not part of STANDARD, because the full suite already
+measures these cells in E2. Added for ADR 0011. Threads are E0's choice when
+the results directory holds E0 runs, else one per core, which is what E2
+used on 2026-09-27.
+"""
+
+
+PROFILES: dict[str, list[Experiment]] = {"standard": STANDARD, "quick": quick(STANDARD), "writes": WRITES}

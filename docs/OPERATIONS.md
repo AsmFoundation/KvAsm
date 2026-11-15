@@ -125,7 +125,8 @@ Measured resident memory (`/proc/PID/smaps_rollup`; `VmRSS` in
 |---|---|---|
 | Process baseline: code, glibc, stacks, heap | ~0.7 MiB (a server with capacity 1,000 is 740 KiB in total, 536 KiB of it the binary's code pages, which the page cache shares) | nothing |
 | Store table | 64 bytes × the power of two ≥ ⌈capacity / 5⌉: **16 MiB for the default 1,000,000 keys**, 128 MiB for 10M, 2 GiB for 100M (12.8–25.6 bytes per key of capacity) | `KVNODE_CAPACITY`, resident from startup |
-| Per worker, idle | ~14 KiB (32 workers add 444 KiB) | `KVNODE_WORKERS` |
+| Per worker, idle | ~15 KiB, including its 1.4 KiB QSBR slot (32 workers add ~490 KiB) | `KVNODE_WORKERS` |
+| Per worker, after writes | plus up to 256 KiB of freed records kept in its record cache for its next Puts (ADR 0011; records up to 1,032 bytes, at most 256 per size class) | write traffic |
 | Per key | `24 + key rounded up to 8 + value` bytes, in malloc chunks (16-byte steps, 8-byte header): **162 bytes** for a 16-byte key and a 100-byte value, 66 for a 16-byte value, 1,083 for a 1 KiB value | keys × value size |
 | Per idle connection | ~9.1 KiB: the 848-byte connection record (HTTP/2 state embedded), the first touched page of its 64 KiB output buffer, a 4 KiB HPACK entry ring and a 16-slot stream map from the worker's pool | connections |
 | Per busy connection | plus the output buffer pages a response batch touches (at most ~80 KiB: production stops at 64 KiB) and, per request in flight, a 256-byte stream block and its request buffer (none when the body arrives in one frame) | load |
@@ -143,8 +144,13 @@ Measured resident memory (`/proc/PID/smaps_rollup`; `VmRSS` in
   expect: an empty 100M-key table costs 2 GiB.
 - **Records:** `KVNODE_MAX_MEMORY_MB` caps the sum of their exact sizes
   (the malloc overhead above is not counted). Replaced and deleted records
-  stay counted until reclamation frees them, typically within milliseconds;
-  glibc keeps freed record memory for later Puts.
+  stay counted until reclamation frees them, typically within milliseconds:
+  each worker frees the records its own writes replaced, after the next
+  quiescent point of every busy worker, or at its next once-a-second tick
+  when it stopped writing (ADR 0011). Freed memory is not returned to the
+  system: each worker keeps up to 256 KiB of freed records for its next
+  Puts (its record cache), and glibc keeps the rest for later Puts. Neither
+  counts against `KVNODE_MAX_MEMORY_MB`.
 - **Uploads** reserve their whole declared size when the first message
   arrives — counted against `KVNODE_MAX_MEMORY_MB` and against the
   connection's `KVNODE_CONN_BUFFER_MB` — and fill it as data comes; the

@@ -99,6 +99,7 @@ extern kv_qsbr_online
 extern kv_qsbr_offline
 extern kv_qsbr_quiescent
 extern kv_store_reclaim
+extern kv_store_reclaim_local
 extern kv_grpc_free_streams
 extern kv_logb_init
 extern kv_logb_str
@@ -1307,8 +1308,9 @@ conn_destroy:
 ; @remarks Re-arms a paused listener, ends lingering connections whose peer
 ;          never sent FIN, sends GOAWAY to idle connections — and destroys
 ;          one still idle a timeout after that GOAWAY was queued (a peer
-;          stalled at the TCP level, CONN_IDLE_CLOSING) — and (worker 0
-;          only) returns retired store memory even when no writes happen.
+;          stalled at the TCP level, CONN_IDLE_CLOSING) — and returns
+;          retired store memory even when no writes happen: every worker
+;          its own slot's (ADR 0011), worker 0 also the global limbo.
 ;          "Idle" is no byte received or sent for KVNODE_IDLE_TIMEOUT_SEC,
 ;          so a transfer that keeps moving is never cut, while one whose
 ;          peer stopped reading ends at most ~2 s (two passes) after the
@@ -1380,10 +1382,18 @@ housekeeping:
     mov     rbp, r12
     jmp     .next
 .reclaim:
+    ; This worker's own slot first (ADR 0011): its batched writes retired
+    ; records there, and only it may free them — after a burst of writes the
+    ; last batches' records would otherwise wait for its next write. The
+    ; budget is the forced-reclamation one (store.asm RECLAIM_BATCH_FORCE).
+    mov     rdi, [rbx + Worker.table]
+    mov     esi, [rbx + Worker.id]
+    mov     edx, 4096
+    call    kv_store_reclaim_local wrt ..plt
     cmp     qword [rbx + Worker.id], 0
     jne     .out
     mov     rdi, [rbx + Worker.table]
-    call    kv_store_reclaim wrt ..plt
+    call    kv_store_reclaim wrt ..plt  ; the global limbo (per-write paths)
 .out:
     pop     r14
     pop     r13

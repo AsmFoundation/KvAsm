@@ -1,0 +1,85 @@
+block 1 1:0:100        A    537,513/s p50   1565 p99   7242  1758 ns cl 0.22 | B    666,027/s p50   1221 p99   6128  1425 ns cl 0.27 | B/A 1.239 (slot0=A)
+block 1 4:0:100        A    973,060/s p50    922 p99   3031  3529 ns cl 0.40 | B  1,473,330/s p50    602 p99   1876  2341 ns cl 0.59 | B/A 1.514 (slot0=A)
+block 1 4:0.5:100      A  1,320,284/s p50    578 p99   3621  2282 ns cl 0.55 | B  1,778,639/s p50    412 p99   2605  1719 ns cl 0.71 | B/A 1.347 (slot0=A)
+block 1 1:0.9:100      A    698,203/s p50   1253 p99   4112  1469 ns cl 0.30 | B    703,862/s p50   1253 p99   3981  1459 ns cl 0.30 | B/A 1.008 (slot0=A)
+block 1 1:1:100        A    811,974/s p50   1073 p99   3457  1160 ns cl 0.32 | B    806,411/s p50   1073 p99   3490  1169 ns cl 0.32 | B/A 0.993 (slot0=A)
+block 1 4:1:100        A  2,981,843/s p50    165 p99   2998  1000 ns cl 1.00 | B  2,978,958/s p50    169 p99   2867   985 ns cl 1.00 | B/A 0.999 (slot0=A) CLIENT-BOUND
+block 1 1:0:100:256:1  A    112,207/s p50   2089 p99   5079  9120 ns cl 0.20 | B    104,927/s p50   2245 p99   5407  9752 ns cl 0.19 | B/A 0.935 (slot0=A)
+block 2 1:0:100        A    628,161/s p50   1384 p99   3752  1631 ns cl 0.24 | B    761,748/s p50   1155 p99   3228  1343 ns cl 0.28 | B/A 1.213 (slot0=B)
+block 2 4:0:100        A    961,560/s p50    938 p99   3162  3567 ns cl 0.40 | B  1,384,649/s p50    618 p99   2408  2437 ns cl 0.57 | B/A 1.440 (slot0=B)
+block 2 4:0.5:100      A  1,803,799/s p50    494 p99   1303  2054 ns cl 0.66 | B  2,310,797/s p50    371 p99   1171  1604 ns cl 0.80 | B/A 1.281 (slot0=B)
+block 2 1:0.9:100      A    861,927/s p50   1004 p99   2933  1192 ns cl 0.33 | B    885,183/s p50    971 p99   2900  1162 ns cl 0.33 | B/A 1.027 (slot0=B)
+block 2 1:1:100        A    944,289/s p50    913 p99   2736   998 ns cl 0.35 | B    947,367/s p50    922 p99   2736   995 ns cl 0.35 | B/A 1.003 (slot0=B)
+block 2 4:1:100        A  2,740,641/s p50    179 p99   3097   998 ns cl 0.98 | B  2,754,263/s p50    173 p99   3162  1002 ns cl 0.98 | B/A 1.005 (slot0=B) CLIENT-BOUND
+block 2 1:0:100:256:1  A     88,939/s p50   2736 p99   5276 10667 ns cl 0.16 | B    108,495/s p50   2245 p99   4555  8744 ns cl 0.17 | B/A 1.220 (slot0=B)
+block 3 1:0:100        A    649,556/s p50   1368 p99   3424  1577 ns cl 0.22 | B    767,715/s p50   1171 p99   2998  1333 ns cl 0.26 | B/A 1.182 (slot0=A)
+block 3 4:0:100        A  1,050,508/s p50    840 p99   2867  3036 ns cl 0.38 | B  1,569,272/s p50    561 p99   1810  2008 ns cl 0.55 | B/A 1.494 (slot0=A)
+block 3 4:0.5:100      A  1,516,984/s p50    522 p99   2671  2216 ns cl 0.62 | B  2,109,976/s p50    375 p99   1745  1640 ns cl 0.80 | B/A 1.391 (slot0=A)
+block 3 1:0.9:100      A    633,641/s p50   1188 p99  21103  1248 ns cl 0.24 | B    772,859/s p50   1122 p99   3555  1222 ns cl 0.29 | B/A 1.220 (slot0=A)
+block 3 1:1:100        A    884,490/s p50    971 p99   3097  1159 ns cl 0.35 | B    888,652/s p50    954 p99   3097  1155 ns cl 0.36 | B/A 1.005 (slot0=A)
+block 3 4:1:100        A  1,892,839/s p50    226 p99   4358  1391 ns cl 0.91 | B  1,897,709/s p50    224 p99   4424  1388 ns cl 0.91 | B/A 1.003 (slot0=A)
+block 3 1:0:100:256:1  A    110,074/s p50   2023 p99   6193  9296 ns cl 0.20 | B    115,135/s p50   1925 p99   5734  8897 ns cl 0.21 | B/A 1.046 (slot0=A)
+block 4 1:0:100        A    634,798/s p50   1352 p99   3752  1612 ns cl 0.24 | B    777,054/s p50   1106 p99   3260  1318 ns cl 0.29 | B/A 1.224 (slot0=B)
+block 4 4:0:100        A  1,025,070/s p50    864 p99   2834  3135 ns cl 0.40 | B  1,419,549/s p50    602 p99   2179  2215 ns cl 0.54 | B/A 1.385 (slot0=B)
+block 4 4:0.5:100      A  1,201,600/s p50    569 p99   5145  2698 ns cl 0.64 | B  1,547,325/s p50    403 p99   4227  2092 ns cl 0.79 | B/A 1.288 (slot0=B)
+block 4 1:0.9:100      A    810,910/s p50   1057 p99   3228  1150 ns cl 0.30 | B    825,785/s p50   1036 p99   3195  1131 ns cl 0.30 | B/A 1.018 (slot0=B)
+block 4 1:1:100        A    840,498/s p50   1044 p99   3129  1227 ns cl 0.34 | B    845,472/s p50   1028 p99   3064  1218 ns cl 0.34 | B/A 1.006 (slot0=B)
+block 4 4:1:100        A  2,488,097/s p50    185 p99   3195   985 ns cl 0.87 | B  2,450,778/s p50    185 p99   3457   992 ns cl 0.87 | B/A 0.985 (slot0=B)
+block 4 1:0:100:256:1  A    108,915/s p50   2023 p99   6586  9395 ns cl 0.18 | B    104,173/s p50   2179 p99   7111  9823 ns cl 0.18 | B/A 0.956 (slot0=B)
+block 5 1:0:100        A    569,099/s p50   1516 p99   4227  1800 ns cl 0.21 | B    706,079/s p50   1221 p99   3523  1452 ns cl 0.26 | B/A 1.241 (slot0=A)
+block 5 4:0:100        A    979,898/s p50    913 p99   3162  3516 ns cl 0.41 | B  1,435,412/s p50    594 p99   2310  2362 ns cl 0.59 | B/A 1.465 (slot0=A)
+block 5 4:0.5:100      A  1,602,387/s p50    545 p99   1827  2222 ns cl 0.64 | B  2,316,418/s p50    350 p99   1417  1545 ns cl 0.84 | B/A 1.446 (slot0=A)
+block 5 1:0.9:100      A    822,107/s p50   1044 p99   3129  1246 ns cl 0.31 | B    845,157/s p50   1020 p99   3064  1213 ns cl 0.32 | B/A 1.028 (slot0=A)
+block 5 1:1:100        A    910,357/s p50    954 p99   2867  1134 ns cl 0.34 | B    921,909/s p50    946 p99   2802  1120 ns cl 0.35 | B/A 1.013 (slot0=A)
+block 5 4:1:100        A  1,788,124/s p50    237 p99   4620  1317 ns cl 0.81 | B  1,790,409/s p50    237 p99   4620  1299 ns cl 0.82 | B/A 1.001 (slot0=A)
+block 5 1:0:100:256:1  A     99,848/s p50   2343 p99   5800 10248 ns cl 0.20 | B     93,881/s p50   2572 p99   6062 10912 ns cl 0.20 | B/A 0.940 (slot0=A)
+block 6 1:0:100        A    563,351/s p50   1548 p99   4358  1680 ns cl 0.20 | B    693,393/s p50   1237 p99   3785  1366 ns cl 0.24 | B/A 1.231 (slot0=B)
+block 6 4:0:100        A  1,068,202/s p50    856 p99   2179  3313 ns cl 0.42 | B  1,509,036/s p50    594 p99   1597  2297 ns cl 0.58 | B/A 1.413 (slot0=B)
+block 6 4:0.5:100      A  1,640,737/s p50    518 p99   1729  2041 ns cl 0.61 | B  2,194,546/s p50    371 p99   1466  1527 ns cl 0.76 | B/A 1.338 (slot0=B)
+block 6 1:0.9:100      A    849,289/s p50   1028 p99   3097  1209 ns cl 0.34 | B    858,087/s p50   1012 p99   3064  1196 ns cl 0.34 | B/A 1.010 (slot0=B)
+block 6 1:1:100        A    970,892/s p50    889 p99   2802  1004 ns cl 0.35 | B    962,280/s p50    897 p99   2769  1013 ns cl 0.35 | B/A 0.991 (slot0=B)
+block 6 4:1:100        A  2,837,298/s p50    171 p99   3031  1029 ns cl 0.99 | B  2,814,647/s p50    175 p99   2933  1039 ns cl 0.99 | B/A 0.992 (slot0=B) CLIENT-BOUND
+block 6 1:0:100:256:1  A     94,685/s p50   2507 p99   5276 10831 ns cl 0.19 | B    109,279/s p50   2146 p99   4751  9374 ns cl 0.19 | B/A 1.154 (slot0=B)
+
+== 1:0:100 (workers:read_ratio:value_bytes[:connections:depth])
+   ops/s                      A    598,630.0  B    733,913.5  B/A geomean 1.221 [1.182-1.241]  B better in 6/6, sign p=0.031
+   p50 us                     A      1,450.0  B      1,196.0  B/A geomean 0.815 [0.780-0.856]  B better in 6/6, sign p=0.031
+   p99 us                     A      3,989.5  B      3,391.5  B/A geomean 0.859 [0.833-0.876]  B better in 6/6, sign p=0.031
+   server CPU ns/req          A      1,655.3  B      1,354.8  B/A geomean 0.819 [0.807-0.845]  B better in 6/6, sign p=0.031
+   client CPU busy            A         0.22  B         0.26
+== 4:0:100 (workers:read_ratio:value_bytes[:connections:depth])
+   ops/s                      A  1,002,484.0  B  1,454,371.0  B/A geomean 1.451 [1.385-1.514]  B better in 6/6, sign p=0.031
+   p50 us                     A        888.8  B        598.0  B/A geomean 0.670 [0.650-0.697]  B better in 6/6, sign p=0.031
+   p99 us                     A      2,949.1  B      2,027.5  B/A geomean 0.705 [0.619-0.769]  B better in 6/6, sign p=0.031
+   server CPU ns/req          A      3,414.4  B      2,319.0  B/A geomean 0.680 [0.661-0.706]  B better in 6/6, sign p=0.031
+   client CPU busy            A         0.40  B         0.57
+== 4:0.5:100 (workers:read_ratio:value_bytes[:connections:depth])
+   ops/s                      A  1,559,685.5  B  2,152,261.0  B/A geomean 1.347 [1.281-1.446]  B better in 6/6, sign p=0.031
+   p50 us                     A        533.5  B        372.7  B/A geomean 0.707 [0.643-0.751]  B better in 6/6, sign p=0.031
+   p99 us                     A      2,248.7  B      1,605.6  B/A geomean 0.782 [0.653-0.899]  B better in 6/6, sign p=0.031
+   server CPU ns/req          A      2,218.9  B      1,622.1  B/A geomean 0.748 [0.695-0.781]  B better in 6/6, sign p=0.031
+   client CPU busy            A         0.63  B         0.79
+== 1:0.9:100 (workers:read_ratio:value_bytes[:connections:depth])
+   ops/s                      A    816,508.5  B    835,471.0  B/A geomean 1.049 [1.008-1.220]  B better in 6/6, sign p=0.031
+   p50 us                     A      1,050.6  B      1,028.1  B/A geomean 0.975 [0.945-1.000]  B better in 5/6, sign p=0.219
+   p99 us                     A      3,178.5  B      3,129.3  B/A geomean 0.733 [0.168-0.990]  B better in 6/6, sign p=0.031
+   server CPU ns/req          A      1,227.4  B      1,204.9  B/A geomean 0.982 [0.974-0.993]  B better in 6/6, sign p=0.031
+   client CPU busy            A         0.30  B         0.31
+== 1:1:100 (workers:read_ratio:value_bytes[:connections:depth])
+   ops/s                      A    897,423.5  B    905,280.5  B/A geomean 1.002 [0.991-1.013]  B better in 4/6, sign p=0.688
+   p50 us                     A        962.6  B        950.3  B/A geomean 0.996 [0.983-1.009]  B better in 3/6, sign p=1.000
+   p99 us                     A      2,981.9  B      2,932.7  B/A geomean 0.992 [0.977-1.009]  B better in 3/6, sign p=1.000
+   server CPU ns/req          A      1,146.6  B      1,137.4  B/A geomean 0.998 [0.987-1.009]  B better in 4/6, sign p=0.688
+   client CPU busy            A         0.34  B         0.35
+== 4:1:100 (workers:read_ratio:value_bytes[:connections:depth])
+   ops/s                      A  2,614,369.0  B  2,602,520.5  B/A geomean 0.997 [0.985-1.005]  B better in 3/6, sign p=1.000
+   p50 us                     A        182.3  B        180.2  B/A geomean 1.001 [0.966-1.025]  B better in 2/6, sign p=0.688
+   p99 us                     A      3,145.7  B      3,309.6  B/A geomean 1.006 [0.956-1.082]  B better in 2/6, sign p=0.688
+   server CPU ns/req          A      1,014.4  B      1,020.9  B/A geomean 0.999 [0.986-1.010]  B better in 3/6, sign p=1.000
+   client CPU busy            A         0.94  B         0.95
+== 1:0:100:256:1 (workers:read_ratio:value_bytes[:connections:depth])
+   ops/s                      A    104,381.5  B    106,711.0  B/A geomean 1.036 [0.935-1.220]  B better in 3/6, sign p=1.000
+   p50 us                     A      2,215.9  B      2,211.8  B/A geomean 0.973 [0.820-1.098]  B better in 3/6, sign p=1.000
+   p99 us                     A      5,537.8  B      5,570.6  B/A geomean 0.976 [0.863-1.080]  B better in 3/6, sign p=1.000
+   server CPU ns/req          A      9,821.8  B      9,563.3  B/A geomean 0.965 [0.820-1.069]  B better in 3/6, sign p=1.000
+   client CPU busy            A         0.20  B         0.19

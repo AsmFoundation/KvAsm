@@ -1,8 +1,11 @@
 # ADR 0005: Batched GETs with two-stage prefetch, and a per-worker allocator
 
-- **Status:** accepted; amended twice (see [Amendments](#amendments)):
+- **Status:** accepted; amended three times (see [Amendments](#amendments)):
   - pass 1 now prefetches three record lines;
-  - the stream-lookup cache (§3) left with nghttp2 (ADR 0008).
+  - the stream-lookup cache (§3) left with nghttp2 (ADR 0008);
+  - the batch carries Puts and Deletes too, applied under one writer-mutex
+    hold between the prefetch pass and the answers
+    ([ADR 0011](0011-batched-writes-per-worker-reclamation.md)).
   
   The nghttp2 context below is history.
 - **Date:** 2026-09-26

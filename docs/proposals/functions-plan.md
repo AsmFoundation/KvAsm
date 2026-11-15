@@ -854,9 +854,21 @@ are the endpoints probe's (N).
 - **Per-worker L1/L2 record caches** (`hcache.asm`) sit in front of the
   table when configured. They were built, measured slower, and are off by
   default (ADR 0006).
-- **PUTs and DELETEs are not batched:** each takes the mutex at parse time.
-  That is why write batching (§1.4, M) and flat combining (Track S, V) are
-  the write-side levers.
+- **PUTs and DELETEs were not batched at 6d82b29:** each took the mutex at
+  parse time. That is why write batching (§1.4, M) and flat combining
+  (Track S, V) were the write-side levers.
+  - **Since [ADR 0011](../adr/0011-batched-writes-per-worker-reclamation.md)
+    (2026-11-15) they are batched.**
+    - A read's writes join its GET batch and are prefetched at parse.
+    - They are applied under one mutex hold (at most 64).
+    - Retirement, reclamation and a bounded record cache moved to each
+      worker's QSBR slot, outside the mutex.
+  - **Measured:** 2.61× SET/s at 4 workers against 0.2.0, each server
+    alone. At the store level, batched writes reach 12.58M/s at 4 threads
+    against 1.27M per write, and fall back to 6.89M at 7 threads.
+  - **Flat combining (Track S) is still the next step** if the mutex itself
+    becomes the limit. Its gate was set against per-write locking, so it
+    must be measured again against batched writes.
 
 ### 3.3 Where a request's time goes
 
@@ -5160,7 +5172,7 @@ work takes numbers in between.
 | Risk | Mitigation |
 |---|---|
 | Write-path creep: every index adds work to creates and deletes | per-feature switches; gates per index; replaces stay free |
-| The single writer mutex becomes the bottleneck as more work moves into writes (concurrent writers already fall from 3.35 to 2.25 M puts/s at 7) | first, flat combining (Track S): measured 1.91× at 7 writers (V), which restores the single-writer rate and keeps the one-writer invariant. Only if that is not enough, lock striping with optimistic cuckoo paths (libcuckoo, C); atomic batches would then lock their stripes in order |
+| The single writer mutex becomes the bottleneck as more work moves into writes (per-write locking fell from 3.35 to 2.25 M puts/s at 7 writers; since ADR 0011, batched writes rise from 5.42 M at 1 thread to 12.58 M at 4, and fall back to 6.89 M at 7) | first, flat combining (Track S): measured 1.91× at 7 writers against per-write locking (V), which restores the single-writer rate and keeps the one-writer invariant. Its gate must now be measured against ADR 0011's batched writes. Only if that is not enough, lock striping with optimistic cuckoo paths (libcuckoo, C); atomic batches would then lock their stripes in order |
 | Typed-value sprawl (structs, bitmaps, sets, windows, vectors) | one typed-value header and one module (`typed.asm`); each type behind `KVNODE_TYPED_VALUES` and its own gate |
 | Real data clusters, unlike the probe's uniform data (FindNear, GeoRadius) | gates on the customer's data before enabling; per-call limits bound the worst case |
 | The combiner's tail latency: one thread applies other threads' writes | cap the writes per combining pass; p99 put latency is part of the gate |

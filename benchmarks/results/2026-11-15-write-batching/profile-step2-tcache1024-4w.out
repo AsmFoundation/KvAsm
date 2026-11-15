@@ -1,0 +1,28 @@
+# profile_set.sh on the step-2 server under GLIBC_TUNABLES=glibc.malloc.tcache_count=1024,
+# 4 workers, 100% SET: the probe that pinned the remaining cost on cross-thread free().
+SET/s: 3105022
+server CPU per SET: 1332 ns (user 510, kernel 822); cores busy 4.13
+     9.95%  [.] kv_cuckoo_prefetch_records.sse2_slot   -      -            
+     9.77%  [.] slot_reclaim.no_prefetch               -      -            
+     7.23%  [.] malloc                                 -      -            
+     6.73%  [.] kv_store_rec_alloc                     -      -            
+     4.75%  [.] kv_cuckoo_prefetch                     -      -            
+     4.25%  [.] slot_reclaim.free_next                 -      -            
+     4.17%  [.] kv_siphash128.final                    -      -            
+     2.09%  [.] free                                   -      -            
+     1.55%  [.] conn_flush.send_pending                -      -            
+     1.52%  [.] kv_grpc_dispatch                       -      -            
+     1.49%  [.] kv_siphash128.block                    -      -            
+     1.43%  [.] cuckoo_scan_bucket.next                -      -            
+     1.30%  [.] __memmove_avx_unaligned_erms           -      -            
+     1.27%  [.] header_block                           -      -            
+     1.11%  [.] kv_cuckoo_upsert                       -      -            
+     1.10%  [.] __memset_avx2_unaligned_erms           -      -            
+     1.07%  [.] kv_h2n_read.read                       -      -            
+     1.03%  [.] kv_grpc_run_batch.answer               -      -            
+     1.01%  [.] ..@70.done                             -      -            
+     0.95%  [.] decode_fields                          -      -            
+     0.91%  [.] reply_fast                             -      -            
+     0.90%  [.] batch_apply_writes.loop                -      -            
+     0.90%  [.] put_hdr                                -      -            
+     0.86%  [.] map_find.probe                         -      -

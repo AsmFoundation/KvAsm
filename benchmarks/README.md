@@ -391,6 +391,12 @@ python benchmarks/analyze.py benchmarks/results/<date>-standard   # writes REPOR
   resumes: finished runs are skipped.
 - `--profile quick` checks the pipeline in minutes. Its numbers are not
   results.
+- `--profile writes` runs only W1, E2's 100% SET and 50% GET cells, in
+  about 35 minutes. It re-checks a change to the write path against every
+  store.
+- `KVNODE_BENCH_IMAGE=kvnode:<tag>` measures an unreleased KvNode build
+  under its own tag. The report's title then names that image, not the
+  release.
 - Keep the machine otherwise idle during a run. Builds and other heavy
   jobs share the CPUs and show up as noise.
 
@@ -436,11 +442,12 @@ correct, 1 when any was wrong, missing or an error, and 2 on usage errors.
 | E8 | Is kvbench as good a client as redis-benchmark, memtier_benchmark and h2load? | 7 tool configurations × 3 |
 | N1 | One core: KvNode vs Redis and Valkey (E1's workload), the headline re-checked on its own | 3 × 1 × 6 |
 | N3 | Per-request floor on 1 core: gRPC health check vs Redis/Valkey `PING` | 3 × 1 × 6 |
+| S1 | Stability: E1's 4-core cell ten more times, at the end of the session | 6 × 1 × 10 |
+| W1 | Writes at 4 cores: E2's 100% SET and 50% GET cells on their own (`--profile writes`) | 6 × 2 × 6 |
 
 (Until ADR 0008, N1 and N3 also ran KvNode's nghttp2 engine, and N2
 compared the two engines at 2 and 4 cores. Those sessions stay in
 `results/2026-09-26-native*`, and `analyze.py` still renders them.)
-| S1 | Stability: E1's 4-core cell ten more times, at the end of the session | 6 × 1 × 10 |
 
 Default workload: 100% GET, 1,000,000 keys (all preloaded), 100-byte
 values, uniform keys, 64 connections × 16 requests in flight, kvbench with
