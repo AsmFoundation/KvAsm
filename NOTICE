@@ -1,0 +1,18 @@
+KvNode
+Copyright 2026 Eli Belash
+
+This product is licensed under the Apache License, Version 2.0 (see the
+LICENSE file).
+
+The KvNode server binary and container image statically link third-party
+libraries:
+
+  - the GNU C Library (glibc), licensed under the GNU Lesser General Public
+    License, version 2.1 or later;
+  - GCC's runtime support library (libgcc), licensed under the GNU General
+    Public License, version 3 or later, with the GCC Runtime Library
+    Exception, version 3.1.
+
+THIRD_PARTY_NOTICES.md lists every third-party component, how to obtain
+its source code, and how to relink KvNode against a modified glibc. The
+container image carries these license texts under /usr/share/doc/kvnode/.

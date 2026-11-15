@@ -22,7 +22,7 @@ The previous full session
 A check about five minutes before the start found 4.0 of 32 logical CPUs
 busy outside the container VM (`hostload.py`). By the time the suite
 started, run.py's own baseline read 8.1. A batch of backtests from another
-project had begun: ten `nautilus_backtesting` Python workers at one CPU
+project had begun: ten Python backtesting workers at one CPU
 each, replaced every minute or two. Offered the choice between waiting for
 a quiet host and running now, the user chose to run now. METHODOLOGY.md §7
 measures outside load and never excludes it, so no run was discarded.

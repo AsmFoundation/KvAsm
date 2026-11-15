@@ -1,5 +1,7 @@
 # Keep the build context small and deterministic: images need only the server
-# and benchmark-client sources; everything else is excluded. Local build
+# and benchmark-client sources, plus the license files at the root (LICENSE,
+# NOTICE, THIRD_PARTY_NOTICES.md), which the runtime image carries — so they
+# must never be added here; everything else is excluded. Local build
 # directories must never leak in: `make` would treat a copied binary as up to
 # date and the image would ship something its Dockerfile did not build.
 .git

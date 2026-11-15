@@ -1,0 +1,49 @@
+name: Bug report
+description: The server, the .NET client or the tooling does something wrong.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **A security problem** (memory corruption from
+        input, a way around a configured limit, torn values) must **not** go
+        here: report it privately as SECURITY.md describes.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release, or the commit and the image digest you built.
+      placeholder: "0.2.0, or 1a2b3c4 + sha256:..."
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: How you run it
+      description: >-
+        Image or binary, the KVNODE_* variables you set, the CPU (the server
+        picks CRC-32C and tag-scan paths from it), the kernel, and the client
+        (language, version, connections).
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >-
+        The smallest sequence of calls that shows it. For protocol bugs, raw
+        HTTP/2 bytes or an h2spec-style case are ideal.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server log lines
+      description: The server logs one event per line on stderr; paste the lines around the problem.
+      render: text

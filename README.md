@@ -1,46 +1,124 @@
 # KvNode
 
-A gRPC key-value server written in **x86-64 assembly**, shipped as a
-**1.6 MB `FROM scratch` container** (one 1.1 MB static binary; glibc is the
-only library linked in).
+**FOSAS — Free Open Source Assembly Software.**
 
-- **O(1) everything.** A bucketized cuckoo hash: a lookup touches at most
-  two cache lines. Chaining and a branchless binary trie were measured
-  against it and lost ([ADR 0001](docs/adr/0001-store-data-structure.md)).
-- **Atomic and concurrent.** Lock-free readers (seqlocked buckets), one
-  serialized writer path, immutable records, QSBR reclamation. Torture and
+[![CI](https://github.com/Nucs/KvNode/actions/workflows/ci.yml/badge.svg)](https://github.com/Nucs/KvNode/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![NuGet: KvNode.Client](https://img.shields.io/nuget/v/KvNode.Client.svg?label=KvNode.Client)](https://www.nuget.org/packages/KvNode.Client)
+
+KvNode is a gRPC key-value server written in **x86-64 assembly**. It ships
+as a **2 MB `FROM scratch` container** (0.5 MB to download): one 1.1 MB
+static binary, with glibc the only library linked in, plus its license
+texts. To our knowledge
+it is **the first gRPC server written in assembly**: its HTTP/2 engine,
+HPACK decoder, gRPC layer and Protocol Buffers codec are all hand-written
+NASM.
+
+Every claim below is measured or verifiable in this repository.
+[docs/CLAIMS.md](docs/CLAIMS.md) gives the evidence and scope of each one,
+and what is deliberately *not* claimed.
+
+- **Outcompetes Redis, Valkey, Dragonfly, Garnet and Memcached on reads
+  of small values.**
+  - 8.84M GET/s on 4 cores: 2.29–3.68× each of them, ahead of every one
+    in all ten paired blocks.
+  - 1.26× Redis on one core.
+  - It is behind them on writes and on 16 KiB values (see
+    [Performance](#performance)).
+- **Assembly data structures.** The store is a bucketized cuckoo table of
+  64-byte seqlocked buckets. A measured bake-off chose it over chaining and
+  a branchless binary trie, both also written in assembly
+  ([ADR 0001](docs/adr/0001-store-data-structure.md)).
+- **O(1) by architecture.** Every key operation is O(1):
+  - a lookup reads at most two cache lines;
+  - an insert's displacement search is bounded;
+  - the table is sized once at startup, so it never pauses to rehash.
+- **SIMD and AVX where they pay.** One SSE2 compare matches all 12
+  candidate tags of every lookup
+  ([ADR 0006](docs/adr/0006-store-memory-levels-simd-and-private-caches.md)).
+  AVX2 + VPCLMULQDQ fold the CRC-32C of streamed values at up to ~88 GB/s.
+  CPU features are detected at startup, so any x86-64 CPU runs it.
+- **Reads scale across cores.** Readers take no lock and write no shared
+  memory, and each worker thread owns its connections. Measured from 1 to
+  4 cores: 1.76M → 8.84M GET/s.
+  - Writes share one lock.
+  - Above 4 cores the benchmark client saturates first.
+- **Thread-safe by construction.** Reads are lock-free (seqlocked buckets),
+  writes are serialized, records are immutable, and reclamation is QSBR. A
+  reader sees the old value or the new one, never a mix. Torture and
   end-to-end tests check for torn values and found none
   ([ADR 0003](docs/adr/0003-concurrency-model.md)).
-- **Exact keys, safe hashing.** Keys are compared byte for byte; SipHash
-  under a per-process secret prevents hash flooding. Long keys are compacted
-  client-side ([ADR 0004](docs/adr/0004-exact-keys-and-client-compaction.md)).
-- **Its own HTTP/2, in assembly.** A server-side HTTP/2 engine with an HPACK
-  decoder, differential-tested against nghttp2 and fuzzed. It passes h2spec
-  **146/146** and doubled the requests a core can serve
-  ([ADR 0007](docs/adr/0007-native-http2-engine.md)). nghttp2, which it
-  replaced, is out of the server
-  ([ADR 0008](docs/adr/0008-remove-nghttp2-from-the-server.md)); it
-  survives only as the independent client the tests and benchmarks use.
-- **Streaming for large values.** Client-streaming Upload and
+- **gRPC from scratch, in assembly.** The server-side HTTP/2 engine and
+  HPACK decoder are differential-tested against nghttp2 and fuzzed.
+  - It passes h2spec **146/146**. nghttp2, which it replaced, passes 138.
+  - It doubled the requests a core can serve
+    ([ADR 0007](docs/adr/0007-native-http2-engine.md)).
+  - No gRPC, HTTP/2 or protobuf library is linked. nghttp2 is out of the
+    server ([ADR 0008](docs/adr/0008-remove-nghttp2-from-the-server.md))
+    and survives only as the independent client the tests and benchmarks
+    use.
+- **CPU-accelerated O(n) streaming.** Client-streaming Upload and
   server-streaming Download move values up to 64 MiB (configurable to
-  2 GiB) and byte ranges of them in CRC-32C-verified chunks: an upload is
-  copied once, straight into the record it will publish atomically; a
-  download is generated frame by frame from a pinned record, one version
-  per call, with no response buffer. Tested byte by byte, including resets,
-  hangs and slow links mid-transfer
-  ([ADR 0010](docs/adr/0010-streaming-upload-download.md)).
+  2 GiB), and byte ranges of them, in CRC-32C-verified chunks.
+  - An upload is copied once, straight into the record it will publish
+    atomically.
+  - A download is generated frame by frame from a pinned record: one
+    version per call, and no response buffer.
+  - Copy and checksum are one pass: one core takes ~11 GB/s of 1 MiB
+    uploads.
+  - Tested byte by byte, including resets, hangs and slow links
+    mid-transfer ([ADR 0010](docs/adr/0010-streaming-upload-download.md)).
+- **Exact keys, safe hashing.** Keys are compared byte for byte. SipHash
+  under a per-process secret prevents hash flooding. Clients compact long
+  keys ([ADR 0004](docs/adr/0004-exact-keys-and-client-compaction.md)).
 - **Two data sources:** clients write via gRPC, and a verified snapshot
   file loads at startup.
-- **Production behavior:** standard gRPC health service, graceful drain on
-  SIGTERM, idle timeouts, strict configuration, structured logs, non-root,
-  read-only file system.
+- **Production behavior:**
+  - the standard gRPC health service;
+  - graceful drain on SIGTERM, and idle timeouts;
+  - strict configuration and structured logs;
+  - non-root, on a read-only file system.
+
+## What it is not (yet)
+
+KvNode is young (v0.2.0) and deliberately small. Before you deploy it, know
+what it does not do:
+
+- **No persistence.** A snapshot file loads at startup, but the server
+  never writes data to disk. A restart serves the snapshot again, without
+  the changes made since.
+- **No TLS and no authentication.** It speaks cleartext HTTP/2 (h2c). Run
+  it on a trusted network, or behind a TLS-terminating proxy or mesh that
+  controls who reaches the port ([SECURITY.md](SECURITY.md)).
+- **No replication, clustering, key expiry (TTL), data types beyond bytes,
+  or IPv6 listener.**
+- **Linux on x86-64 only.** The server is x86-64 assembly.
+
+[docs/proposals](docs/proposals/functions-plan.md) designs and prototypes
+58 more functions, with measurements, Export/Watch streams and key indexes
+among them. None of them is implemented yet. Persistence is out of that
+plan's scope and has no design in the repository yet.
 
 ## Quick start
 
+Run the published image (linux/amd64):
+
 ```sh
-docker build --target runtime -t kvnode:0.1.0 .      # also runs every server test
-docker run --rm -p 50051:50051 kvnode:0.1.0
+docker run --rm -p 50051:50051 ghcr.io/nucs/kvnode:0.2.0
 ```
+
+Or build it from source. The build runs every server test suite, and the
+image exists only if all of them pass:
+
+```sh
+docker build --target runtime -t kvnode:0.2.0 .
+docker run --rm -p 50051:50051 kvnode:0.2.0
+```
+
+Talk to it from .NET 8 or 10 (`dotnet add package KvNode.Client`), or from
+any language with gRPC tooling, using
+[`proto/kvnode/v1/kvnode.proto`](proto/kvnode/v1/kvnode.proto) and
+[docs/PROTOCOL.md](docs/PROTOCOL.md):
 
 ```csharp
 using KvNode.Client;
@@ -63,8 +141,26 @@ Load data at startup from a snapshot written by
 
 ```sh
 docker run --rm -p 50051:50051 -v "$PWD/data:/data:ro" \
-  -e KVNODE_SNAPSHOT=/data/seed.kvs -e KVNODE_CAPACITY=5000000 kvnode:0.1.0
+  -e KVNODE_SNAPSHOT=/data/seed.kvs -e KVNODE_CAPACITY=5000000 ghcr.io/nucs/kvnode:0.2.0
 ```
+
+Every setting, the exit codes, health probes, memory sizing and security
+notes are in [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
+### Requirements
+
+- **Server:** Linux 3.17 or later on x86-64 (it calls `getrandom`). It was
+  developed and tested on the 5.15 kernel of WSL2 and runs in any OCI
+  runtime.
+  - Any x86-64 CPU runs it, because the baseline instruction set includes
+    SSE2.
+  - SSE4.2, PCLMULQDQ, and AVX2 + VPCLMULQDQ speed up CRC-32C when the CPU
+    has them.
+- **Client:** .NET 8 or .NET 10.
+- **Building from source:** Docker.
+  - The toolchain stage installs NASM and GCC from Debian trixie.
+  - It pins nghttp2 (the test clients use it) and h2spec by version and
+    SHA-256.
 
 ## Performance
 
@@ -170,20 +266,50 @@ Store alone, single thread, 4M keys: 279 ns per dependent lookup, p99.9
 | [`server/`](server) | NASM sources, native unit tests, bake-off, end-to-end suite (`make all test itest bench`) |
 | [`client/dotnet/`](client/dotnet) | .NET 8/10 client and snapshot writer, with unit and container tests |
 | [`benchmarks/`](benchmarks/README.md) | comparison with other key-value stores: the kvbench client, the suite, methodology, committed results |
-| [`docs/`](docs) | [architecture](docs/ARCHITECTURE.md), [protocol and client contract](docs/PROTOCOL.md), [operations](docs/OPERATIONS.md), [decision records](docs/adr) |
+| [`docs/`](docs) | [architecture](docs/ARCHITECTURE.md), [protocol and client contract](docs/PROTOCOL.md), [operations](docs/OPERATIONS.md), [decision records](docs/adr), [claims and their evidence](docs/CLAIMS.md) |
+| [`docs/proposals/`](docs/proposals/functions-plan.md) | designs measured but not implemented: the functions plan (58 functions, Export/Watch and key indexes among them) and store speedups |
 | [`docs/paper/`](docs/paper/README.md) | case-study paper on how an LLM coding agent built KvNode in assembly (Word document, Markdown source, figures, and the scripts behind its numbers) |
 | [`Dockerfile`](Dockerfile) | toolchain (pinned and verified nghttp2 for the test clients, and h2spec) → build + all tests → scratch runtime |
+| [`.github/`](.github) | CI (every test suite on every push and pull request) and the release workflow (GHCR image, NuGet package, GitHub release) |
+| [`CHANGELOG.md`](CHANGELOG.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), [`SECURITY.md`](SECURITY.md), [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | release notes; how to build, test, measure and propose changes; how to report a vulnerability; community rules |
+| [`LICENSE`](LICENSE), [`NOTICE`](NOTICE), [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) | Apache-2.0, and the licenses of the glibc and libgcc code linked into the binary |
 
 ## Development
 
 ```sh
 docker build --target toolchain -t kvnode-toolchain .
 docker run --rm -v "$PWD:/src" -w /src/server kvnode-toolchain make all test itest
-dotnet test --solution client/dotnet/KvNode.Client.slnx   # needs the kvnode:0.1.0 image
+docker build --target runtime -t kvnode:0.2.0 .           # the image the .NET tests start
+cd client/dotnet && KVNODE_REQUIRE_DOCKER=1 dotnet test --solution KvNode.Client.slnx
 ```
+
+Run `dotnet test` from `client/dotnet`. Its `global.json` selects the
+Microsoft.Testing.Platform runner, and from the repository root
+`--solution` is rejected. [CONTRIBUTING.md](CONTRIBUTING.md) has the
+verification gates every change must pass, and the measurement rules for
+performance claims.
 
 ## Status
 
-Version 0.1.0. Clients: .NET (done). Two more languages are planned; they
-must implement [docs/PROTOCOL.md](docs/PROTOCOL.md), including long-key
-compaction and the snapshot conformance vector.
+Version 0.2.0, the first public release ([CHANGELOG](CHANGELOG.md)).
+
+- **Clients:** .NET is done. Two more languages are planned. They must
+  implement [docs/PROTOCOL.md](docs/PROTOCOL.md), including long-key
+  compaction and the snapshot conformance vector.
+- **Next:** the store speedups (8-lane AVX2 hashing, flat-combining writes)
+  and the functions plan, phase by phase, as
+  [docs/proposals](docs/proposals/functions-plan.md) lays out. Each lands
+  with its tests and a paired measurement.
+
+## Contributing, security and license
+
+- **Contributing:** issues and pull requests are welcome. Read
+  [CONTRIBUTING.md](CONTRIBUTING.md) first. A performance change needs a
+  paired measurement, not an argument.
+- **Security:** report vulnerabilities privately, as
+  [SECURITY.md](SECURITY.md) describes. Do not open a public issue.
+- **License:** KvNode is licensed under the
+  [Apache License 2.0](LICENSE). The server binary statically links glibc
+  (LGPL-2.1-or-later) and libgcc.
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) explains what that
+  means for redistribution.

@@ -12,6 +12,13 @@ The paper is a case study of how Claude Code (Claude Opus 5.5) built KvNode in x
 
 It describes the repository at revision `6871e31`.
 
+**Version numbers in the paper.** "v0.1.0" in the paper's timeline (Table 12,
+Figure 7) is the first working server, commit `d95793d`, now tagged `v0.1.0`.
+Every build until the first public release still reported version 0.1.0,
+which is why the paper's benchmark table lists "0.1.0 (a0264f7)". The first
+public release is `v0.2.0`. Its server code is the code the paper describes:
+the assembly is unchanged since `6871e31` apart from its version string.
+
 | File | What it is |
 |---|---|
 | [`KvNode-agentic-assembly-paper.docx`](KvNode-agentic-assembly-paper.docx) | the paper (24 pages in Word, A4) |

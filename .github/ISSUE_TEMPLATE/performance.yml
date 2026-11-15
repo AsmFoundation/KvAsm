@@ -1,0 +1,50 @@
+name: Performance report
+description: A measurement that differs from the published numbers, a regression, or a faster idea with numbers.
+labels: [performance]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        KvNode decides performance questions by paired measurements
+        (benchmarks/METHODOLOGY.md). The published numbers and their scope
+        are in docs/CLAIMS.md. A report with the details below can be
+        reproduced and checked.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: >-
+        CPU model, cores given to the server and to the client, OS and kernel,
+        virtualization (bare metal, VM, WSL2, container runtime), and whether
+        the client ran on the same machine (loopback) or a different one.
+    validations:
+      required: true
+  - type: textarea
+    id: workload
+    attributes:
+      label: Workload
+      description: >-
+        Operations mix, key count, key and value sizes, connections, requests
+        in flight, and the client (kvbench command line, or yours).
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Results
+      description: >-
+        Throughput and latency for every run, not only the median. Name the
+        version or commit and any comparison system with its version and
+        settings.
+    validations:
+      required: true
+  - type: dropdown
+    id: method
+    attributes:
+      label: How the runs were compared
+      options:
+        - Paired or interleaved runs (A/B within blocks)
+        - Separate sessions
+        - A single run
+    validations:
+      required: true

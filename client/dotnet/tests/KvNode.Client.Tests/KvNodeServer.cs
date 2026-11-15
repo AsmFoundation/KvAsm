@@ -13,8 +13,9 @@ namespace KvNode.Client.Tests;
 /// <remarks>
 /// <para>
 /// Image: <c>KVNODE_IMAGE</c>, default <see cref="DefaultImage"/> (build it
-/// with <c>docker build --target runtime -t kvnode:0.1.0 .</c> at the
-/// repository root).
+/// with <c>docker build --target runtime -t kvnode:0.2.0 .</c> at the
+/// repository root). CI sets <c>KVNODE_IMAGE</c> to the image it just built
+/// and tested, so the suite always runs against this commit's server.
 /// </para>
 /// <para>
 /// Without Docker or the image, integration tests are skipped with the reason
@@ -24,8 +25,12 @@ namespace KvNode.Client.Tests;
 /// </remarks>
 public sealed class KvNodeServer : IAsyncLifetime
 {
-    /// <summary>Image used when <c>KVNODE_IMAGE</c> is not set.</summary>
-    public const string DefaultImage = "kvnode:0.1.0";
+    /// <summary>
+    /// Image used when <c>KVNODE_IMAGE</c> is not set: the local tag of the
+    /// current release version, so a stale image of an older version is never
+    /// picked up by accident after a version bump (the tag no longer matches).
+    /// </summary>
+    public const string DefaultImage = "kvnode:0.2.0";
 
     /// <summary>Port the server listens on inside the container.</summary>
     public const int ContainerPort = 50051;

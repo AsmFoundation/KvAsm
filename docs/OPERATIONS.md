@@ -62,7 +62,7 @@ One line per event on stderr, written with a single `write(2)`, so lines from
 different threads never interleave:
 
 ```
-ts=1790373017.207 level=INFO msg="starting" version=0.1.0 port=50051 workers=2 capacity=1000000 ... max_upload_bytes=67108864 crc32c=vpclmul snapshot=none
+ts=1790373017.207 level=INFO msg="starting" version=0.2.0 port=50051 workers=2 capacity=1000000 ... max_upload_bytes=67108864 crc32c=vpclmul snapshot=none
 ts=1790373017.208 level=INFO msg="listening" transport=h2c port=50051 workers=2
 ts=1790373019.575 level=INFO msg="shutdown requested" signal=15
 ts=1790373019.575 level=INFO msg="stopped" connections=2 requests=1 errors=0 keys=0 pinned=0 deferred=0
@@ -100,7 +100,7 @@ written for example by the .NET `SnapshotFile.WriteAsync`, which replaces
 the file atomically. Mount it read-only:
 
 ```sh
-docker run -p 50051:50051 -v "$PWD/data:/data:ro" -e KVNODE_SNAPSHOT=/data/seed.kvs kvnode:0.1.0
+docker run -p 50051:50051 -v "$PWD/data:/data:ro" -e KVNODE_SNAPSHOT=/data/seed.kvs ghcr.io/nucs/kvnode:0.2.0
 ```
 
 The whole file is verified before any record is stored: size, magic,
@@ -190,6 +190,9 @@ Measured resident memory (`/proc/PID/smaps_rollup`; `VmRSS` in
   header block at 64 KiB and 64 CONTINUATION frames, and never buffers an
   oversized frame (it is rejected from its header). Every build fuzzes it
   and runs h2spec against it.
-- **Container:** the image contains only the static binary. It runs as
+- **Container:** the image contains only the static binary and its license
+  texts (`/usr/share/doc/kvnode`: KvNode's Apache-2.0 license and notices,
+  and those of the glibc and libgcc code linked into the binary, with their
+  exact versions; see THIRD_PARTY_NOTICES.md). It runs as
   uid/gid 10001 and needs no capabilities and no writable file system:
   `--read-only --cap-drop ALL --security-opt no-new-privileges` all work.

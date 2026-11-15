@@ -1,7 +1,19 @@
 # KvNode.Client for .NET
 
-The .NET client for [KvNode](../../README.md). Targets .NET 8 (LTS) and
+The .NET client for [KvNode](https://github.com/Nucs/KvNode), the gRPC
+key-value server written in x86-64 assembly. Targets .NET 8 (LTS) and
 .NET 10.
+
+## Install
+
+```sh
+dotnet add package KvNode.Client
+docker run --rm -p 50051:50051 ghcr.io/nucs/kvnode:0.2.0   # a server to talk to
+```
+
+Client and server are released together under one version number, and
+both speak the `kvnode.v1` protocol
+([docs/PROTOCOL.md](https://github.com/Nucs/KvNode/blob/main/docs/PROTOCOL.md)).
 
 ## Usage
 
@@ -123,7 +135,7 @@ dispose a channel it did not create.
   limits (`ArgumentOutOfRangeException`).
 - Server and transport errors are `Grpc.Core.RpcException` — every one,
   including a connection that breaks in the middle of an upload. The status
-  codes are listed in [docs/PROTOCOL.md](../../docs/PROTOCOL.md#status-codes);
+  codes are listed in [docs/PROTOCOL.md](https://github.com/Nucs/KvNode/blob/main/docs/PROTOCOL.md#status-codes);
   for example, `RESOURCE_EXHAUSTED` means the store is full, `DATA_LOSS`
   that transferred bytes failed their checksum. Cancellation is `CANCELLED`
   for every call.
@@ -159,7 +171,7 @@ SipHash-2-4-128 checksum the server verifies.
 ## Tests
 
 ```sh
-docker build --target runtime -t kvnode:0.1.0 ../..   # the image under test
+docker build --target runtime -t kvnode:0.2.0 ../..   # the image under test
 dotnet test --solution KvNode.Client.slnx
 ```
 
@@ -183,3 +195,8 @@ dotnet test --solution KvNode.Client.slnx
   that resets, hangs, throttles or refuses connections at exact byte
   counts; and against a dedicated server with small memory and budget
   limits.
+
+## License
+
+Apache-2.0, like the rest of KvNode
+([LICENSE](https://github.com/Nucs/KvNode/blob/main/LICENSE)).

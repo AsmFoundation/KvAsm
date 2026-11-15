@@ -30,7 +30,10 @@ bits 64
 %define SIG_BLOCK       0
 %define SIG_IGN         1
 %define CLOCK_MONOTONIC 1
-%define VERSION_STR     "0.1.0"
+; The release version, logged in the "starting" line. It must equal the git
+; tag being released (vX.Y.Z) and KvNode.Client's <Version>:
+; .github/workflows/release.yml refuses to publish when they differ.
+%define VERSION_STR     "0.2.0"
 
 extern signal
 extern sigemptyset

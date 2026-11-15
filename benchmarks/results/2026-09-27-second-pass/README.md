@@ -7,7 +7,7 @@ Two questions:
   so we just 'enter' into the action?"
 
 **Host:** i9-13900K, WSL2. During this pass another project's job
-(`TraderLab-options`, 20 to 36 `python.exe` processes) kept **25 to 30 of
+(20 to 36 `python.exe` processes) kept **25 to 30 of
 32 logical CPUs** busy outside the VM, so timing measurements were
 meaningless. Everything below is therefore a **count**, which host load
 cannot change:

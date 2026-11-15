@@ -157,7 +157,7 @@ SYSTEMS: dict[str, System] = {
     s.name: s
     for s in [
         System(
-            name="kvnode", title="KvNode 0.1.0", image="kvnode:0.1.0", protocol="grpc", port=50051,
+            name="kvnode", title="KvNode 0.2.0", image="kvnode:0.2.0", protocol="grpc", port=50051,
             args=lambda t, w: [],
             env=lambda t, w: {
                 "KVNODE_WORKERS": str(t),
@@ -166,7 +166,7 @@ SYSTEMS: dict[str, System] = {
                 "KVNODE_MAX_VALUE_BYTES": str(max(1 << 20, w.value_size)),
             },
             notes="gRPC over h2c; one worker thread per core (KVNODE_WORKERS).",
-            build="docker build --target runtime -t kvnode:0.1.0 . (repository root)",
+            build="docker build --target runtime -t kvnode:0.2.0 . (repository root)",
         ),
         # (Until ADR 0008 the image also carried nghttp2, measured as the
         # variants "kvnode-native" / "kvnode-nghttp2" by N1-N3; results

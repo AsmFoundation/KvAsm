@@ -1,0 +1,104 @@
+# =============================================================================
+# CI — every test suite KvNode has, on every push to main and every pull
+# request. release.yml calls this same workflow (workflow_call) before it
+# publishes anything, so a release can never skip a gate CI enforces.
+#
+# What runs, in one job (the .NET suite needs the image the first step
+# builds, and a job boundary would mean exporting ~2 MB of image for no gain):
+#   1. docker build --target runtime: assembles the server and runs
+#      `make all test itest` inside the build — unit tests, the bake-off's
+#      checking mode, the end-to-end suite (gRPC protocol, concurrency with
+#      torn-value detection, streaming, shutdown, snapshots, startup
+#      refusals), h2spec 146/146 and the HTTP/2 fuzzer. Any failure fails the
+#      image build, so "the image exists" means "every suite passed".
+#   2. docker build --target kvbench: the benchmark client and its tests.
+#   3. The .NET client suite (unit + Testcontainers integration tests)
+#      against the image from step 1, with Docker REQUIRED: a missing Docker
+#      fails the job instead of silently skipping the tests that matter.
+#
+# Supply chain: every action is pinned to a full commit SHA (the tag in the
+# comment is for humans; Dependabot updates both). The token is read-only.
+# =============================================================================
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run per ref; a newer push to the same pull request cancels the older
+  # run, but pushes to main (and release calls) always finish.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Server, benchmark client and .NET suites
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      # KvNodeServer (the .NET test fixture) starts this tag, i.e. the image
+      # this job just built and tested, never a stale local one.
+      KVNODE_IMAGE: kvnode:ci
+      KVNODE_REQUIRE_DOCKER: "1"
+      DOTNET_NOLOGO: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The toolchain stage compiles nghttp2 from source; the GitHub Actions
+      # cache (shared scope with release.yml) keeps that and every unchanged
+      # layer between runs. A layer is reused only when its inputs are
+      # byte-identical, so a cached test layer is a test that already passed
+      # on exactly these sources.
+      - name: Build the server image (runs every server test suite)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: runtime
+          tags: kvnode:ci
+          load: true
+          cache-from: type=gha,scope=kvnode
+          cache-to: type=gha,scope=kvnode,mode=max
+
+      # Only the build matters here (its RUN step runs test_kvbench), so the
+      # result stays in the build cache instead of being exported.
+      - name: Build the benchmark client (runs its unit tests)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: kvbench
+          outputs: type=cacheonly
+          cache-from: type=gha,scope=kvnode
+
+      - name: Show the image under test
+        run: |
+          docker image inspect kvnode:ci --format 'id={{.Id}} size={{.Size}} bytes'
+          docker image inspect kvnode:ci --format '{{json .Config.Labels}}'
+
+      # The test project targets net8.0 and net10.0: the 8.0 SDK brings the
+      # net8.0 runtime, and global.json pins the 10.0 SDK that builds both.
+      - name: Set up .NET
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 8.0.x
+          global-json-file: client/dotnet/global.json
+
+      # Run from client/dotnet: its global.json selects the
+      # Microsoft.Testing.Platform runner, without which `--solution` is
+      # rejected (MSB1001).
+      - name: .NET client tests against the image built above
+        working-directory: client/dotnet
+        run: dotnet test --solution KvNode.Client.slnx

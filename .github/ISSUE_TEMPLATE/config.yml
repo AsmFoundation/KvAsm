@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability (privately)
+    url: https://github.com/Nucs/KvNode/security/advisories/new
+    about: Vulnerabilities go to the maintainers only, never to a public issue. See SECURITY.md.
+  - name: The claims and their evidence
+    url: https://github.com/Nucs/KvNode/blob/main/docs/CLAIMS.md
+    about: What KvNode claims, measured where, and what it deliberately does not claim.

@@ -378,7 +378,7 @@ How KvNode got there (+28% from batched GET prefetching, ablation-tested):
 
 ```sh
 # images (from the repository root)
-docker build --target runtime -t kvnode:0.1.0 .
+docker build --target runtime -t kvnode:0.2.0 .
 docker build --target kvbench -t kvnode-kvbench:dev .
 docker build --target toolchain -t kvnode-toolchain .            # h2load for E8
 docker build -t kvbench/garnet:2.1.8 https://github.com/microsoft/garnet.git#v2.1.8
