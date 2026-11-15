@@ -424,6 +424,13 @@ python benchmarks/analyze.py benchmarks/results/<date>-standard   # writes REPOR
 - `KVNODE_BENCH_IMAGE=kvnode:<tag>` measures an unreleased KvNode build
   under its own tag. The report's title then names that image, not the
   release.
+- `--systems kvnode` re-measures KvNode alone, for example the whole
+  standard suite in about 50 minutes instead of 4.5 hours. Its numbers set
+  against an earlier session's other stores are unpaired across sessions,
+  so they hold only if the host is as quiet as it was then.
+- `--e4-rates 418000,836000,1254000` gives E4 explicit offered loads. A
+  subset needs this to meet an earlier session's loads, because E4
+  normally derives them from the slowest system's E1 median.
 - Keep the machine otherwise idle during a run. Builds and other heavy
   jobs share the CPUs and show up as noise.
 

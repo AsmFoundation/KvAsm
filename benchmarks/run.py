@@ -2,8 +2,16 @@
 """run.py — executes a benchmark profile and records every run.
 
 Usage:
-    python benchmarks/run.py [--profile standard|quick] [--out DIR] [--only E1,E2]
+    python benchmarks/run.py [--profile standard|quick|writes] [--out DIR] [--only E1,E2]
+                             [--systems kvnode] [--e4-rates 418000,836000,1254000]
     python benchmarks/run.py --out benchmarks/results/<existing>   # resume
+
+--systems re-measures some systems alone (e.g. KvNode after a change) to set
+against an earlier session's results for the others; such comparisons are
+unpaired across sessions, so the host must be as quiet as it was then.
+--e4-rates gives E4 explicit offered loads, e.g. that earlier session's, which
+a subset could not derive (E4 normally takes 25/50/75% of the slowest
+system's E1 median, and the slowest system may not be in the subset).
 
 Each run: start a fresh server container on vCPUs 0..N-1, run kvbench in the
 server's network namespace (loopback) on vCPUs 16-31, preload every key,
@@ -625,7 +633,7 @@ def e4_rates(records: list[dict], cores: int) -> tuple[list[float], int]:
     return [round(slowest * f, -3) for f in suite.E4_LOAD_FRACTIONS], keys[ref]
 
 
-def plan(exp: suite.Experiment, records: list[dict]) -> list[dict]:
+def plan(exp: suite.Experiment, records: list[dict], e4_override: list[float] | None = None) -> list[dict]:
     """Expands an experiment into run cells, in blocked random order.
 
     Repetition r of every cell forms block r; blocks run one after another,
@@ -638,15 +646,27 @@ def plan(exp: suite.Experiment, records: list[dict]) -> list[dict]:
     Args:
         exp: experiment.
         records: previous records (for tuning and E4 rates).
+        e4_override: explicit E4 offered loads in ops/s (``--e4-rates``),
+            used instead of rates derived from this session's E1. They apply
+            to E1's standard workload (suite.BASE's key count), which is
+            what derived rates assume as well.
 
     Returns:
         Cells with a unique run_id each; cell["rep"] is its block.
+
+    Raises:
+        RuntimeError: E4 without an override and without E1 results to
+            derive its rates from (see e4_rates); main skips the experiment.
     """
     tuning = tuned_threads(records)
     workloads = exp.workloads
     if exp.id == "E4":
-        # E1's workload, open loop: the rates were derived from exactly it.
-        rates, keys = e4_rates(records, exp.cores[0])
+        # E1's workload, open loop: the rates were derived from exactly it —
+        # or given, to meet an earlier session's loads (--e4-rates).
+        if e4_override:
+            rates, keys = e4_override, suite.BASE.keys
+        else:
+            rates, keys = e4_rates(records, exp.cores[0])
         workloads = tuple(replace(suite.BASE, keys=keys, rate=r, depth=64) for r in rates)
     cells = []
     for system in exp.systems:
@@ -691,12 +711,33 @@ def main() -> int:
     ap.add_argument("--profile", default="standard", choices=sorted(suite.PROFILES))
     ap.add_argument("--out", help="results directory (existing = resume)")
     ap.add_argument("--only", help="comma-separated experiment ids")
+    ap.add_argument("--systems", help="comma-separated systems to run, of each experiment's own "
+                    "(default: all); e.g. kvnode to re-measure KvNode alone")
+    ap.add_argument("--e4-rates", help="comma-separated E4 offered loads in ops/s, instead of "
+                    "25/50/75%% of the slowest system's E1 median (e.g. an earlier session's)")
     args = ap.parse_args()
 
     experiments = suite.PROFILES[args.profile]
     if args.only:
         wanted = set(args.only.split(","))
         experiments = [e for e in experiments if e.id in wanted]
+    if args.systems:
+        # Validate names first: a typo would otherwise silently drop every
+        # experiment and "finish" a session that measured nothing.
+        keep = set(args.systems.split(","))
+        unknown = keep - set(suite.SYSTEMS)
+        if unknown:
+            ap.error(f"unknown systems: {', '.join(sorted(unknown))} (known: {', '.join(suite.SYSTEMS)})")
+        experiments = [replace(e, systems=tuple(s for s in e.systems if s in keep)) for e in experiments]
+        experiments = [e for e in experiments if e.systems]  # e.g. no rival of a one-system subset left
+    e4_override = None
+    if args.e4_rates:
+        try:
+            e4_override = [float(r) for r in args.e4_rates.split(",")]
+        except ValueError:
+            ap.error("--e4-rates takes comma-separated numbers (ops/s)")
+        if any(r <= 0 for r in e4_override):
+            ap.error("--e4-rates must be positive")
     stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H%M")
     out = pathlib.Path(args.out) if args.out else HERE / "results" / f"{stamp}-{args.profile}"
     out.mkdir(parents=True, exist_ok=True)
@@ -724,6 +765,9 @@ def main() -> int:
         env = environment(args.profile, experiments, cg)
         env["host_load_idle"] = idle
         env["host_logical_cpus"] = HOST.logical_cpus if HOST.enabled else None
+        # A subset session must say so: its report has no rivals to pair with,
+        # and its E4 loads may come from another session.
+        env["selection"] = {"only": args.only, "systems": args.systems, "e4_rates": e4_override}
         (out / "environment.json").write_text(json.dumps(env, indent=2), encoding="utf-8")
         print(f"  cpu clock factor {env['cpu_clock']['factor']:.4f}", flush=True)
 
@@ -732,7 +776,7 @@ def main() -> int:
     with raw.open("a", encoding="utf-8") as sink:
         for exp in experiments:
             try:
-                cells = [c for c in plan(exp, records) if c["run_id"] not in done]
+                cells = [c for c in plan(exp, records, e4_override) if c["run_id"] not in done]
             except RuntimeError as e:  # e.g. E4 without E1 results: skip, keep going
                 print(f"== {exp.id} skipped: {e}", flush=True)
                 continue
