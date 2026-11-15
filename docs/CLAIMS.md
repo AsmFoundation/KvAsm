@@ -112,6 +112,22 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
       on 100% SET.
     - It does not qualify as evidence. All 72 run windows overlapped other
       work in the VM, and a median 10.3 CPUs were busy outside it.
+    - **Estimated for `main` (850cfd9, unreleased) by a clean paired session**
+      ([results](../benchmarks/results/2026-11-15-kvnode-head/README.md)).
+      - KvNode was re-measured next to the very image the 2026-09-27 suite
+        measured, in the same blocks: 3.14× on 100% SET and 1.88× on 50/50
+        (6/6 blocks each).
+      - Carried over through the 2026-09-27 pairings, that makes writes
+        2.72× Redis, 3.95× Valkey, 2.83× Dragonfly, 1.87× Garnet and 4.56×
+        Memcached on 100% SET.
+      - On 50/50 it makes 1.85× Garnet to 3.17× Valkey.
+      - The estimate assumes only that the build's gain over the old image
+        is the same on both days' hosts. Today's host runs the old image
+        ~1.5× slower than it ran that day.
+    - Wording allowed while the estimate is the evidence: "on `main`, writes
+      are estimated ahead of all five stores (1.9× Garnet to 4.6×
+      Memcached on 100% SET), from a paired control measurement". The 0.2.0
+      lines above stay as the measured comparison.
   - **16 KiB values:** 0.50× Garnet and 0.48× Memcached. This is a known
     regression (CHANGELOG, Known issues).
     - **The line describes 0.2.0.** The cause is fixed since (unreleased;
@@ -122,6 +138,10 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
       A/B, 3 of 3 quads; the host was shared with another benchmark)
       ([results](../benchmarks/results/2026-11-15-asm-audit/README.md)).
     - The line stays until the comparison with the other stores is re-run.
+    - **Estimated for `main` by the same paired session:**
+      - 1.81× the 2026-09-27 image (3/3 blocks);
+      - so 0.90× Garnet and 0.88× Memcached, up from 0.50× and 0.48×;
+      - still slightly behind both.
   - **Tail latency at fixed load (E4):** Valkey's p99 is lower.
   - **16 requests in flight (E7):** Memcached is ahead (0.90×).
   - **8 cores:** not measured. The benchmark client saturates first

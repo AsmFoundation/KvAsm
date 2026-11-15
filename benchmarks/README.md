@@ -5,6 +5,50 @@ Valkey, Dragonfly, Garnet and Memcached), using one client, one placement
 and one statistical method for all of them. The rules, and the reasons
 behind each, are in [METHODOLOGY.md](METHODOLOGY.md).
 
+## KvNode re-measured, paired with the 2026-09-27 image (2026-11-15)
+
+The standard suite was re-run for KvNode only; the other stores were not
+re-measured.
+- **The host had moved.** The very image the 2026-09-27 suite measured ran
+  ~1.5× slower per GET than it did that day
+  ([pass 1](results/2026-11-15-kvnode-pass1/README.md)). So today's
+  absolute numbers cannot meet the other stores' numbers of that day.
+- **So each run pairs two builds in the same blocks:**
+  - the new build;
+  - that image, as `--control-image kvnode:0.1.0`.
+
+  Every cell yields a same-day new ÷ old ratio. Estimates against the
+  other stores follow as (new ÷ control today) × (control ÷ store, paired
+  on 2026-09-27), `transfer.py`.
+- **Sessions:**
+  - `main` at `850cfd9`: ADR 0011 plus the audit's request-path changes.
+    A clean session, 222 of 272 windows clean
+    ([2026-11-15-kvnode-head](results/2026-11-15-kvnode-head/README.md)).
+  - ADR 0011 alone: 167 of 272 windows overlapped another session's
+    builds ([2026-11-15-kvnode-standard](results/2026-11-15-kvnode-standard/README.md)).
+
+`main` ÷ the 2026-09-27 image, paired:
+
+| Cell | Ratio | Estimated ÷ Redis / Valkey / Dragonfly / Garnet / Memcached |
+|---|---|---|
+| 100% SET, 4 cores | **3.14×** (6/6) | **2.72 / 3.95 / 2.83 / 1.87 / 4.56×** (2026-09-27: 0.87 / 1.26 / 0.90 / 0.60 / 1.45×) |
+| 50% GET, 4 cores | **1.88×** (6/6) | **2.68 / 3.17 / 3.05 / 1.85 / 3.01×** (2026-09-27: 1.43 / 1.69 / 1.63 / 0.99 / 1.60×) |
+| 16 KiB values | **1.81×** (3/3) | 1.89 / 3.19 / 1.96 / **0.90 / 0.88×** (2026-09-27: 1.04 / 1.76 / 1.08 / 0.50 / 0.48×) |
+| 100% GET, 1 core (N1) | **1.06×**, CPU per GET 0.95× (6/6) | 1.33 / 1.31× (Redis / Valkey) |
+| 100% GET, 4 cores (S1) | 1.02× (n.s.) | 3.14 / 2.83 / 3.76 / 2.34 / 3.01× |
+| No-op health check (N3) | **0.96×**, CPU 1.04× (6/6) | E5 measured 1.00× (n.s.) |
+
+- **Writes and mixes are no longer behind any store**, by these estimates.
+  W1's direct run on a loaded host agrees.
+- **Behind:** only 16 KiB values against Garnet and Memcached, now close.
+- **The one regression:** the no-op health check, about 4% dearer in N3.
+- **On the 2026-09-27 host,** main's estimated numbers are:
+  - 7.0M SET/s and 7.1M on 50/50 at 4 cores (2.23M and 3.79M then);
+  - 1.86M GET/s on one core (1.76M then).
+- **Estimates rest on one assumption,** that the new build's gain over the
+  old image is the same on both days' hosts. A direct comparison with the
+  other stores on a quiet host would replace them.
+
 ## Writes after ADR 0011 (2026-11-15)
 
 [ADR 0011](../docs/adr/0011-batched-writes-per-worker-reclamation.md)

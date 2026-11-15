@@ -24,9 +24,11 @@ and what is deliberately *not* claimed.
     in all ten paired blocks.
   - 1.26× Redis on one core.
   - In that comparison (0.2.0) it was behind them on writes and on 16 KiB
-    values (see [Performance](#performance)). Writes have since become
-    2.6× faster at 4 workers (ADR 0011, unreleased). They have not yet been
-    compared with the other stores on a quiet host.
+    values (see [Performance](#performance)).
+  - Since then (unreleased), writes are about 3× faster, and 16 KiB values
+    about 1.8×. On `main`, writes are estimated ahead of all five stores:
+    1.9× Garnet to 4.6× Memcached on 100% SET, from a paired control
+    measurement.
 - **Assembly data structures.** The store is a bucketized cuckoo table of
   64-byte seqlocked buckets. A measured bake-off chose it over chaining and
   a branchless binary trie, both also written in assembly
@@ -216,6 +218,17 @@ every server in all ten paired blocks):
     - The comparison with the other stores predates it. A first re-run ran
       on a loaded host and is only indicative
       ([W1](benchmarks/results/2026-11-15-writes-w1/README.md)).
+    - **On `main`, estimated ahead of all five**
+      ([paired suite](benchmarks/results/2026-11-15-kvnode-head/README.md)).
+      - The standard suite re-ran for KvNode next to the very image measured
+        on 2026-09-27, in the same blocks. Writes came out 3.14× (100% SET)
+        and 1.88× (50/50).
+      - Carried over through the 2026-09-27 pairings:
+        - 100% SET: 2.72× Redis, 3.95× Valkey, 2.83× Dragonfly, 1.87×
+          Garnet and 4.56× Memcached;
+        - 50/50: 1.85× Garnet to 3.17× Valkey.
+      - The estimate assumes only that the build's gain over the old image
+        is the same on both days' hosts.
   - 16 KiB values: 481k GET/s, half of Garnet's and Memcached's, and 30%
     below the old nghttp2 build.
     - The cause is known and fixed since (unreleased): a reply longer
@@ -225,6 +238,10 @@ every server in all ten paired blocks):
       1.84× the GETs per second at 0.54× the server CPU per GET (paired
       A/B, 3 of 3 quads; the host was shared with another benchmark).
     - The comparison with the other stores predates it.
+    - **The paired suite confirms the fix:** 1.81× the 2026-09-27 image in
+      the suite's own placement.
+      - Estimated 0.90× Garnet and 0.88× Memcached, up from 0.50× and 0.48×.
+      - Still slightly behind both.
 - **At 8 cores the benchmark client is the limit:** kvbench's gRPC client
   tops out near 9.3M requests/s, so KvNode's 8-core numbers measure the
   client.

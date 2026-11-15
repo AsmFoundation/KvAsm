@@ -181,6 +181,17 @@ so every line can be checked against the code and the measurements.
   unreleased KvNode build under its own tag. The first W1 run
   (`benchmarks/results/2026-11-15-writes-w1`) put writes ahead of all five
   stores. It ran on a loaded host and is indicative only.
+- Benchmarks: `run.py --systems` re-measures some systems alone, and
+  `--e4-rates` holds E4 at an earlier session's loads. `--control-image`
+  runs an older KvNode image in the same blocks, and `transfer.py` carries
+  an earlier session's pairings over through it.
+  - The standard suite for `main` paired with the 2026-09-27 image
+    (`benchmarks/results/2026-11-15-kvnode-head`):
+    - 100% SET 3.14×, 50/50 1.88×, 16 KiB values 1.81×, one-core GETs
+      1.06× (6/6 blocks; 16 KiB 3/3);
+    - estimated 1.87× Garnet to 4.56× Memcached on 100% SET.
+  - The host itself had moved by ~1.5× since that day, which is why the
+    control is needed.
 - Tests:
   - `test_store`: a batched model check and the record-cache checks;
   - `test_store_mt`: four phases with batched writers;
