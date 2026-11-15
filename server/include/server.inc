@@ -63,7 +63,14 @@ struc Config
     .cache_l2_bits:     resq 1          ; KVNODE_CACHE_L2_BITS: 0 = no private L2
     .max_upload:        resq 1          ; KVNODE_MAX_UPLOAD_BYTES: largest value Upload stores
     .crc_mode:          resq 1          ; KVNODE_CRC32C: a CRC_CFG_* word index
+    .hash_mode:         resq 1          ; KVNODE_HASH: a HASH_CFG_* word index
 endstruc
+
+; KVNODE_HASH words (config.asm) — the index stored in Config.hash_mode.
+; main.asm maps them to store.asm's KV_HASH_* modes.
+%define HASH_CFG_AUTO       0
+%define HASH_CFG_SIPHASH    1
+%define HASH_CFG_AES        2
 
 ; KVNODE_CRC32C words (config.asm) — the index stored in Config.crc_mode.
 ; New words go at the end: the indices are what main.asm maps to modes.

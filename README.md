@@ -72,8 +72,9 @@ and what is deliberately *not* claimed.
     uploads.
   - Tested byte by byte, including resets, hangs and slow links
     mid-transfer ([ADR 0010](docs/adr/0010-streaming-upload-download.md)).
-- **Exact keys, safe hashing.** Keys are compared byte for byte. SipHash
-  under a per-process secret prevents hash flooding. Clients compact long
+- **Exact keys, safe hashing.** Keys are compared byte for byte. A keyed
+  hash under a per-process secret (AES-128 through AES-NI, SipHash-2-4
+  where the CPU has none) prevents hash flooding. Clients compact long
   keys ([ADR 0004](docs/adr/0004-exact-keys-and-client-compaction.md)).
 - **Two data sources:** clients write via gRPC, and a verified snapshot
   file loads at startup.

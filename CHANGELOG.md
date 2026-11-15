@@ -44,13 +44,27 @@ so every line can be checked against the code and the measurements.
   nothing either way.
 - **Per-worker memory** grows by up to 256 KiB of cached records, plus a
   1,472-byte QSBR slot (it was 64 bytes; docs/OPERATIONS.md).
-- **One 64-bit hash word places a key** (ADR 0004, amendment). The table's
-  bucket index and tag now come from disjoint bits of one SipHash-2-4 word
-  instead of the two words of SipHash-2-4-128: the same keyed function and
-  key, four finalization rounds fewer on every Get, Put, Delete, Upload
-  and Download. 66.0 / 50.0 core cycles per 16-byte key against
-  86.6 / 70.6, and 7.7% off a GET's user-space path. Keys are compared
-  exactly as before; the snapshot checksum is unchanged.
+- **The key hash is AES-128 where the CPU has AES-NI** (ADR 0004, second
+  amendment; `KVNODE_HASH=auto|siphash|aes`, default `auto`). One
+  CMAC-shaped encryption under the per-process secret replaces SipHash on
+  every Get, Put, Delete, Upload and Download: 43.8 / 7.6 core cycles per
+  16-byte key against 86.6 / 70.6 for SipHash-2-4-128.
+  - A GET's request path is 14.5% shorter in process (103.3 → 88.3 ns)
+    and 158 instructions shorter (1,292 → 1,134).
+  - End to end, one worker, AES against the 64-bit SipHash build: server
+    CPU per GET 0.95× with busy-polling clients (3 of 4 quads) and 0.97×
+    with blocking ones (3 of 3).
+  - No other operation is affected: 100% SET 0.99×, a 50/50 mix 0.98×,
+    Upload 0.99× and Download 1.00× the server CPU per request.
+
+  Keys are compared exactly as before; stored data, the wire protocol and
+  the snapshot checksum do not depend on the hash. A CPU without AES-NI
+  uses SipHash-2-4.
+- **The SipHash fallback needs one 64-bit word** (ADR 0004, first
+  amendment). The table's bucket index and tag come from disjoint bits of
+  one SipHash-2-4 word instead of the two words of SipHash-2-4-128: the
+  same keyed function and key, four finalization rounds fewer (66.0 / 50.0
+  cycles per 16-byte key).
 - **A unary response is written from one template** once both response
   fields are in the peer's HPACK table (ADR 0007, amendment): 187 → 82
   framing instructions per GET, 6.2% off a GET's user-space path and 16.1%
@@ -87,7 +101,11 @@ so every line can be checked against the code and the measurements.
 
 ### Added
 
-- `kv_siphash64` (the placement hash) and its vectors in `test_siphash`.
+- `KVNODE_HASH`, `server/src/aeshash.asm` and `test_aeshash`: the AES
+  hash against an AES-128 written from FIPS-197 in C, and the store under
+  each hash. The startup line now ends with `hash=aes` or `hash=siphash`.
+- `kv_siphash64` (the fallback placement hash) and its vectors in
+  `test_siphash`.
 - `itest_grpc`: `test_get_bursts`, bursts of Gets at every frame-count
   boundary up to the largest value, against a reader that stops reading
   (between two replies, and in the middle of one), and against the

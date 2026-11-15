@@ -56,8 +56,9 @@ flowchart LR
    [Streaming calls](#streaming-calls-adr-0010)).
 4. **Execute.** At END_STREAM the worker validates the 5-byte gRPC framing,
    decodes the protobuf (zero-copy, `proto.asm`), checks limits and hashes
-   the key (SipHash-2-4 under the secret key; one 64-bit word gives the
-   bucket index and the tag, ADR 0004).
+   the key under the per-process secret: AES-128 through AES-NI, or
+   SipHash-2-4 where the CPU has none (ADR 0004). The low bits of the
+   hash pick the bucket and its top byte is the tag.
    - Health checks execute right there.
    - **Gets, Puts and Deletes are deferred:** their two candidate buckets are
      prefetched immediately, and the stream joins the connection's batch. A
@@ -284,7 +285,8 @@ flowchart LR
 | `server/src/store.asm` | table lifecycle, Put/Delete and their batched forms, write-once records for Upload, Download pins, memory accounting, QSBR with per-worker slots (limbo, record cache) |
 | `server/src/cuckoo.asm` | lock-free lookup (SWAR or SSE2 tag scan), insert with BFS displacement, remove, prefetch stages |
 | `server/src/hcache.asm` | optional per-worker private L1/L2 record cache, generation-validated |
-| `server/src/siphash.asm`, `util.asm` | SipHash-2-4: the 64-bit placement hash and the 128-bit snapshot checksum; exact key compare and SWAR tag match |
+| `server/src/aeshash.asm` | the AES-128 key hash (AES-NI): CMAC-shaped, a key block per table, CPUID gate |
+| `server/src/siphash.asm`, `util.asm` | SipHash-2-4: the fallback 64-bit placement hash and the 128-bit snapshot checksum; exact key compare and SWAR tag match |
 | `server/src/wlock.asm` | futex writer mutex |
 | `server/src/snapshot.asm` | snapshot verification and loading |
 | `server/src/log.asm` | one-`write` structured log lines |

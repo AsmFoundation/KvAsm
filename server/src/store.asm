@@ -83,6 +83,9 @@ extern free
 extern memcpy
 extern memset
 extern kv_siphash64
+extern kv_aes_available
+extern kv_aeshash_setup
+extern kv_aeshash128
 extern kv_cuckoo_get
 extern kv_cuckoo_upsert
 extern kv_cuckoo_remove
@@ -91,11 +94,21 @@ extern kv_cuckoo_prefetch_records
 extern kv_mutex_lock
 extern kv_mutex_unlock
 
+; The key hash in force (kv_set_hash_mode). Readers only load it; on its own
+; cache line so nothing written at run time ever shares it.
+section .data
+align 64
+kv_hash_mode:   db KV_HASH_SIPHASH
+                times 63 db 0
+
 section .text
 
 global kv_store_create
 global kv_store_destroy
 global kv_store_hash
+global kv_set_hash_mode
+global kv_hash_best_mode
+global kv_hash_mode_get
 global kv_store_get
 global kv_store_put
 global kv_store_delete
@@ -273,6 +286,23 @@ kv_store_create:
     mov     [rbx + Table.seed0], rax
     mov     rax, [r14 + 8]
     mov     [rbx + Table.seed1], rax
+    ; The AES hash's key block, whenever the CPU can run it — whatever hash is
+    ; selected, so kv_set_hash_mode never meets a table without one. A CPU
+    ; without AES-NI leaves hash_key 0 (calloc), and the mode cannot be AES
+    ; there (kv_set_hash_mode refuses).
+    call    kv_aes_available wrt ..plt
+    test    eax, eax
+    jz      .hash_ready
+    mov     edi, 64
+    mov     esi, AESKEY_BYTES           ; 448: a multiple of the alignment, as aligned_alloc wants
+    call    aligned_alloc wrt ..plt
+    test    rax, rax
+    jz      .fail
+    mov     [rbx + Table.hash_key], rax
+    mov     rdi, r14                    ; the seed
+    mov     rsi, rax
+    call    kv_aeshash_setup wrt ..plt
+.hash_ready:
     mov     [rbx + Table.max_records], r12
     test    r15, r15
     jnz     .have_limit
@@ -419,6 +449,8 @@ kv_store_destroy:
 .scratch:
     mov     rdi, [rbx + Table.inval]
     call    free wrt ..plt              ; 0 when caching was never enabled
+    mov     rdi, [rbx + Table.hash_key]
+    call    free wrt ..plt              ; 0 on a CPU without AES-NI
     mov     rdi, [rbx + Table.readers]
     call    free wrt ..plt              ; free(NULL) is a no-op
     mov     rdi, [rbx + Table.bfs]
@@ -438,23 +470,88 @@ kv_store_destroy:
     ret
 
 ; =============================================================================
-; kv_store_hash — the store's keyed hash of a key (SipHash-2-4, 64 bits).
+; kv_set_hash_mode — choose the keyed hash that places keys.
+;
+; @param  edi  KV_HASH_SIPHASH (0) or KV_HASH_AES (1)
+; @returns eax = the previous mode, or -EINVAL (mode unchanged) for any other
+;          value — and for KV_HASH_AES on a CPU without AES-NI, where the
+;          hash's first instruction would raise #UD.
+; @remarks Process-wide, like kv_set_scan_mode. Footgun: a key hashes to a
+;          different bucket under each mode, so the mode must be set before
+;          the first key of ANY table is hashed and never again while a
+;          table holds keys — lookups of keys stored under the other mode
+;          would miss. Not synchronized: startup, or a test between tables.
+;          Both modes are keyed by the table's seed and nobody outside the
+;          process can predict either; only speed differs (ADR 0004).
+; =============================================================================
+kv_set_hash_mode:
+    cmp     edi, KV_HASH_MAX
+    ja      .bad
+    cmp     edi, KV_HASH_AES
+    jne     .set
+    push    rdi                         ; one push: aligned for the call
+    call    kv_aes_available wrt ..plt
+    pop     rdi
+    test    eax, eax
+    jz      .bad
+.set:
+    movzx   eax, byte [rel kv_hash_mode]
+    mov     [rel kv_hash_mode], dil
+    ret
+.bad:
+    mov     eax, -EINVAL
+    ret
+
+; =============================================================================
+; kv_hash_best_mode — the fastest key hash this CPU runs.
+; @returns eax = KV_HASH_AES when kv_aes_available(), else KV_HASH_SIPHASH.
+; @remarks What KVNODE_HASH=auto selects (main.asm). Measured per 16-byte key:
+;          7.6 core cycles for AES when hashes overlap against 50.0 for
+;          SipHash-2-4 (benchmarks/results/2026-11-15-asm-audit).
+; =============================================================================
+kv_hash_best_mode:
+    sub     rsp, 8                      ; aligned for the call
+    call    kv_aes_available wrt ..plt  ; 1 = KV_HASH_AES, 0 = KV_HASH_SIPHASH
+    add     rsp, 8
+    ret
+
+; =============================================================================
+; kv_hash_mode_get — the key hash in force.
+; @returns eax = KV_HASH_SIPHASH or KV_HASH_AES.
+; =============================================================================
+kv_hash_mode_get:
+    movzx   eax, byte [rel kv_hash_mode]
+    ret
+
+; =============================================================================
+; kv_store_hash — the store's keyed hash of a key.
 ;
 ; @param  rdi  Table*   @param rsi  key   @param rdx  len
 ; @param  rcx  uint64_t out[2] (may be NULL)
-; @returns rax = h1, rdx = h2 (also written to out when non-NULL), with
-;          h2 == h1: the bucket index comes from the word's low bits and the
-;          tag from its top byte (kv_siphash64 explains why one word is
-;          enough and what it saves).
+; @returns rax = h1, rdx = h2 (also written to out when non-NULL). The bucket
+;          index comes from h1's low bits and the tag from h2's top byte.
+;          Under KV_HASH_AES they are the two words of one AES-128 result;
+;          under KV_HASH_SIPHASH h2 == h1, one 64-bit SipHash-2-4 word (its
+;          low bits and its top byte are disjoint; kv_siphash64).
 ; @remarks Callers hash once and pass (h1, h2) to get/put/delete, so the
-;          per-process secret seed never leaves the Table.
+;          per-process secret never leaves the Table. The mode is a
+;          perfectly predicted branch on a byte nobody writes after startup.
+;          The AES path clobbers xmm0-xmm2 (see kv_aeshash128).
 ; =============================================================================
 kv_store_hash:
+    cmp     byte [rel kv_hash_mode], KV_HASH_SIPHASH
+    jne     .aes
     lea     r8, [rdi + Table.seed0]
     mov     rdi, rsi
     mov     rsi, rdx
     mov     rdx, r8
     jmp     kv_siphash64 wrt ..plt
+.aes:
+    mov     r8, [rdi + Table.hash_key]
+    mov     rdi, rsi
+    mov     rsi, rdx
+    mov     rdx, r8
+    jmp     kv_aeshash128 wrt ..plt
 
 ; =============================================================================
 ; kv_store_get — lock-free lookup.

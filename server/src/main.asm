@@ -47,6 +47,9 @@ extern kv_config_load
 extern kv_set_scan_mode
 extern kv_crc32c_set_mode
 extern kv_crc32c_best_mode
+extern kv_set_hash_mode
+extern kv_hash_best_mode
+extern kv_hash_mode_get
 extern kv_store_enable_inval
 extern kv_store_create
 extern kv_store_destroy
@@ -116,6 +119,11 @@ m_f_crc:    db ' msg="invalid setting" name=KVNODE_CRC32C value='
 L_f_crc     equ $ - m_f_crc
 m_f_crc2:   db ' reason="this CPU lacks the instructions it needs"'
 L_f_crc2    equ $ - m_f_crc2
+k_hash:     db " hash="
+v_siphash:  db "siphash", 0
+v_aes:      db "aes", 0
+m_f_hash:   db ' msg="invalid setting" name=KVNODE_HASH value=aes reason="this CPU lacks AES-NI"'
+L_f_hash    equ $ - m_f_hash
 m_listen:   db ' msg="listening" transport=h2c'
 L_listen    equ $ - m_listen
 m_loaded:   db ' msg="snapshot loaded" records='
@@ -248,6 +256,30 @@ main:
     jmp     .return
 .crc_ok:
 
+    ; The key hash, before any key is hashed (the snapshot load below hashes
+    ; every key it inserts): auto takes AES-128 where the CPU has AES-NI and
+    ; SipHash-2-4 elsewhere; a forced aes the CPU cannot run is a
+    ; configuration error (exit 2), not a #UD at the first request.
+    mov     rax, [r15 + Config.hash_mode]
+    xor     edi, edi                    ; KV_HASH_SIPHASH
+    cmp     rax, HASH_CFG_SIPHASH
+    je      .hash_set
+    mov     edi, 1                      ; KV_HASH_AES
+    cmp     rax, HASH_CFG_AES
+    je      .hash_set
+    call    kv_hash_best_mode wrt ..plt ; auto
+    mov     edi, eax
+.hash_set:
+    call    kv_set_hash_mode wrt ..plt
+    test    eax, eax
+    jns     .hash_ok
+    LOGBEGIN lvl_error
+    LOGLIT  m_f_hash, L_f_hash
+    LOGEND
+    mov     eax, 2
+    jmp     .return
+.hash_ok:
+
     LOGBEGIN lvl_info
     LOGLIT  CSTR_starting, L_starting
     LOGLIT  k_port, 6
@@ -291,6 +323,15 @@ main:
     lea     rsi, [k_none]
 .snap_name:
     call    kv_logb_cstr wrt ..plt
+    ; Last on the line: the end-to-end suite matches "crc32c=<mode> snapshot=".
+    LOGLIT  k_hash, 6
+    call    kv_hash_mode_get wrt ..plt
+    lea     rsi, [v_siphash]
+    lea     rdx, [v_aes]
+    cmp     eax, 1                      ; KV_HASH_AES
+    cmove   rsi, rdx
+    lea     rdi, [rsp + F_LOG]
+    call    kv_logb_cstr wrt ..plt
     LOGEND
 
     ; Refuse to join another process's SO_REUSEPORT group (kv_port_probe
@@ -312,8 +353,9 @@ main:
     jmp     .return
 .port_ok:
 
-    ; SipHash key: must be unpredictable, or bucket placement becomes
-    ; predictable to anyone who can choose keys.
+    ; The hash key (SipHash's key, and the seed of the AES round keys): must
+    ; be unpredictable, or bucket placement becomes predictable to anyone
+    ; who can choose keys.
     lea     rdi, [rsp + F_SEED]
     mov     esi, 16
     xor     edx, edx

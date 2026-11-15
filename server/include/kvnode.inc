@@ -41,6 +41,19 @@
 %define MADV_HUGEPAGE       14
 %define HUGE_PAGE           0x200000    ; x86-64 transparent huge page (2 MiB)
 
+; ---- key hash (store.asm kv_store_hash, aeshash.asm) ---------------------------
+; Which keyed hash places keys (kv_set_hash_mode). Process-wide, set once at
+; startup before any key is hashed: every table of the process hashes the
+; same way, under its own key.
+%define KV_HASH_SIPHASH     0           ; SipHash-2-4, one 64-bit word: runs on every x86-64
+%define KV_HASH_AES         1           ; AES-128 through AES-NI (kv_aes_available)
+%define KV_HASH_MAX         1
+; A table's AES key block: the 11 round keys, then one secret mask per final
+; block length 0..16 (aeshash.asm). 448 bytes = 7 cache lines, 64-byte aligned.
+%define AESKEY_RK_BYTES     176
+%define AESKEY_MASKS        17
+%define AESKEY_BYTES        (AESKEY_RK_BYTES + AESKEY_MASKS * 16)
+
 ; ---- private-cache limits (hcache.asm / store.asm) ------------------------------
 %define INVAL_BITS_MAX      24          ; 16 Mi generations = 128 MiB at most
 %define HCACHE_BITS_MAX     24          ; per level: 16 Mi entries = 512 MiB at most
@@ -181,7 +194,12 @@ struc Table
     ; read-only; the array itself is bumped by writers under the mutex.
     .inval:         resq 1          ; u64[inval_mask + 1], or 0 when disabled
     .inval_mask:    resq 1
-    .pad7:          resb 48         ; keep line 8 on its own cache line
+    ; The AES key hash's key block (aeshash.asm): AESKEY_BYTES derived from the
+    ; seed by kv_store_create, or 0 on a CPU without AES-NI. Set before the
+    ; table is shared, then read-only — on this line because every hash loads
+    ; it and nothing here is written after startup.
+    .hash_key:      resq 1
+    .pad7:          resb 40         ; keep line 8 on its own cache line
     ; line 8: record pins (store.asm kv_store_pin). A Download keeps its record
     ; alive across the worker's quiescent states; QSBR alone would free a
     ; replaced record at the next grace period. Lock-holder state, like lines

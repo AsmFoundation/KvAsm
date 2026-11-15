@@ -60,7 +60,7 @@ Know what KvNode protects against before you deploy it
     (CVE-2023-44487), CONTINUATION caps, and the refusal of oversized
     frames.
 - **Hash flooding:** any way for clients to influence bucket placement
-  despite the per-process SipHash secret.
+  despite the per-process hash secret (the AES-128 or SipHash-2-4 key).
 - **Torn or mixed values:** a reader that observes part of one value and
   part of another, or a value never written.
 - **Container escape or privilege issues** in the published image. The

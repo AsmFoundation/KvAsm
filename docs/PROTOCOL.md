@@ -169,7 +169,8 @@ Keys of 64 bytes or less are sent unchanged.
 
 - *Why:* bounded memory and compare cost per key on the server, without
   trusting clients with bucket placement. The server always hashes keys with
-  its own secret SipHash key, so clients cannot engineer collisions.
+  its own secret key (AES-128 or SipHash-2-4, ADR 0004), so clients cannot
+  engineer collisions.
 - *Collision safety:* raw keys are at most 64 bytes and compacted keys are
   exactly 65 bytes, so the two spaces are disjoint by length. Two long keys
   collide only if SHA-512 does (about 2⁻²⁵⁶ per pair).

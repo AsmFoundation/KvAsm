@@ -4,7 +4,8 @@
 
 Every setting is an environment variable. Numeric values are strict decimal
 integers: no sign, no spaces, no units. Named choices (`KVNODE_SCAN`,
-`KVNODE_CRC32C`) must be one of the listed lowercase words exactly.
+`KVNODE_CRC32C`, `KVNODE_HASH`) must be one of the listed lowercase words
+exactly.
 Out-of-range, malformed or unknown values stop startup with exit code **2**
 and a log line naming the variable, the value and what is allowed. A typo
 never silently falls back to a default.
@@ -26,6 +27,7 @@ never silently falls back to a default.
 | `KVNODE_CRC32C` | `auto` \| `vpclmul` \| `pclmul` \| `sse42` \| `table` | `auto` | CRC-32C of Upload/Download: `auto` takes the fastest path the CPU has — `vpclmul` (256-bit carry-less folding, AVX2 + VPCLMULQDQ: Ice Lake, Zen 3 and later; ~88 GB/s fused with a 16 KiB copy in cache), `pclmul` (128-bit folding, any x86-64 since 2010; ~45 GB/s), `sse42` (the `crc32` instruction, one dependency chain; ~15 GB/s), `table` (slicing-by-8; ~3.2 GB/s). Forcing a mode the CPU lacks refuses to start (exit 2). All give identical checksums |
 | `KVNODE_SNAPSHOT` | path | unset | snapshot to load at startup (see Snapshots) |
 | `KVNODE_SCAN` | `swar` \| `sse2` | `sse2` | how lookups match tags. `sse2` matches both candidate buckets in one compare: 2–6% faster per batched lookup, and SSE2 is part of every x86-64 CPU. `swar` is the scalar path. Results are identical ([ADR 0006](adr/0006-store-memory-levels-simd-and-private-caches.md)) |
+| `KVNODE_HASH` | `auto` \| `siphash` \| `aes` | `auto` | the keyed hash that places keys, under a per-process secret either way: `auto` takes `aes` (AES-128 through AES-NI: ten instructions per key of up to 16 bytes) where the CPU has AES-NI, and `siphash` (SipHash-2-4) elsewhere. Forcing `aes` on a CPU without AES-NI refuses to start (exit 2). Stored data, the wire protocol and snapshots do not depend on it ([ADR 0004](adr/0004-exact-keys-and-client-compaction.md)) |
 | `KVNODE_CACHE_L1_BITS` | 0–24 | 0 | per-worker private L1 record cache of 2^bits entries (32 bytes each); 0 = off. Measured slower than the CPU's own caches except for tiny hot sets, so off by default (ADR 0006) |
 | `KVNODE_CACHE_L2_BITS` | 0–24 | 0 | the same for a second, larger private level |
 
@@ -184,7 +186,8 @@ Measured resident memory (`/proc/PID/smaps_rollup`; `VmRSS` in
 - **Plaintext.** KvNode speaks h2c. Put it behind a TLS-terminating proxy
   or a service mesh whenever traffic leaves a trusted network. It has no
   authentication: restrict who can reach the port.
-- **Hash flooding** is prevented: bucket placement uses SipHash under a
+- **Hash flooding** is prevented: bucket placement uses a keyed hash
+  (AES-128, or SipHash-2-4 on a CPU without AES-NI; `KVNODE_HASH`) under a
   per-process secret from `getrandom`, and clients cannot influence it
   (ADR 0004).
 - **Resource limits:** key and value sizes, request size, upload size,

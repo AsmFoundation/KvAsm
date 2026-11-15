@@ -104,6 +104,19 @@ KvRec *kv_cuckoo_remove(KvTable *t, const void *key, size_t len, uint64_t h1, ui
 enum { KV_SCAN_SWAR = 0, KV_SCAN_SSE2 = 1 };
 int kv_set_scan_mode(int mode); /* previous mode, or -EINVAL */
 
+/* store.asm / aeshash.asm — the keyed hash that places keys. Process-wide:
+ * set it before the first key of any table is hashed, never while a table
+ * holds keys (they would be looked up in the wrong buckets). */
+enum { KV_HASH_SIPHASH = 0, KV_HASH_AES = 1 };
+enum { KV_AESKEY_BYTES = 448 };  /* 11 round keys + 17 length masks */
+int kv_set_hash_mode(int mode);  /* previous mode; -EINVAL: unknown, or AES without AES-NI */
+int kv_hash_best_mode(void);     /* KV_HASH_AES when the CPU has AES-NI, else KV_HASH_SIPHASH */
+int kv_hash_mode_get(void);
+int kv_aes_available(void);      /* 1 when CPUID reports AES-NI and SSSE3 */
+/* The two below raise #UD unless kv_aes_available(). block: 16-byte aligned. */
+void kv_aeshash_setup(const uint8_t seed[16], uint8_t block[KV_AESKEY_BYTES]);
+uint64_t kv_aeshash128(const void *msg, size_t len, const uint8_t *block, uint64_t out[2]);
+
 /* store.asm — prefetch stages of the batched GET path and cache invalidation */
 void kv_store_prefetch(KvTable *t, uint64_t h1, uint64_t h2);
 void kv_store_prefetch_records(KvTable *t, uint64_t h1, uint64_t h2);

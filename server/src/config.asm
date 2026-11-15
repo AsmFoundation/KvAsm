@@ -32,6 +32,11 @@
 ;                               (256-bit folding, 128-bit folding, the
 ;                               crc32 instruction, tables — crc32c.asm);
 ;                               main.asm refuses a forced mode the CPU lacks
+;   KVNODE_HASH                 auto | siphash | aes
+;                               default auto: the keyed hash that places
+;                               keys — AES-128 through AES-NI where the CPU
+;                               has it, SipHash-2-4 otherwise (ADR 0004);
+;                               main.asm refuses aes on a CPU without AES-NI
 ; (KVNODE_H2_ENGINE is gone: HTTP/2 is always KvNode's own engine, ADR 0008;
 ; like any unknown variable it is ignored.)
 ; =============================================================================
@@ -106,6 +111,10 @@ w_table:    db "table", 0
 w_pclmul:   db "pclmul", 0
 w_vpclmul:  db "vpclmul", 0
 a_crc:      db "auto|vpclmul|pclmul|sse42|table", 0
+n_hash:     db "KVNODE_HASH", 0
+w_siphash:  db "siphash", 0
+w_aes:      db "aes", 0
+a_hash:     db "auto|siphash|aes", 0
 m_upbudget: db ' reason="must not exceed KVNODE_CONN_BUFFER_MB: a larger upload could never fit one connection', 39, 's budget"'
 m_upbudget_len equ $ - m_upbudget
 lvl_error:  db "ERROR", 0
@@ -144,6 +153,8 @@ settings_end:
 words_scan:     dq w_swar, w_sse2, 0            ; = KV_SCAN_SWAR, KV_SCAN_SSE2
 ; = CRC_CFG_AUTO, _SSE42, _TABLE, _PCLMUL, _VPCLMUL (in that order)
 words_crc:      dq w_auto, w_sse42, w_table, w_pclmul, w_vpclmul, 0
+; = HASH_CFG_AUTO, _SIPHASH, _AES (in that order)
+words_hash:     dq w_auto, w_siphash, w_aes, 0
 choices:
     ; SSE2 by default: faster in the batched GET path at every working set
     ; from L2 to DRAM (bench_store, ADR 0006); SWAR stays selectable.
@@ -153,6 +164,10 @@ choices:
     ; ~3x, the instruction ~4.6x the tables); every path stays selectable,
     ; and the tables are the fallback that runs everywhere.
     dq n_crc,    Config.crc_mode,  CRC_CFG_AUTO, words_crc,  a_crc
+    ; auto: AES-128 where the CPU has AES-NI (7.6 core cycles per 16-byte
+    ; key when hashes overlap, against 50.0 for SipHash-2-4), SipHash-2-4
+    ; everywhere else; both are keyed by the per-process secret (ADR 0004).
+    dq n_hash,   Config.hash_mode, HASH_CFG_AUTO, words_hash, a_hash
 choices_end:
 
 section .text

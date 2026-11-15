@@ -200,16 +200,19 @@ wait "$DRAIN" || { cat "$WORK/drain.out" >&2; fail "in-flight request was not co
 wait "$XFER" || { cat "$WORK/xfer.out" >&2; fail "in-flight Upload/Download were not completed during drain"; }
 cat "$WORK/hold.out" "$WORK/drain.out" "$WORK/xfer.out"
 
-echo "itest: phase 2b — the same suite through private L1/L2 caches, SWAR scans, table CRC-32C"
+echo "itest: phase 2b — the same suite through private L1/L2 caches, SWAR scans, table CRC-32C, SipHash"
 # Tiny caches (L1 256, L2 4096 entries) so entries conflict and are reused
 # while the suite's writers invalidate them; SWAR because SSE2 is the default;
-# the table CRC-32C because auto picks a hardware path on any CPU this runs on.
+# the table CRC-32C because auto picks a hardware path on any CPU this runs
+# on; SipHash because auto picks the AES key hash wherever the CPU has AES-NI,
+# and the fallback must stay proven end to end.
 start_server cached KVNODE_WORKERS=4 KVNODE_CAPACITY=200000 \
   KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE KVNODE_MAX_UPLOAD_BYTES=$MAX_UPLOAD \
-  KVNODE_CACHE_L1_BITS=8 KVNODE_CACHE_L2_BITS=12 KVNODE_SCAN=swar KVNODE_CRC32C=table
+  KVNODE_CACHE_L1_BITS=8 KVNODE_CACHE_L2_BITS=12 KVNODE_SCAN=swar KVNODE_CRC32C=table KVNODE_HASH=siphash
 grep -qF 'scan=swar' "$LOG" || fail "scan mode not logged"
 grep -qF 'cache_l1_bits=8 cache_l2_bits=12' "$LOG" || fail "cache settings not logged"
 grep -qF 'crc32c=table' "$LOG" || fail "crc32c mode not logged"
+grep -qF 'hash=siphash' "$LOG" || fail "hash mode not logged"
 "$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" "$MAX_UPLOAD" \
   || fail "itest_grpc suite with private caches"
 stop_server
@@ -270,6 +273,7 @@ refuse "unknown crc32c mode" 2 'name=KVNODE_CRC32C value=fast allowed=auto|vpclm
   KVNODE_CRC32C=fast
 refuse "crc32c mode case" 2 'name=KVNODE_CRC32C value=SSE42 allowed=auto|vpclmul|pclmul|sse42|table' \
   KVNODE_CRC32C=SSE42
+refuse "unknown hash" 2 'name=KVNODE_HASH value=md5 allowed=auto|siphash|aes' KVNODE_HASH=md5
 refuse "upload above the budget" 2 \
   'name=KVNODE_MAX_UPLOAD_BYTES value=2000000 allowed=0..1048576 reason="must not exceed KVNODE_CONN_BUFFER_MB' \
   KVNODE_CONN_BUFFER_MB=1 KVNODE_MAX_UPLOAD_BYTES=2000000
