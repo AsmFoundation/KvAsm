@@ -281,6 +281,11 @@ struc Stream
     .key_len:           resq 1
     .h1:                resq 1
     .h2:                resq 1
+    ; The key's two candidate buckets (kv_store_locate at dispatch): the batch
+    ; prefetches their records and a Get looks the key up through them, so
+    ; the addresses are derived from (h1, h2) once instead of three times.
+    .b1:                resq 1
+    .b2:                resq 1
     .batch_next:        resq 1
     ; A batched Put's record, allocated and filled at dispatch, owned by the
     ; Stream until kv_grpc_run_batch publishes it (then 0). stream_free

@@ -120,6 +120,13 @@ uint64_t kv_aeshash128(const void *msg, size_t len, const uint8_t *block, uint64
 /* store.asm — prefetch stages of the batched GET path and cache invalidation */
 void kv_store_prefetch(KvTable *t, uint64_t h1, uint64_t h2);
 void kv_store_prefetch_records(KvTable *t, uint64_t h1, uint64_t h2);
+/* The same three stages for a caller that keeps the bucket addresses:
+ * kv_store_locate returns bucket 1 in rax and bucket 2 in rdx (a 128-bit
+ * integer in C: low word = bucket 1). The _at functions trust them: pass
+ * only what kv_store_locate returned for this key in this table. */
+unsigned __int128 kv_store_locate(KvTable *t, uint64_t h1, uint64_t h2);
+void kv_store_prefetch_records_at(const void *b1, const void *b2, uint64_t h2);
+const KvRec *kv_store_get_at(const void *b1, const void *b2, const void *key, size_t len, uint64_t h2);
 int64_t kv_store_enable_inval(KvTable *t, uint32_t bits); /* 0, -EINVAL, -ENOMEM */
 
 /* hcache.asm — one reader thread's private L1/L2 record cache */

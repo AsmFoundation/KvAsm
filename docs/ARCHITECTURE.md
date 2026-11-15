@@ -61,7 +61,8 @@ flowchart LR
    hash pick the bucket and its top byte is the tag.
    - Health checks execute right there.
    - **Gets, Puts and Deletes are deferred:** their two candidate buckets are
-     prefetched immediately, and the stream joins the connection's batch. A
+     located and prefetched immediately (the Stream keeps the two addresses
+     for the later stages), and the stream joins the connection's batch. A
      Put's record is allocated (from the worker's own record cache) and
      filled right away, outside the writer mutex, while the value is hot.
    - When the whole read has been parsed, `kv_grpc_run_batch` runs three

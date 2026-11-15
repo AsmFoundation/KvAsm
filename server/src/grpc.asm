@@ -195,6 +195,9 @@ extern kv_store_put_locked
 extern kv_store_delete_locked
 extern kv_store_prefetch
 extern kv_store_prefetch_records
+extern kv_store_locate
+extern kv_store_prefetch_records_at
+extern kv_store_get_at
 extern kv_store_rec_alloc
 extern kv_store_rec_alloc_local
 extern kv_store_rec_free
@@ -414,6 +417,26 @@ kv_grpc_free_streams:
 ;          stores nothing" and "a download never leaks its pin" hold.
 ; =============================================================================
 stream_free:
+    ; The common case first: a unary call answered straight into the output
+    ; buffer owns nothing but the Stream itself — no transfer state, no
+    ; unpublished record, no response buffer, and a request body that was
+    ; borrowed from the read buffer or never existed. One block goes back to
+    ; the pool, as a tail call (kv_pool_free needs the entry alignment this
+    ; function was entered with, and gets it).
+    mov     rax, [rdi + Stream.xfer]
+    or      rax, [rdi + Stream.wrec]
+    or      rax, [rdi + Stream.resp_buf] ; a static body is non-zero too: the full path skips it
+    jnz     .full
+    test    qword [rdi + Stream.flags], ST_BORROWED
+    jnz     .only_stream
+    cmp     qword [rdi + Stream.req_buf], 0
+    jne     .full
+.only_stream:
+    mov     rax, [rdi + Stream.conn]
+    mov     rax, [rax + Conn.worker]
+    lea     rsi, [rax + Worker.pool]
+    jmp     kv_pool_free                ; (Stream*, Pool*)
+.full:
     push    rbx
     push    r12
     sub     rsp, 8                      ; 2 pushes + 8: rsp 16-aligned for calls
@@ -752,7 +775,9 @@ kv_grpc_dispatch:
     mov     rdx, [rsp + 48]
     mov     [rbx + Stream.h2], rdx
     mov     rdi, r14
-    call    kv_store_prefetch wrt ..plt
+    call    kv_store_locate wrt ..plt   ; both bucket lines requested, their addresses kept
+    mov     [rbx + Stream.b1], rax
+    mov     [rbx + Stream.b2], rdx
     or      qword [rbx + Stream.flags], ST_BATCHED
     mov     qword [rbx + Stream.batch_next], 0
     mov     rax, [r12 + Conn.batch_tail] ; FIFO: answer in arrival order
@@ -985,10 +1010,10 @@ kv_grpc_run_batch:
     mov     r13, [rax + Worker.table]
     xor     r15d, r15d                  ; writes in the batch
 .prefetch:
-    mov     rdi, r13
-    mov     rsi, [rbx + Stream.h1]
+    mov     rdi, [rbx + Stream.b1]
+    mov     rsi, [rbx + Stream.b2]
     mov     rdx, [rbx + Stream.h2]
-    call    kv_store_prefetch_records wrt ..plt
+    call    kv_store_prefetch_records_at wrt ..plt
     cmp     qword [rbx + Stream.method], M_GET
     je      .prefetch_next
     inc     r15                         ; a Put or a Delete
@@ -1230,8 +1255,13 @@ get_execute:
     call    kv_hcache_get wrt ..plt
     jmp     .looked_up
 .table:
-    mov     rdi, [rax + Worker.table]
-    call    kv_store_get wrt ..plt
+    ; Through the buckets located at dispatch (the same table: a Stream never
+    ; changes workers, and a worker has one table).
+    mov     rdi, [rbx + Stream.b1]
+    mov     rsi, [rbx + Stream.b2]
+    mov     rdx, [rbx + Stream.key]
+    mov     rcx, [rbx + Stream.key_len]
+    call    kv_store_get_at wrt ..plt   ; r8 = h2, loaded above
 .looked_up:
     test    rax, rax
     jz      .missing

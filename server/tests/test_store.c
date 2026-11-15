@@ -696,8 +696,63 @@ static void test_record_cache(void) {
   kv_store_destroy(t);                                        /* frees the cached blocks */
 }
 
+/**
+ * Test 11: the located-bucket entry points agree with the plain ones: for present and
+ * absent keys, under both tag-scan implementations, kv_store_get_at through
+ * the addresses kv_store_locate returned gives exactly kv_store_get's
+ * answer; the bucket addresses lie inside the table and are stable; and the
+ * record prefetch through them is harmless (it is only a hint).
+ */
+static void test_located(void) {
+  uint8_t seed[16];
+  uint64_t s = 0x10CA7ED;
+  rng_fill(&s, seed, 16);
+  enum { KEYS = 20000 };
+  KvTable *t = kv_store_create(KEYS * 2, 1, seed, 0);
+  CHECK(t != NULL);
+  if (!t) return;
+  kv_qsbr_online(t, 0);
+  for (uint32_t i = 0; i < KEYS; i += 2) {         /* even keys exist, odd ones do not */
+    char k[32];
+    size_t kl = (size_t)snprintf(k, sizeof k, "located-%u", i);
+    uint64_t h[2];
+    kv_store_hash(t, k, kl, h);
+    CHECK(kv_store_put(t, k, kl, &i, sizeof i, h[0], h[1]) == 1);
+  }
+  for (int mode = KV_SCAN_SWAR; mode <= KV_SCAN_SSE2; mode++) {
+    int before = kv_set_scan_mode(mode);
+    int agree = 0, hits = 0;
+    for (uint32_t i = 0; i < KEYS; i++) {
+      char k[32];
+      size_t kl = (size_t)snprintf(k, sizeof k, "located-%u", i);
+      uint64_t h[2];
+      kv_store_hash(t, k, kl, h);
+      unsigned __int128 b = kv_store_locate(t, h[0], h[1]);
+      const void *b1 = (const void *)(uintptr_t)(uint64_t)b;
+      const void *b2 = (const void *)(uintptr_t)(uint64_t)(b >> 64);
+      unsigned __int128 again = kv_store_locate(t, h[0], h[1]);
+      CHECK(again == b);                            /* stable: the table never moves */
+      CHECK(b1 != b2 && ((uintptr_t)b1 & 63) == 0 && ((uintptr_t)b2 & 63) == 0);
+      kv_store_prefetch_records_at(b1, b2, h[1]);
+      const KvRec *plain = kv_store_get(t, k, kl, h[0], h[1]);
+      const KvRec *at = kv_store_get_at(b1, b2, k, kl, h[1]);
+      if (plain == at) agree++;
+      if (at) {
+        hits++;
+        CHECK(at->val_len == sizeof i && memcmp(kv_rec_value(at), &i, sizeof i) == 0);
+      }
+    }
+    CHECK(agree == KEYS);
+    CHECK(hits == KEYS / 2);
+    kv_set_scan_mode(before);
+  }
+  kv_qsbr_offline(t, 0);
+  kv_store_destroy(t);
+}
+
 /** Entry point. @return 0 when every check passed. */
 int main(void) {
+  test_located();
   test_model();
   test_short_keys();
   test_capacity();

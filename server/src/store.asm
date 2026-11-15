@@ -91,6 +91,9 @@ extern kv_cuckoo_upsert
 extern kv_cuckoo_remove
 extern kv_cuckoo_prefetch
 extern kv_cuckoo_prefetch_records
+extern kv_cuckoo_locate
+extern kv_cuckoo_prefetch_records_at
+extern kv_cuckoo_get_at
 extern kv_mutex_lock
 extern kv_mutex_unlock
 
@@ -119,6 +122,9 @@ global kv_qsbr_offline
 global kv_qsbr_quiescent
 global kv_store_prefetch
 global kv_store_prefetch_records
+global kv_store_locate
+global kv_store_prefetch_records_at
+global kv_store_get_at
 global kv_store_enable_inval
 global kv_store_rec_alloc
 global kv_store_rec_free
@@ -583,6 +589,38 @@ kv_store_prefetch:
 ; =============================================================================
 kv_store_prefetch_records:
     jmp     kv_cuckoo_prefetch_records wrt ..plt
+
+; =============================================================================
+; kv_store_locate — kv_store_prefetch that returns the two bucket addresses.
+; @param  rdi  Table*   @param rsi  h1   @param rdx  h2
+; @returns rax = bucket 1, rdx = bucket 2: what kv_store_prefetch_records_at
+;          and kv_store_get_at take, so a caller that visits a key three
+;          times (the batched request path) derives them once. Valid for the
+;          table's life. See kv_cuckoo_locate.
+; =============================================================================
+kv_store_locate:
+    jmp     kv_cuckoo_locate wrt ..plt
+
+; =============================================================================
+; kv_store_prefetch_records_at — kv_store_prefetch_records for located buckets.
+; @param  rdi  bucket 1   @param rsi  bucket 2 (kv_store_locate)   @param rdx  h2
+; @returns nothing. A hint, like kv_store_prefetch_records.
+; =============================================================================
+kv_store_prefetch_records_at:
+    jmp     kv_cuckoo_prefetch_records_at wrt ..plt
+
+; =============================================================================
+; kv_store_get_at — kv_store_get for located buckets.
+; @param  rdi  bucket 1   @param rsi  bucket 2 (kv_store_locate, same key)
+; @param  rdx  key   @param rcx  len   @param r8  h2
+; @returns rax = Rec*, or 0: exactly kv_store_get's answer and lifetime rules
+;          (the caller is online in QSBR; the record is valid until its next
+;          quiescent or offline announcement).
+; @remarks Footgun: the buckets are trusted. Pass only what kv_store_locate
+;          returned for this key's (h1, h2) in this table.
+; =============================================================================
+kv_store_get_at:
+    jmp     kv_cuckoo_get_at wrt ..plt
 
 ; =============================================================================
 ; kv_store_put — insert or replace a key's value.

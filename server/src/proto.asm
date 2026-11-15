@@ -72,8 +72,86 @@ global kv_pb_stream_idle
 ; @remarks Zero-copy: key/value point into buf, so buf must outlive their use.
 ;          O(len), no allocation, no reads outside [buf, buf+len).
 ;          Clobbers rcx, rdx, rsi, r8-r11.
+;          A fast path takes the encoding every protobuf writer produces for
+;          these messages — field 1 (the key) first with a one-byte length,
+;          then nothing, or field 2 (the value) with a length of up to three
+;          bytes, ending the message — in ~15 instructions instead of the
+;          field loop's ~70 (a Get) to ~130 (a Put). It must agree with the
+;          loop on every input it accepts: anything else, including anything
+;          malformed or truncated, falls through to the loop, which decides.
 ; =============================================================================
 kv_pb_decode_kv:
+    ; ---- fast path: {1: key} or {1: key, 2: value}, canonical order ----
+    cmp     rsi, 2
+    jb      .general
+    cmp     byte [rdi], 0x0A            ; field 1, length-delimited
+    jne     .general
+    movzx   eax, byte [rdi + 1]         ; the key's length, if it is one byte
+    test    al, al
+    js      .general                    ; 128 bytes or more: a longer varint
+    lea     rcx, [rax + 2]              ; bytes the key field occupies
+    cmp     rcx, rsi
+    ja      .general                    ; the key runs past the end: the loop reports it
+    lea     r8, [rdi + 2]
+    mov     [rdx + PbKv.key], r8
+    mov     [rdx + PbKv.key_len], rax
+    mov     dword [rdx + PbKv.has_key], 1
+    je      .fast_no_value              ; (flags of the cmp: the message ends with the key)
+    ; A value must follow and end the message: tag 0x12, then a length of
+    ; one to three bytes (values below 2 MiB; longer ones take the loop).
+    lea     r8, [rdi + rcx]             ; the next field
+    mov     r9, rsi
+    sub     r9, rcx                     ; bytes left, >= 1
+    cmp     byte [r8], 0x12             ; field 2, length-delimited
+    jne     .general
+    cmp     r9, 2
+    jb      .general                    ; the tag alone: truncated
+    movzx   eax, byte [r8 + 1]
+    mov     ecx, 2                      ; bytes of tag + length so far
+    test    al, al
+    jns     .fast_value
+    cmp     r9, 3
+    jb      .general
+    and     eax, 0x7F
+    movzx   r11d, byte [r8 + 2]
+    mov     ecx, 3
+    test    r11b, r11b
+    js      .fast_len3
+    shl     r11d, 7
+    or      eax, r11d
+    jmp     .fast_value
+.fast_len3:
+    cmp     r9, 4
+    jb      .general
+    and     r11d, 0x7F
+    shl     r11d, 7
+    or      eax, r11d
+    movzx   r11d, byte [r8 + 3]
+    mov     ecx, 4
+    test    r11b, r11b
+    js      .general                    ; a length of four bytes or more
+    shl     r11d, 14
+    or      eax, r11d
+.fast_value:
+    ; rax = value length, rcx = bytes of its tag and length. The value must
+    ; be exactly the rest of the message; more fields, or fewer bytes, are
+    ; the loop's business.
+    lea     r11, [rax + rcx]
+    cmp     r11, r9
+    jne     .general
+    add     r8, rcx
+    mov     [rdx + PbKv.value], r8
+    mov     [rdx + PbKv.value_len], rax
+    mov     dword [rdx + PbKv.has_value], 1
+    xor     eax, eax
+    ret
+.fast_no_value:
+    xor     eax, eax
+    mov     [rdx + PbKv.value], rax
+    mov     [rdx + PbKv.value_len], rax
+    mov     [rdx + PbKv.has_value], eax
+    ret
+.general:
     xor     eax, eax
     mov     [rdx + PbKv.key], rax
     mov     [rdx + PbKv.key_len], rax

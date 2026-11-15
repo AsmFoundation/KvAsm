@@ -70,6 +70,9 @@ global kv_cuckoo_upsert
 global kv_cuckoo_remove
 global kv_cuckoo_prefetch
 global kv_cuckoo_prefetch_records
+global kv_cuckoo_locate
+global kv_cuckoo_prefetch_records_at
+global kv_cuckoo_get_at
 global kv_set_scan_mode
 
 ; =============================================================================
@@ -201,6 +204,7 @@ kv_cuckoo_prefetch:
 ; =============================================================================
 kv_cuckoo_prefetch_records:
     BUCKETS_OF rdi, rsi, rdx
+.located:                               ; r8 = B1, r10 = B2, rcx = tag (kv_cuckoo_prefetch_records_at)
     mov     r11, 0x0101010101010101
     imul    r11, rcx                    ; tag in every byte
     cmp     byte [rel kv_scan_mode], KV_SCAN_SWAR
@@ -264,6 +268,91 @@ kv_cuckoo_prefetch_records:
     jnz     .sse2_match
 .sse2_done:
     ret
+
+; =============================================================================
+; kv_cuckoo_locate — a key's two candidate buckets, with both lines requested.
+;
+; @param  rdi  Table*   @param rsi  h1   @param rdx  h2
+; @returns rax = bucket 1, rdx = bucket 2 (addresses inside the table).
+; @remarks kv_cuckoo_prefetch that also hands the addresses back, for a caller
+;          that will come back to the same key: the batched request path
+;          prefetches at parse time, prefetches the records later and looks
+;          the key up last, and deriving the addresses from (h1, h2) each
+;          time cost a multiply and ~17 instructions twice over per Get.
+;          The addresses stay valid for the table's life — it is sized once
+;          and never moves — but say nothing about the buckets' contents:
+;          the consumers below read them under the usual protocol.
+;          Clobbers rcx, r8, r9, r10.
+; =============================================================================
+kv_cuckoo_locate:
+    BUCKETS_OF rdi, rsi, rdx
+    prefetcht0 [r8]
+    prefetcht0 [r10]
+    mov     rax, r8
+    mov     rdx, r10
+    ret
+
+; =============================================================================
+; kv_cuckoo_prefetch_records_at — kv_cuckoo_prefetch_records for buckets that
+; kv_cuckoo_locate already found.
+;
+; @param  rdi  bucket 1   @param rsi  bucket 2   @param rdx  h2
+; @returns nothing. Clobbers rax, rcx, rdx, rsi, rdi, r8 .. r11 (and xmm0,
+;          xmm1 on the SSE2 path), as kv_cuckoo_prefetch_records does.
+; @remarks Footgun: the buckets must be the ones kv_cuckoo_locate returned
+;          for the same key and table. Nothing here can check that; wrong
+;          addresses only waste the hints (a prefetch never faults), but the
+;          same mistake in kv_cuckoo_get_at would read arbitrary memory.
+; =============================================================================
+kv_cuckoo_prefetch_records_at:
+    mov     rcx, rdx
+    shr     rcx, 56
+    mov     eax, 1
+    test    ecx, ecx
+    cmovz   ecx, eax                    ; tag 0 is reserved for empty slots (as BUCKETS_OF)
+    mov     r8, rdi
+    mov     r10, rsi
+    jmp     kv_cuckoo_prefetch_records.located
+
+; =============================================================================
+; kv_cuckoo_get_at — kv_cuckoo_get for buckets that kv_cuckoo_locate already
+; found.
+;
+; @param  rdi  bucket 1   @param rsi  bucket 2 (of this key, in this table)
+; @param  rdx  const uint8_t *key   @param rcx  size_t len
+; @param  r8   h2 (its top byte is the tag)
+; @returns rax = Rec* whose key equals (key, len), or 0 if absent.
+; @remarks The same contract, concurrency protocol and scan-mode dispatch as
+;          kv_cuckoo_get: it builds that function's frame and registers and
+;          continues in its body, so there is one lookup implementation.
+;          Footgun: buckets of another key or table make it dereference
+;          whatever those addresses hold — pass exactly what
+;          kv_cuckoo_locate returned for (h1, h2) of this key.
+; =============================================================================
+kv_cuckoo_get_at:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 24                     ; kv_cuckoo_get's frame: [rsp] / [rsp+8] = bucket versions
+    mov     r12, rdx
+    mov     r13, rcx
+    mov     r14, rdi
+    mov     r15, rsi
+    mov     rbx, r8
+    shr     rbx, 56
+    mov     eax, 1
+    test    ebx, ebx
+    cmovz   ebx, eax                    ; tag 0 is reserved for empty slots (as LOCATE)
+    mov     rbp, 0x0101010101010101
+    imul    rbp, rbx                    ; tag in every byte
+    cmp     byte [rel kv_scan_mode], KV_SCAN_SWAR
+    je      kv_cuckoo_get.retry
+    movq    xmm7, rbp
+    punpcklqdq xmm7, xmm7               ; tag in all 16 bytes
+    jmp     kv_cuckoo_get_sse2.retry
 
 ; =============================================================================
 ; kv_cuckoo_get — lock-free lookup, callable from any thread.

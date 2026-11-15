@@ -73,9 +73,21 @@ so every line can be checked against the code and the measurements.
   amendment). It no longer polls before it sleeps: 95 ns per sleep became
   8.4 ns, and an unpipelined request needs 2.97 syscalls instead of 3.58
   (counted). Not timed end to end.
-- **All four changes of this audit together:** a GET runs 1,292
-  user-space instructions (1,454 before), a health check 763 (866); in
-  process the request path of a GET is 14.2% shorter (120.3 → 103.3 ns).
+- **The request path of every unary call is shorter:**
+  - `kv_pb_decode_kv` takes the canonical `{1: key[, 2: value]}` message
+    — what every protobuf writer sends — through a fast path and leaves
+    everything else to the field loop;
+  - a stream is opened in place (its pool block popped and zeroed inline,
+    straight into its home map slot) and closed with fewer calls;
+  - a batched call's two bucket addresses are derived once
+    (`kv_store_locate`) and kept in its Stream, instead of three times.
+
+  A GET is 13.8% shorter in process again (88.3 → 76.1 ns) and runs 973
+  instructions instead of 1,134.
+- **All of the above together, against the write-batching commit**
+  (5735d7a): a GET runs 973 user-space instructions instead of 1,454; in
+  process its request path takes 76.1 ns instead of 120.3 (−37%), and a
+  health check's 50.8 ns instead of 70.1 (−28%).
 
 ### Fixed
 
@@ -106,6 +118,10 @@ so every line can be checked against the code and the measurements.
   each hash. The startup line now ends with `hash=aes` or `hash=siphash`.
 - `kv_siphash64` (the fallback placement hash) and its vectors in
   `test_siphash`.
+- `kv_store_locate`, `kv_store_prefetch_records_at` and `kv_store_get_at`
+  (`test_store`: they agree with the plain lookups under both tag scans);
+  `test_proto`: every canonical shape of the decoder's fast path, cut at
+  every byte, at a guard page.
 - `itest_grpc`: `test_get_bursts`, bursts of Gets at every frame-count
   boundary up to the largest value, against a reader that stops reading
   (between two replies, and in the middle of one), and against the

@@ -2070,25 +2070,65 @@ map_remove:
 ;          (so kv_grpc_free_streams releases it at teardown), and enters the
 ;          map; its send window starts at the peer's INITIAL_WINDOW_SIZE, its
 ;          receive window at ours.
+;          The common case is inline: the block is popped from the pool's
+;          free list of the Stream's class and zeroed here, and the stream
+;          goes straight into its home map slot. That is every request of a
+;          warm connection (a freed Stream is the next one's block, and
+;          client ids land in consecutive free slots); an empty list, a map
+;          due to grow or an occupied home slot take kv_pool_calloc and
+;          map_insert as before. Why inline, when replacing only the memset
+;          once saved nothing (1,424 against 1,428 instructions per GET,
+;          2026-09-27): the cost was never the zeroing but the three calls
+;          around it — kv_pool_calloc, kv_pool_malloc with its size-class
+;          BSR, memset — and map_insert's frame.
+;          Clobbers xmm0.
 ; =============================================================================
+; The pool class of a Stream block, at assembly time (kv_pool_malloc finds
+; it with a BSR per call; pool.asm POOL_CLASS: blocks are 64 << class bytes,
+; header included).
+%if Stream_size + POOL_HDR <= 64
+    %define STREAM_CLASS 0
+%elif Stream_size + POOL_HDR <= 128
+    %define STREAM_CLASS 1
+%elif Stream_size + POOL_HDR <= 256
+    %define STREAM_CLASS 2
+%elif Stream_size + POOL_HDR <= 512
+    %define STREAM_CLASS 3
+%else
+    %error "Stream no longer fits a 512-byte pool block: extend STREAM_CLASS"
+%endif
+%if (Stream_size % 16) != 0
+    %error "stream_open zeroes the Stream in 16-byte steps: keep its size a multiple of 16"
+%endif
+
 stream_open:
     push    rbx
     push    r12
     push    r13                         ; 3 pushes: aligned for calls
     mov     rbx, rdi
     mov     r12d, esi
-    ; kv_pool_calloc's memset stays: an inline 16-byte zeroing loop was
-    ; measured (callgrind, 2026-09-27) to save nothing — a GET cost 1,424
-    ; instructions with it (and stream_free's NULL skips) against 1,428
-    ; without either. glibc's AVX2 memset is already cheap for 184 bytes.
+    mov     rdx, [rbx + Conn.worker]
+    mov     r13, [rdx + Worker.pool + Pool.free + STREAM_CLASS * 8]
+    test    r13, r13
+    jz      .carve                      ; no freed block of this class: the allocator carves one
+    mov     rax, [r13]                  ; LIFO pop (kv_pool_malloc's own step): the block's
+    mov     [rdx + Worker.pool + Pool.free + STREAM_CLASS * 8], rax ; header still holds its class
+    pxor    xmm0, xmm0                  ; pool blocks are 16-byte aligned
+%assign zoff 0
+%rep Stream_size / 16
+    movdqa  [r13 + zoff], xmm0
+%assign zoff zoff + 16
+%endrep
+    jmp     .init
+.carve:
     mov     edi, 1
     mov     esi, Stream_size
-    mov     rdx, [rbx + Conn.worker]
     lea     rdx, [rdx + Worker.pool]
     call    kv_pool_calloc wrt ..plt
     test    rax, rax
     jz      .out
     mov     r13, rax
+.init:
     mov     [r13 + Stream.conn], rbx
     mov     [r13 + Stream.id], r12
     mov     rax, [rbx + Conn.h2 + H2.peer_window]
@@ -2102,11 +2142,30 @@ stream_open:
     mov     [rcx + Stream.prev], r13
 .linked:
     mov     [rbx + Conn.streams], r13
+    ; Into the map. Inline when the table stays at most half full with this
+    ; stream (map_insert's own growth rule) and the home slot is free;
+    ; anything else is map_insert's.
+    mov     rax, [rbx + Conn.h2 + H2.nstreams]
+    lea     rax, [rax * 2 + 2]          ; 2 * (n + 1)
+    mov     rdx, [rbx + Conn.h2 + H2.map_mask]
+    lea     rcx, [rdx + 1]
+    cmp     rax, rcx
+    ja      .map_slow                   ; the table must grow first
+    mov     rcx, r12
+    shr     rcx, 1
+    and     rcx, rdx                    ; the home slot
+    mov     r8, [rbx + Conn.h2 + H2.map]
+    cmp     qword [r8 + rcx*8], 0
+    jne     .map_slow                   ; occupied: probe (and count the displacement)
+    mov     [r8 + rcx*8], r13
+    jmp     .mapped
+.map_slow:
     mov     rdi, rbx
     mov     rsi, r13
     call    map_insert
     test    eax, eax
     jnz     .unlink
+.mapped:
     inc     qword [rbx + Conn.h2 + H2.nstreams]
     mov     rax, r13
     jmp     .out
@@ -2138,8 +2197,24 @@ stream_close:
     sub     rsp, 8                      ; 2 pushes + 8: aligned for calls
     mov     rbx, rdi
     mov     r12, rsi
+    ; Out of the map. While no entry is displaced every stream sits in its
+    ; home slot and nothing can move into a hole (map_remove's own fast
+    ; path), so the slot is cleared here; a displaced entry anywhere, or a
+    ; home slot that is not this stream's, is map_remove's.
+    cmp     qword [rbx + Conn.h2 + H2.map_displaced], 0
+    jne     .remove_slow
+    mov     rcx, [r12 + Stream.id]
+    shr     rcx, 1
+    and     rcx, [rbx + Conn.h2 + H2.map_mask]
+    mov     rax, [rbx + Conn.h2 + H2.map]
+    cmp     [rax + rcx*8], r12
+    jne     .remove_slow
+    mov     qword [rax + rcx*8], 0
+    jmp     .removed
+.remove_slow:
     mov     esi, [r12 + Stream.id]
     call    map_remove                  ; rdi = Conn*
+.removed:
     dec     qword [rbx + Conn.h2 + H2.nstreams]
     mov     eax, [rbx + Conn.h2 + H2.closed_pos]
     and     eax, H2_RING - 1
@@ -2156,11 +2231,12 @@ stream_close:
     jnz     .batched
     mov     rdi, rbx
     mov     rsi, r12
-    call    kv_grpc_stream_release wrt ..plt
-    jmp     .out
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    jmp     kv_grpc_stream_release wrt ..plt ; tail call: the frame is gone, the caller's alignment kept
 .batched:
     or      qword [r12 + Stream.flags], ST_CLOSED
-.out:
     add     rsp, 8
     pop     r12
     pop     rbx

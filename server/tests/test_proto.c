@@ -98,6 +98,16 @@ static int ref_decode(const uint8_t *buf, size_t len, PbKv *o) {
   return 0;
 }
 
+/**
+ * Decodes a copy of a message that ends exactly at a PROT_NONE page, with
+ * both implementations, and requires identical results: a decoder that read
+ * one byte past the message would crash here.
+ * @param msg  message bytes
+ * @param len  message length (any: test_common.h's guard_alloc stops at one
+ *             page, and the fast path's interesting lengths are longer)
+ */
+static void same_at_guard(const uint8_t *msg, size_t len);
+
 /** Decodes with both implementations and requires identical results. */
 static void same(const uint8_t *buf, size_t len) {
   PbKv a, r;
@@ -108,6 +118,18 @@ static void same(const uint8_t *buf, size_t len) {
     CHECK(a.has_key == r.has_key && a.key_len == r.key_len && a.key == r.key);
     CHECK(a.has_value == r.has_value && a.value_len == r.value_len && a.value == r.value);
   }
+}
+
+static void same_at_guard(const uint8_t *msg, size_t len) {
+  size_t page = (size_t)sysconf(_SC_PAGESIZE);
+  size_t body = (len + page - 1) / page * page;          /* whole pages holding the message */
+  uint8_t *base = mmap(NULL, body + page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (base == MAP_FAILED) { perror("mmap"); exit(2); }
+  if (mprotect(base + body, page, PROT_NONE) != 0) { perror("mprotect"); exit(2); }
+  uint8_t *p = base + body - len;                         /* the message ends at the guard */
+  if (len) memcpy(p, msg, len);
+  same(p, len);
+  munmap(base, body + page);
 }
 
 /* ========================================================================= */
@@ -696,6 +718,57 @@ int main(void) {
     int flips = (int)(rng_next(&s) % 3);
     for (int f = 0; f < flips; f++) buf[rng_next(&s) % n] ^= (uint8_t)(1u << (rng_next(&s) % 8));
     same(buf, n - (rng_next(&s) % 2 ? rng_next(&s) % (n + 1) : 0));
+  }
+
+  /* 3b. the decoder's fast path, shape by shape: {1: key} and {1: key,
+   * 2: value} with every key length around its one-byte limit and value
+   * lengths around each varint size, the lengths also written non-minimally
+   * (a longer varint for the same number), and every such message truncated
+   * at every byte — each ending exactly at a guard page, so an accepted
+   * shape that read one byte too far would crash. */
+  {
+    static const size_t kKeyLens[] = {0, 1, 2, 16, 64, 126, 127, 128, 129, 300};
+    static const size_t kValLens[] = {0, 1, 2, 100, 126, 127, 128, 129, 1000, 16383, 16384, 16385,
+                                      70000};
+    static uint8_t msg[72000];
+    for (size_t ki = 0; ki < sizeof kKeyLens / sizeof kKeyLens[0]; ki++)
+      for (size_t vi = 0; vi <= sizeof kValLens / sizeof kValLens[0]; vi++)   /* last: no value */
+        for (int pad = 0; pad < 3; pad++) {                                  /* extra varint bytes */
+          size_t kl = kKeyLens[ki], n = 0;
+          int with_value = vi < sizeof kValLens / sizeof kValLens[0];
+          size_t vl = with_value ? kValLens[vi] : 0;
+          msg[n++] = 0x0A;
+          n += kv_pb_write_varint(msg + n, kl);
+          rng_fill(&s, msg + n, kl);
+          n += kl;
+          if (with_value) {
+            msg[n++] = 0x12;
+            n += kv_pb_write_varint(msg + n, vl);
+            for (int e = 0; e < pad; e++) {       /* non-minimal: 0x80 continuation + 0x00 */
+              msg[n - 1] |= 0x80;
+              msg[n++] = 0x00;
+            }
+            rng_fill(&s, msg + n, vl);
+            n += vl;
+          } else if (pad) {
+            continue;                             /* nothing to pad without a value */
+          }
+          /* whole, and cut at every byte for the short ones (every header
+           * byte and a few payload bytes for the long ones) */
+          size_t cuts = n < 400 ? n : 12;
+          for (size_t c = 0; c <= cuts; c++) {
+            size_t len = c == 0 ? n : (n < 400 ? n - c : (c <= 6 ? c : n - (c - 6)));
+            same_at_guard(msg, len);
+          }
+        }
+    /* trailing bytes after a canonical pair: another field, and garbage */
+    uint8_t tail[] = {0x0A, 0x01, 'k', 0x12, 0x01, 'v', 0x18, 0x05};
+    same(tail, sizeof tail);
+    same(tail, sizeof tail - 1);
+    uint8_t twice[] = {0x0A, 0x01, 'k', 0x0A, 0x01, 'j'};   /* a repeated key: the last wins */
+    same(twice, sizeof twice);
+    uint8_t value_first[] = {0x12, 0x01, 'v', 0x0A, 0x01, 'k'};
+    same(value_first, sizeof value_first);
   }
 
   /* 4. no overread at a guard page */
