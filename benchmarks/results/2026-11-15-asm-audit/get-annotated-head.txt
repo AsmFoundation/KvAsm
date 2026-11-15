@@ -1,0 +1,1170 @@
+# Per-source-line execution counts per GET on HEAD 6a31d0a (callgrind; 1.00 = once per request,
+# 0.06 = once per 16-request read). Lines that never ran in the workload are omitted. cgannot.py --src.
+==== kv_cuckoo_prefetch  (cuckoo.asm:166-201)  3.0 Ir/request
+   1.00   168     prefetcht0 [r8]
+   1.00   169     prefetcht0 [r10]
+   1.00   170     ret
+==== kv_cuckoo_prefetch_records  (cuckoo.asm:202-283)  24.2 Ir/request
+   1.00   204     mov     r11, 0x0101010101010101
+   1.00   205     imul    r11, rcx                    ; tag in every byte
+   1.00   206     cmp     byte [rel kv_scan_mode], KV_SCAN_SWAR
+   1.00   207     jne     .sse2
+   1.00   242     movq    xmm1, r11
+   1.00   243     punpcklqdq xmm1, xmm1               ; tag in all 16 bytes
+   1.00   244     movq    xmm0, [r8 + Bucket.tags]
+   1.00   245     movhps  xmm0, [r10 + Bucket.tags]
+   1.00   246     pcmpeqb xmm0, xmm1
+   1.00   247     pmovmskb eax, xmm0
+   1.00   248     and     eax, 0x3F3F
+   1.00   249     jz      .sse2_done
+   1.02   251     bsf     ecx, eax
+   1.02   252     mov     rdx, r8
+   1.02   253     cmp     ecx, 8
+   1.02   254     jb      .sse2_slot
+   0.02   255     mov     rdx, r10                    ; bits 8..13: slot (bit - 8) of B2
+   0.02   256     sub     ecx, 8
+   1.02   258     mov     rsi, [rdx + Bucket.slot + rcx*8]
+   1.02   259     prefetcht0 [rsi]                    ; 0 (slot cleared meanwhile) is a harmless hint
+   1.02   260     prefetcht0 [rsi + 64]
+   1.02   261     prefetcht0 [rsi + 128]              ; the tail line (see @remarks: 3 lines)
+   1.02   262     lea     ecx, [rax - 1]
+   1.02   263     and     eax, ecx                    ; next match
+   1.02   264     jnz     .sse2_match
+   1.00   266     ret
+==== kv_cuckoo_get  (cuckoo.asm:284-357)  2.0 Ir/request
+   1.00   285     cmp     byte [rel kv_scan_mode], KV_SCAN_SWAR
+   1.00   286     jne     kv_cuckoo_get_sse2
+==== kv_cuckoo_get_sse2  (cuckoo.asm:358-448)  53.1 Ir/request
+   1.00   359     push    rbx
+   1.00   360     push    rbp
+   1.00   361     push    r12
+   1.00   362     push    r13
+   1.00   363     push    r14
+   1.00   364     push    r15
+   1.00   365     sub     rsp, 24                     ; [rsp] = version of B1, [rsp+8] = of B2
+   1.00   366     mov     r12, rsi
+   1.00   367     mov     r13, rdx
+   1.00   369     movq    xmm7, rbp
+   1.00   370     punpcklqdq xmm7, xmm7               ; tag in all 16 bytes
+   1.00   372     mov     rax, [r14 + Bucket.ver]
+   1.00   373     test    al, 1
+   1.00   374     jnz     .busy
+   1.00   375     mov     [rsp], rax
+   1.00   376     mov     rax, [r15 + Bucket.ver]
+   1.00   377     test    al, 1
+   1.00   378     jnz     .busy
+   1.00   379     mov     [rsp + 8], rax
+   1.00   380     movq    xmm0, [r14 + Bucket.tags]   ; loads stay after the version loads (TSO)
+   1.00   381     movhps  xmm0, [r15 + Bucket.tags]
+   1.00   382     pcmpeqb xmm0, xmm7
+   1.00   383     pmovmskb r11d, xmm0
+   1.00   384     and     r11d, 0x3F3F                ; bits 0-5: B1 slots, bits 8-13: B2 slots
+   1.01   386     test    r11d, r11d
+   1.01   387     jz      .miss
+   1.01   388     bsf     ecx, r11d
+   1.01   389     lea     eax, [r11 - 1]
+   1.01   390     and     r11d, eax                   ; consume this candidate
+   1.01   391     mov     r10, r14
+   1.01   392     cmp     ecx, 8
+   1.01   393     jb      .slot
+   0.01   394     mov     r10, r15
+   0.01   395     sub     ecx, 8
+   1.01   397     mov     r9, [r10 + Bucket.slot + rcx*8]
+   1.01   398     test    r9, r9
+   1.01   399     jz      .next                       ; cleared concurrently: not a candidate
+   1.01   400     mov     edx, [r9 + Rec.key_len]
+   1.01   401     cmp     rdx, r13
+   1.01   402     jne     .next
+   1.01   403     lea     rdi, [r9 + Rec.data]
+   1.01   404     mov     rsi, r12
+   1.01   405     call    kv_keyeq wrt ..plt          ; clobbers rax, rcx, r8 only
+   1.01   406     test    eax, eax
+   1.01   407     jz      .next
+   1.00   408     mov     rax, r9
+   1.00   409     jmp     .out
+   1.00   421     add     rsp, 24
+   1.00   422     pop     r15
+   1.00   423     pop     r14
+   1.00   424     pop     r13
+   1.00   425     pop     r12
+   1.00   426     pop     rbp
+   1.00   427     pop     rbx
+   1.00   428     ret
+==== stream_free  (grpc.asm:402-454)  23.0 Ir/request
+   1.00   403     push    rbx
+   1.00   404     push    r12
+   1.00   405     sub     rsp, 8                      ; 2 pushes + 8: rsp 16-aligned for calls
+   1.00   406     mov     rbx, rdi
+   1.00   407     mov     rax, [rbx + Stream.conn]
+   1.00   408     mov     rax, [rax + Conn.worker]
+   1.00   409     lea     r12, [rax + Worker.pool]
+   1.00   410     cmp     qword [rbx + Stream.xfer], 0
+   1.00   411     je      .no_xfer                    ; unary calls: one compare
+   1.00   415     test    qword [rbx + Stream.flags], ST_BORROWED
+   1.00   416     jnz     .borrowed                   ; points into the read buffer: not ours
+   1.00   423     test    qword [rbx + Stream.flags], ST_STATIC_RESP
+   1.00   424     jnz     .static_resp                ; .rodata text: freeing it would crash
+   1.00   425     mov     rdi, [rbx + Stream.resp_buf]
+   1.00   426     test    rdi, rdi
+   1.00   427     jz      .static_resp                ; answered without a response buffer
+   1.00   431     mov     rdi, rbx
+   1.00   432     mov     rsi, r12
+   1.00   433     call    kv_pool_free
+   1.00   434     add     rsp, 8
+   1.00   435     pop     r12
+   1.00   436     pop     rbx
+   1.00   437     ret
+==== stream_unlink_free  (grpc.asm:554-597)  11.9 Ir/request
+   1.00   555     mov     rcx, [rsi + Stream.prev]
+   1.00   556     mov     rdx, [rsi + Stream.next]
+   1.00   557     test    rcx, rcx
+   1.00   558     jz      .head
+   0.94   559     mov     [rcx + Stream.next], rdx
+   0.94   560     jmp     .fix
+   0.06   562     mov     [rdi + Conn.streams], rdx
+   1.00   564     test    rdx, rdx
+   1.00   565     jz      .unlinked
+   1.00   568     mov     rax, [rsi + Stream.req_cap]
+   1.00   569     sub     [rdi + Conn.buffered], rax
+   1.00   570     mov     rdi, rsi
+   1.00   571     jmp     stream_free                 ; tail call (keeps the caller's alignment)
+==== kv_grpc_dispatch  (grpc.asm:598-935)  92.9 Ir/request
+   1.00   599     push    rbx
+   1.00   600     push    rbp
+   1.00   601     push    r12
+   1.00   602     push    r13
+   1.00   603     push    r14
+   1.00   604     push    r15
+   1.00   605     sub     rsp, 104                    ; [0..40) PbKv, [40] h1, [48] h2,
+   1.00   608     mov     r12, rdi                    ; Conn*
+   1.00   609     mov     rbx, rsi                    ; Stream*
+   1.00   610     test    qword [rbx + Stream.flags], ST_RESPONDED
+   1.00   611     jnz     .answered                   ; an Upload refused early: nothing to add
+   1.00   612     mov     rax, [r12 + Conn.worker]
+   1.00   613     mov     r13, [rax + Worker.cfg]
+   1.00   614     mov     r14, [rax + Worker.table]
+   1.00   615     inc     qword [rax + Worker.st_requests]
+   1.00   616     or      qword [rbx + Stream.flags], ST_RESPONDED
+   1.00   618     mov     rax, [rbx + Stream.flags]
+   1.00   619     test    rax, ST_POST
+   1.00   620     jz      .http_405
+   1.00   621     test    rax, ST_CT_OK
+   1.00   622     jz      .http_415
+   1.00   623     cmp     qword [rbx + Stream.method], M_UNKNOWN
+   1.00   624     je      .e_method
+   1.00   625     cmp     qword [rbx + Stream.method], M_UPLOAD
+   1.00   626     je      .upload                     ; body already consumed: no framing to check
+   1.00   627     test    rax, ST_TOO_LARGE
+   1.00   628     jnz     .e_toolarge
+   1.00   631     mov     rcx, [rbx + Stream.req_len]
+   1.00   632     cmp     rcx, GRPC_PREFIX
+   1.00   633     jb      .e_framing
+   1.00   634     mov     rsi, [rbx + Stream.req_buf]
+   1.00   635     movzx   eax, byte [rsi]
+   1.00   636     cmp     eax, 1
+   1.00   637     je      .compressed
+   1.00   638     ja      .e_framing                  ; flag values other than 0/1 are undefined
+   1.00   639     mov     eax, [rsi + 1]
+   1.00   640     bswap   eax                         ; big-endian length
+   1.00   641     add     rax, GRPC_PREFIX
+   1.00   642     cmp     rax, rcx
+   1.00   643     jne     .e_framing
+   1.00   645     cmp     qword [rbx + Stream.method], M_DOWNLOAD
+   1.00   646     je      .download
+   1.00   647     lea     rdi, [rsi + GRPC_PREFIX]
+   1.00   648     lea     rsi, [rax - GRPC_PREFIX]
+   1.00   649     lea     rdx, [rsp]
+   1.00   650     call    kv_pb_decode_kv wrt ..plt
+   1.00   651     test    rax, rax
+   1.00   652     jnz     .e_malformed
+   1.00   656     cmp     qword [rbx + Stream.method], M_HEALTH
+   1.00   657     je      .health
+   1.00   658     cmp     dword [rsp + PbKv.has_key], 0
+   1.00   659     je      .e_key
+   1.00   660     mov     rax, [rsp + PbKv.key_len]
+   1.00   661     test    rax, rax
+   1.00   662     jz      .e_key
+   1.00   663     cmp     rax, [r13 + Config.max_key]
+   1.00   664     ja      .e_key
+   1.00   666     mov     rdi, r14
+   1.00   667     mov     rsi, [rsp + PbKv.key]
+   1.00   668     mov     rdx, [rsp + PbKv.key_len]
+   1.00   669     lea     rcx, [rsp + 40]
+   1.00   670     call    kv_store_hash wrt ..plt
+   1.00   672     mov     rax, [rbx + Stream.method]
+   1.00   673     cmp     rax, M_GET
+   1.00   674     je      .get
+   1.00   721     mov     rax, [rsp + PbKv.key]
+   1.00   722     mov     [rbx + Stream.key], rax
+   1.00   723     mov     rax, [rsp + PbKv.key_len]
+   1.00   724     mov     [rbx + Stream.key_len], rax
+   1.00   725     mov     rsi, [rsp + 40]
+   1.00   726     mov     [rbx + Stream.h1], rsi
+   1.00   727     mov     rdx, [rsp + 48]
+   1.00   728     mov     [rbx + Stream.h2], rdx
+   1.00   729     mov     rdi, r14
+   1.00   730     call    kv_store_prefetch wrt ..plt
+   1.00   731     or      qword [rbx + Stream.flags], ST_BATCHED
+   1.00   732     mov     qword [rbx + Stream.batch_next], 0
+   1.00   733     mov     rax, [r12 + Conn.batch_tail] ; FIFO: answer in arrival order
+   1.00   734     test    rax, rax
+   1.00   735     jz      .batch_first
+   0.94   736     mov     [rax + Stream.batch_next], rbx
+   0.94   737     jmp     .batch_linked
+   0.06   739     mov     [r12 + Conn.batch_head], rbx
+   1.00   741     mov     [r12 + Conn.batch_tail], rbx
+   1.00   742     xor     eax, eax
+   1.00   743     jmp     .out
+   1.00   909     add     rsp, 104
+   1.00   910     pop     r15
+   1.00   911     pop     r14
+   1.00   912     pop     r13
+   1.00   913     pop     r12
+   1.00   914     pop     rbp
+   1.00   915     pop     rbx
+   1.00   916     ret
+==== kv_grpc_run_batch  (grpc.asm:936-1003)  20.4 Ir/request
+   0.06   937     push    rbx
+   0.06   938     push    rbp
+   0.06   939     push    r12
+   0.06   940     push    r13
+   0.06   941     push    r14                         ; 5 pushes: rsp 16-aligned for calls
+   0.06   942     mov     r12, rdi
+   0.06   943     mov     rbx, [r12 + Conn.batch_head]
+   0.06   944     xor     ebp, ebp                    ; result
+   0.06   945     test    rbx, rbx
+   0.06   946     jz      .out
+   0.06   947     mov     rax, [r12 + Conn.worker]
+   0.06   948     mov     r13, [rax + Worker.table]
+   1.00   950     mov     rdi, r13
+   1.00   951     mov     rsi, [rbx + Stream.h1]
+   1.00   952     mov     rdx, [rbx + Stream.h2]
+   1.00   953     call    kv_store_prefetch_records wrt ..plt
+   1.00   954     mov     rbx, [rbx + Stream.batch_next]
+   1.00   955     test    rbx, rbx
+   1.00   956     jnz     .prefetch
+   0.06   957     mov     rbx, [r12 + Conn.batch_head]
+   0.06   958     xor     eax, eax
+   0.06   959     mov     [r12 + Conn.batch_head], rax
+   0.06   960     mov     [r12 + Conn.batch_tail], rax
+   1.00   962     mov     r14, [rbx + Stream.batch_next]
+   1.00   963     and     qword [rbx + Stream.flags], ~ST_BATCHED
+   1.00   964     test    qword [rbx + Stream.flags], ST_CLOSED
+   1.00   965     jnz     .closed
+   1.00   966     mov     rdi, r12
+   1.00   967     mov     rsi, rbx
+   1.00   968     call    get_execute
+   1.00   969     test    eax, eax
+   1.00   970     jz      .next
+   1.00   978     mov     rbx, r14
+   1.00   979     test    rbx, rbx
+   1.00   980     jnz     .answer
+   0.06   982     mov     eax, ebp
+   0.06   983     pop     r14
+   0.06   984     pop     r13
+   0.06   985     pop     r12
+   0.06   986     pop     rbp
+   0.06   987     pop     rbx
+   0.06   988     ret
+==== get_execute  (grpc.asm:1004-1100)  56.0 Ir/request
+   1.00  1005     push    rbx
+   1.00  1006     push    rbp
+   1.00  1007     push    r12
+   1.00  1008     push    r13
+   1.00  1009     push    r15
+   1.00  1010     sub     rsp, 32                     ; [0..32) message head; 5 pushes + 32: aligned
+   1.00  1011     mov     r12, rdi                    ; Conn*
+   1.00  1012     mov     rbx, rsi                    ; Stream*
+   1.00  1013     mov     rax, [r12 + Conn.worker]
+   1.00  1014     mov     rsi, [rbx + Stream.key]
+   1.00  1015     mov     rdx, [rbx + Stream.key_len]
+   1.00  1016     mov     rcx, [rbx + Stream.h1]
+   1.00  1017     mov     r8, [rbx + Stream.h2]
+   1.00  1020     mov     rdi, [rax + Worker.hcache]
+   1.00  1021     test    rdi, rdi
+   1.00  1022     jz      .table
+   1.00  1026     mov     rdi, [rax + Worker.table]
+   1.00  1027     call    kv_store_get wrt ..plt
+   1.00  1029     test    rax, rax
+   1.00  1030     jz      .missing
+   1.00  1031     mov     r15, rax                    ; Rec* (valid while this worker is online)
+   1.00  1032     mov     ebp, [r15 + Rec.val_len]
+   1.00  1038     mov     rcx, [r12 + Conn.worker]
+   1.00  1039     mov     rcx, [rcx + Worker.cfg]
+   1.00  1040     cmp     rbp, [rcx + Config.max_value]
+   1.00  1041     ja      .too_big
+   1.00  1042     mov     word [rsp + GRPC_PREFIX], 0x0108   ; field 1 (found) = true
+   1.00  1043     mov     r13d, 2
+   1.00  1044     test    rbp, rbp
+   1.00  1045     jz      .head                       ; empty value: the field is omitted
+   1.00  1046     mov     byte [rsp + GRPC_PREFIX + 2], 0x12 ; field 2 (value), length-delimited
+   1.00  1047     lea     rdi, [rsp + GRPC_PREFIX + 3]
+   1.00  1048     mov     rsi, rbp
+   1.00  1049     call    kv_pb_write_varint wrt ..plt
+   1.00  1050     lea     r13, [rax + 3]              ; 08 01 12 <varint>
+   1.00  1052     mov     rdi, rsp
+   1.00  1053     lea     rsi, [r13 + rbp]            ; protobuf payload length
+   1.00  1054     call    write_prefix
+   1.00  1055     mov     rdi, r12
+   1.00  1056     mov     rsi, rbx
+   1.00  1057     mov     rdx, rsp
+   1.00  1058     lea     rcx, [r13 + GRPC_PREFIX]
+   1.00  1059     mov     eax, [r15 + Rec.key_len]
+   1.00  1060     add     rax, 7
+   1.00  1061     and     rax, -8
+   1.00  1062     lea     r8, [r15 + Rec.data + rax]  ; value follows the padded key
+   1.00  1063     mov     r9, rbp
+   1.00  1064     call    kv_h2n_reply_parts wrt ..plt
+   1.00  1065     jmp     .out
+   1.00  1087     add     rsp, 32
+   1.00  1088     pop     r15
+   1.00  1089     pop     r13
+   1.00  1090     pop     r12
+   1.00  1091     pop     rbp
+   1.00  1092     pop     rbx
+   1.00  1093     ret
+==== write_prefix  (grpc.asm:1101-1118)  5.0 Ir/request
+   1.00  1102     mov     byte [rdi], 0
+   1.00  1103     mov     eax, esi
+   1.00  1104     bswap   eax
+   1.00  1105     mov     [rdi + 1], eax
+   1.00  1106     ret
+==== kv_h2n_read  (h2n.asm:401-476)  3.4 Ir/request
+   0.06   402     push    rbx
+   0.06   403     push    rbp
+   0.06   404     push    r12
+   0.06   405     push    r13
+   0.06   406     push    r14
+   0.06   407     sub     rsp, 16                     ; 5 pushes + 16: aligned for calls
+   0.06   408     mov     r14, rdi                    ; Worker*
+   0.06   409     mov     rbx, rsi                    ; Conn*
+   0.06   410     mov     r12, [r14 + Worker.read_buf]
+   0.06   411     mov     r13, [rbx + Conn.h2 + H2.carry_len]
+   0.06   412     test    r13, r13
+   0.06   413     jz      .read
+   0.06   419     mov     rdi, [rbx + Conn.fd]
+   0.06   420     lea     rsi, [r12 + r13]
+   0.06   421     mov     edx, READ_CHUNK
+   0.06   422     sub     rdx, r13
+   0.06   423     xor     eax, eax                    ; SYS_read
+   0.06   424     syscall
+   0.06   426     cmp     rax, -EAGAIN
+   0.06   427     je      .ok
+   0.06   428     cmp     rax, -EINTR
+   0.06   429     je      .ok
+   0.06   430     test    rax, rax
+   0.06   431     jle     .fatal                      ; 0 = peer closed, < 0 = reset/error
+   0.06   432     mov     rcx, [r14 + Worker.now]
+   0.06   433     mov     [rbx + Conn.last_active], rcx
+   0.06   434     test    qword [rbx + Conn.h2 + H2.flags], H2F_CLOSING
+   0.06   435     jnz     .ok
+   0.06   436     lea     rdx, [r13 + rax]            ; carried + new bytes
+   0.06   437     mov     qword [rbx + Conn.h2 + H2.carry_len], 0
+   0.06   438     mov     rdi, rbx
+   0.06   439     mov     rsi, r12
+   0.06   440     call    h2_process
+   0.06   441     test    eax, eax
+   0.06   442     js      .fatal
+   0.06   443     test    qword [rbx + Conn.h2 + H2.flags], H2F_CLOSING
+   0.06   444     jnz     .ok                         ; failing connection: its batch is dropped with it
+   0.06   445     mov     rdi, rbx
+   0.06   446     call    kv_grpc_run_batch wrt ..plt
+   0.06   447     test    eax, eax
+   0.06   448     js      .fatal
+   0.06   449     mov     rdi, rbx
+   0.06   450     call    conn_window_refill
+   0.06   451     test    eax, eax
+   0.06   452     js      .fatal
+   0.06   454     xor     eax, eax
+   0.06   455     jmp     .out
+   0.06   459     add     rsp, 16
+   0.06   460     pop     r14
+   0.06   461     pop     r13
+   0.06   462     pop     r12
+   0.06   463     pop     rbp
+   0.06   464     pop     rbx
+   0.06   465     ret
+==== conn_window_refill  (h2n.asm:477-509)  0.5 Ir/request
+   0.06   478     mov     rax, [rdi + Conn.h2 + H2.recv_window]
+   0.06   479     mov     rdx, [rdi + Conn.h2 + H2.conn_window]
+   0.06   480     mov     rcx, rdx
+   0.06   481     shr     rcx, 1
+   0.06   482     cmp     rax, rcx
+   0.06   483     jge     .none
+   0.06   490     xor     eax, eax
+   0.06   491     ret
+==== h2_process  (h2n.asm:510-1161)  156.8 Ir/request
+   0.06   511     push    rbx
+   0.06   512     push    rbp
+   0.06   513     push    r12
+   0.06   514     push    r13
+   0.06   515     push    r14
+   0.06   516     push    r15
+   0.06   517     sub     rsp, 40                     ; 6 pushes + 40: aligned for calls
+   0.06   518     mov     rbx, rdi
+   0.06   519     mov     r12, rsi
+   0.06   520     lea     r13, [rsi + rdx]
+   0.06   521     cmp     qword [rbx + Conn.h2 + H2.state], H2_PREFACE
+   0.06   522     jne     .frame
+   2.06   542     mov     rax, r13
+   2.06   543     sub     rax, r12
+   2.06   544     cmp     rax, FRAME_HDR
+   2.06   545     jb      .carry
+   2.00   546     mov     eax, [r12]
+   2.00   547     bswap   eax                         ; length(24) | type(8)
+   2.00   548     movzx   edx, al
+   2.00   549     shr     eax, 8
+   2.00   550     mov     r15, rax                    ; payload length
+   2.00   551     mov     [rsp + L_TYPE], rdx
+   2.00   552     movzx   ecx, byte [r12 + 4]
+   2.00   553     mov     [rsp + L_FLAGS], rcx
+   2.00   554     mov     ecx, [r12 + 5]
+   2.00   555     bswap   ecx
+   2.00   556     and     ecx, 0x7FFFFFFF             ; the reserved bit is ignored (§4.1)
+   2.00   557     mov     [rsp + L_SID], rcx
+   2.00   561     cmp     r15, FRAME_MIN
+   2.00   562     ja      .frame_size_error
+   2.00   563     mov     rax, r13
+   2.00   564     sub     rax, r12
+   2.00   565     lea     rcx, [r15 + FRAME_HDR]
+   2.00   566     cmp     rax, rcx
+   2.00   567     jb      .carry                      ; payload not complete yet
+   2.00   568     lea     r14, [r12 + FRAME_HDR]
+   2.00   570     cmp     qword [rbx + Conn.h2 + H2.state], H2_SETTINGS
+   2.00   571     jne     .sequencing
+   2.00   579     mov     rax, [rbx + Conn.h2 + H2.cont_id]
+   2.00   580     test    rax, rax
+   2.00   581     jz      .no_block
+   2.00   589     cmp     edx, FT_HEADERS
+   2.00   590     je      .f_headers
+   1.00   591     cmp     edx, FT_DATA
+   1.00   592     je      .f_data
+   2.00   612     lea     r12, [r14 + r15]
+   2.00   613     test    qword [rbx + Conn.h2 + H2.flags], H2F_CLOSING
+   2.00   614     jz      .frame
+   0.06   619     mov     r15, r13
+   0.06   620     sub     r15, r12
+   0.06   621     jz      .done
+   0.06   640     xor     eax, eax
+   0.06   641     jmp     .out
+   0.06   662     add     rsp, 40
+   0.06   663     pop     r15
+   0.06   664     pop     r14
+   0.06   665     pop     r13
+   0.06   666     pop     r12
+   0.06   667     pop     rbp
+   0.06   668     pop     rbx
+   0.06   669     ret
+   1.00   673     mov     ecx, [rsp + L_SID]
+   1.00   674     test    ecx, ecx
+   1.00   675     jz      .protocol_error             ; HEADERS on stream 0 (§6.2)
+   1.00   676     mov     rsi, r14                    ; fragment
+   1.00   677     mov     rdx, r15                    ; fragment length
+   1.00   678     xor     r8d, r8d                    ; pad length
+   1.00   679     test    byte [rsp + L_FLAGS], FF_PADDED
+   1.00   680     jz      .h_unpadded
+   1.00   687     xor     r9d, r9d                    ; block flags being built
+   1.00   688     test    byte [rsp + L_FLAGS], FF_PRIORITY
+   1.00   689     jz      .h_no_priority
+   1.00   704     cmp     r8, rdx
+   1.00   705     ja      .protocol_error             ; padding beyond the payload (§6.2)
+   1.00   706     sub     rdx, r8
+   1.00   707     movzx   eax, byte [rsp + L_FLAGS]
+   1.00   708     and     eax, FF_END_STREAM
+   1.00   709     or      r9d, eax
+   1.00   710     test    byte [rsp + L_FLAGS], FF_END_HEADERS
+   1.00   711     jz      .h_open_block
+   1.00   712     mov     rdi, rbx
+   1.00   713     mov     r8d, r9d
+   1.00   714     mov     rcx, rdx
+   1.00   715     mov     rdx, rsi
+   1.00   716     mov     esi, [rsp + L_SID]
+   1.00   717     call    header_block
+   1.00   718     test    eax, eax
+   1.00   719     js      .fatal
+   1.00   720     jmp     .next
+   1.00   764     mov     ecx, [rsp + L_SID]
+   1.00   765     test    ecx, ecx
+   1.00   766     jz      .protocol_error             ; DATA on stream 0 (§6.1)
+   1.00   767     mov     rsi, r14
+   1.00   768     mov     rdx, r15
+   1.00   769     test    byte [rsp + L_FLAGS], FF_PADDED
+   1.00   770     jz      .d_unpadded
+   1.00   780     mov     [rsp + L_T0], rsi           ; data
+   1.00   781     mov     [rsp + L_T1], rdx           ; data length
+   1.00   784     sub     [rbx + Conn.h2 + H2.recv_window], r15
+   1.00   785     js      .flow_error
+   1.00   786     mov     rdi, rbx
+   1.00   787     mov     esi, [rsp + L_SID]
+   1.00   788     call    map_find
+   1.00   789     test    rax, rax
+   1.00   790     jz      .d_no_stream
+   1.00   791     mov     rbp, rax
+   1.00   792     test    qword [rbp + Stream.h2flags], SN_REMOTE_CLOSED
+   1.00   793     jnz     .d_closed                   ; half-closed (remote): STREAM_CLOSED (§5.1)
+   1.00   794     sub     [rbp + Stream.recv_window], r15
+   1.00   795     js      .d_flow
+   1.00   797     mov     rax, [rsp + L_T1]
+   1.00   798     add     rax, [rbp + Stream.data_len]
+   1.00   799     mov     [rbp + Stream.data_len], rax
+   1.00   800     mov     rcx, [rbp + Stream.clen]
+   1.00   801     test    rcx, rcx
+   1.00   802     js      .d_append
+   1.00   806     mov     rcx, [rsp + L_T1]
+   1.00   810     cmp     qword [rbp + Stream.method], M_UPLOAD
+   1.00   811     je      .d_upload
+   1.00   812     test    rcx, rcx
+   1.00   813     jz      .d_appended
+   1.00   818     test    byte [rsp + L_FLAGS], FF_END_STREAM
+   1.00   819     jz      .d_copy
+   1.00   820     cmp     qword [rbp + Stream.req_len], 0
+   1.00   821     jne     .d_copy
+   1.00   822     test    qword [rbp + Stream.flags], ST_TOO_LARGE
+   1.00   823     jnz     .d_copy
+   1.00   824     mov     rax, [rbx + Conn.worker]
+   1.00   825     mov     rax, [rax + Worker.cfg]
+   1.00   826     mov     rax, [rax + Config.max_request]
+   1.00   827     add     rax, GRPC_PREFIX
+   1.00   828     cmp     rcx, rax
+   1.00   829     ja      .d_copy                     ; too large: the copy path marks it
+   1.00   830     mov     rax, [rsp + L_T0]
+   1.00   831     mov     [rbp + Stream.req_buf], rax
+   1.00   832     mov     [rbp + Stream.req_len], rcx
+   1.00   833     or      qword [rbp + Stream.flags], ST_BORROWED
+   1.00   834     jmp     .d_appended
+   1.00   843     test    byte [rsp + L_FLAGS], FF_END_STREAM
+   1.00   844     jnz     .d_end
+   1.00   859     mov     rdi, rbx
+   1.00   860     mov     rsi, rbp
+   1.00   861     call    request_end                 ; may answer and free the stream
+   1.00   862     test    eax, eax
+   1.00   863     js      .fatal
+   1.00   864     jmp     .next
+==== header_block  (h2n.asm:1162-1345)  59.0 Ir/request
+   1.00  1163     push    rbx
+   1.00  1164     push    rbp
+   1.00  1165     push    r12
+   1.00  1166     push    r13
+   1.00  1167     push    r14
+   1.00  1168     push    r15
+   1.00  1169     sub     rsp, 8                      ; 6 pushes + 8: aligned for calls
+   1.00  1170     mov     rbx, rdi
+   1.00  1171     mov     r12d, esi                   ; stream id (zero-extended)
+   1.00  1172     mov     r13, rdx
+   1.00  1173     mov     r14, rcx
+   1.00  1174     mov     r15d, r8d
+   1.00  1175     mov     rdi, rbx
+   1.00  1176     mov     esi, r12d
+   1.00  1177     call    map_find
+   1.00  1178     mov     rbp, rax
+   1.00  1179     test    rax, rax
+   1.00  1180     jnz     .existing
+   1.00  1181     cmp     r12, [rbx + Conn.h2 + H2.last_id]
+   1.00  1182     jbe     .closed_id
+   1.00  1183     test    r12d, 1
+   1.00  1184     jz      .even_id
+   1.00  1185     test    qword [rbx + Conn.h2 + H2.flags], H2F_GOAWAY_SENT
+   1.00  1186     jnz     .discard
+   1.00  1187     mov     [rbx + Conn.h2 + H2.last_id], r12
+   1.00  1188     mov     rax, [rbx + Conn.worker]
+   1.00  1189     mov     rax, [rax + Worker.cfg]
+   1.00  1190     mov     rax, [rax + Config.max_streams]
+   1.00  1191     cmp     [rbx + Conn.h2 + H2.nstreams], rax
+   1.00  1192     jae     .refuse
+   1.00  1193     mov     rdi, rbx
+   1.00  1194     mov     esi, r12d
+   1.00  1195     call    stream_open
+   1.00  1196     test    rax, rax
+   1.00  1197     jz      .no_memory
+   1.00  1198     mov     rbp, rax
+   1.00  1199     mov     rdi, rbx
+   1.00  1200     mov     rsi, rbp
+   1.00  1201     mov     rdx, r13
+   1.00  1202     mov     rcx, r14
+   1.00  1203     xor     r8d, r8d                    ; request block
+   1.00  1204     call    decode_fields
+   1.00  1205     test    eax, eax
+   1.00  1206     js      .hpack_failed
+   1.00  1207     jnz     .malformed
+   1.00  1208     test    r15d, CONT_SELF_DEP
+   1.00  1209     jnz     .malformed
+   1.00  1210     or      qword [rbp + Stream.h2flags], SN_HEADERS_DONE
+   1.00  1211     test    r15d, FF_END_STREAM
+   1.00  1212     jz      .ok
+   1.00  1330     xor     eax, eax
+   1.00  1332     add     rsp, 8
+   1.00  1333     pop     r15
+   1.00  1334     pop     r14
+   1.00  1335     pop     r13
+   1.00  1336     pop     r12
+   1.00  1337     pop     rbp
+   1.00  1338     pop     rbx
+   1.00  1339     ret
+==== decode_fields  (h2n.asm:1376-1502)  45.0 Ir/request
+   1.00  1377     push    rbx
+   1.00  1378     push    r12
+   1.00  1379     push    r13
+   1.00  1380     push    r14
+   1.00  1381     push    r15
+   1.00  1382     sub     rsp, 64                     ; [0,16) scratch, [16,56) HCtx, [56] gen before
+   1.00  1383     mov     rbx, rdi
+   1.00  1384     mov     r12, rsi                    ; Stream* or 0
+   1.00  1385     mov     r13, rdx                    ; block
+   1.00  1386     mov     r14, rcx                    ; length
+   1.00  1387     mov     r15d, r8d                   ; HC_TRAILERS or 0
+   1.00  1389     test    r12, r12
+   1.00  1390     jz      .decode
+   1.00  1391     test    r15d, r15d
+   1.00  1392     jnz     .decode
+   1.00  1393     test    r14, r14
+   1.00  1394     jz      .decode                     ; hc_len 0 means "empty": never match it
+   1.00  1395     cmp     r14, [rbx + Conn.h2 + H2.hc_len]
+   1.00  1396     jne     .decode
+   1.00  1397     mov     rax, [rbx + Conn.h2 + H2.hpack + HpackDec.gen]
+   1.00  1398     cmp     rax, [rbx + Conn.h2 + H2.hc_gen]
+   1.00  1399     jne     .decode
+   1.00  1400     lea     rdi, [rbx + Conn.h2 + H2.hc_bytes]
+   1.00  1401     mov     rsi, r13
+   1.00  1402     mov     rcx, r14
+   1.00  1403     call    blocks_equal
+   1.00  1404     test    eax, eax
+   1.00  1405     jz      .decode
+   1.00  1406     mov     rax, [rbx + Conn.h2 + H2.hc_flags]
+   1.00  1407     or      [r12 + Stream.flags], rax
+   1.00  1408     mov     rax, [rbx + Conn.h2 + H2.hc_method]
+   1.00  1409     mov     [r12 + Stream.method], rax
+   1.00  1410     mov     rax, [rbx + Conn.h2 + H2.hc_h2flags]
+   1.00  1411     or      [r12 + Stream.h2flags], rax
+   1.00  1412     mov     rax, [rbx + Conn.h2 + H2.hc_clen]
+   1.00  1413     mov     [r12 + Stream.clen], rax
+   1.00  1414     mov     eax, [rbx + Conn.h2 + H2.hc_result]
+   1.00  1415     jmp     .out
+   1.00  1487     add     rsp, 64
+   1.00  1488     pop     r15
+   1.00  1489     pop     r14
+   1.00  1490     pop     r13
+   1.00  1491     pop     r12
+   1.00  1492     pop     rbx
+   1.00  1493     ret
+==== blocks_equal  (h2n.asm:1503-1552)  21.0 Ir/request
+   1.00  1504     cmp     rcx, 8
+   1.00  1505     jb      .bytes
+   1.00  1506     lea     r8, [rcx - 8]               ; offset of the last whole word
+   1.00  1507     xor     eax, eax
+   2.00  1509     mov     rdx, [rsi + rax]
+   2.00  1510     cmp     rdx, [rdi + rax]
+   2.00  1511     jne     .differ
+   2.00  1512     add     rax, 8
+   2.00  1513     cmp     rax, r8
+   2.00  1514     jb      .words
+   1.00  1515     mov     rdx, [rsi + r8]
+   1.00  1516     cmp     rdx, [rdi + r8]
+   1.00  1517     jne     .differ
+   1.00  1518     mov     eax, 1
+   1.00  1519     ret
+==== map_find  (h2n.asm:1843-1868)  22.0 Ir/request
+   2.00  1844     mov     esi, esi                    ; zero-extend: ids are stored as qwords
+   2.00  1845     mov     r8, [rdi + Conn.h2 + H2.map]
+   2.00  1846     mov     rdx, [rdi + Conn.h2 + H2.map_mask]
+   2.00  1847     mov     rcx, rsi
+   2.00  1848     shr     rcx, 1
+   2.00  1849     and     rcx, rdx
+   2.00  1851     mov     rax, [r8 + rcx*8]
+   2.00  1852     test    rax, rax
+   2.00  1853     jz      .out
+   1.00  1854     cmp     [rax + Stream.id], rsi
+   1.00  1855     je      .out
+   2.00  1860     ret
+==== map_insert  (h2n.asm:1869-1915)  27.0 Ir/request
+   1.00  1870     push    rbx
+   1.00  1871     push    r12
+   1.00  1872     sub     rsp, 8                      ; 2 pushes + 8: aligned for calls
+   1.00  1873     mov     rbx, rdi
+   1.00  1874     mov     r12, rsi
+   1.00  1875     mov     rax, [rbx + Conn.h2 + H2.nstreams]
+   1.00  1876     lea     rax, [rax * 2 + 2]          ; 2 * (n + 1)
+   1.00  1877     mov     rcx, [rbx + Conn.h2 + H2.map_mask]
+   1.00  1878     inc     rcx
+   1.00  1879     cmp     rax, rcx
+   1.00  1880     jbe     .place
+   1.00  1886     mov     r8, [rbx + Conn.h2 + H2.map]
+   1.00  1887     mov     rdx, [rbx + Conn.h2 + H2.map_mask]
+   1.00  1888     mov     rcx, [r12 + Stream.id]
+   1.00  1889     shr     rcx, 1
+   1.00  1890     and     rcx, rdx
+   1.00  1891     mov     r9, rcx                     ; home slot
+   1.00  1893     cmp     qword [r8 + rcx*8], 0
+   1.00  1894     je      .slot
+   1.00  1899     mov     [r8 + rcx*8], r12
+   1.00  1900     cmp     rcx, r9
+   1.00  1901     je      .home
+   1.00  1904     xor     eax, eax
+   1.00  1906     add     rsp, 8
+   1.00  1907     pop     r12
+   1.00  1908     pop     rbx
+   1.00  1909     ret
+==== map_remove  (h2n.asm:2000-2064)  15.0 Ir/request
+   1.00  2001     mov     esi, esi
+   1.00  2002     mov     r8, [rdi + Conn.h2 + H2.map]
+   1.00  2003     mov     rdx, [rdi + Conn.h2 + H2.map_mask]
+   1.00  2004     mov     rcx, rsi
+   1.00  2005     shr     rcx, 1
+   1.00  2006     and     rcx, rdx                    ; i: probe for the id
+   1.00  2008     mov     rax, [r8 + rcx*8]
+   1.00  2009     test    rax, rax
+   1.00  2010     jz      .out
+   1.00  2011     cmp     [rax + Stream.id], rsi
+   1.00  2012     je      .found
+   1.00  2017     cmp     qword [rdi + Conn.h2 + H2.map_displaced], 0
+   1.00  2018     je      .clear                      ; nobody displaced: nothing moves back
+   1.00  2052     mov     qword [r8 + rcx*8], 0
+   1.00  2054     ret
+==== stream_open  (h2n.asm:2065-2125)  36.9 Ir/request
+   1.00  2066     push    rbx
+   1.00  2067     push    r12
+   1.00  2068     push    r13                         ; 3 pushes: aligned for calls
+   1.00  2069     mov     rbx, rdi
+   1.00  2070     mov     r12d, esi
+   1.00  2075     mov     edi, 1
+   1.00  2076     mov     esi, Stream_size
+   1.00  2077     mov     rdx, [rbx + Conn.worker]
+   1.00  2078     lea     rdx, [rdx + Worker.pool]
+   1.00  2079     call    kv_pool_calloc wrt ..plt
+   1.00  2080     test    rax, rax
+   1.00  2081     jz      .out
+   1.00  2082     mov     r13, rax
+   1.00  2083     mov     [r13 + Stream.conn], rbx
+   1.00  2084     mov     [r13 + Stream.id], r12
+   1.00  2085     mov     rax, [rbx + Conn.h2 + H2.peer_window]
+   1.00  2086     mov     [r13 + Stream.send_window], rax
+   1.00  2087     mov     qword [r13 + Stream.recv_window], STREAM_WINDOW
+   1.00  2088     mov     qword [r13 + Stream.clen], -1
+   1.00  2089     mov     rcx, [rbx + Conn.streams]
+   1.00  2090     mov     [r13 + Stream.next], rcx
+   1.00  2091     test    rcx, rcx
+   1.00  2092     jz      .linked
+   0.94  2093     mov     [rcx + Stream.prev], r13
+   1.00  2095     mov     [rbx + Conn.streams], r13
+   1.00  2096     mov     rdi, rbx
+   1.00  2097     mov     rsi, r13
+   1.00  2098     call    map_insert
+   1.00  2099     test    eax, eax
+   1.00  2100     jnz     .unlink
+   1.00  2101     inc     qword [rbx + Conn.h2 + H2.nstreams]
+   1.00  2102     mov     rax, r13
+   1.00  2103     jmp     .out
+   1.00  2110     pop     r13
+   1.00  2111     pop     r12
+   1.00  2112     pop     rbx
+   1.00  2113     ret
+==== stream_close  (h2n.asm:2126-2168)  25.0 Ir/request
+   1.00  2127     push    rbx
+   1.00  2128     push    r12
+   1.00  2129     sub     rsp, 8                      ; 2 pushes + 8: aligned for calls
+   1.00  2130     mov     rbx, rdi
+   1.00  2131     mov     r12, rsi
+   1.00  2132     mov     esi, [r12 + Stream.id]
+   1.00  2133     call    map_remove                  ; rdi = Conn*
+   1.00  2134     dec     qword [rbx + Conn.h2 + H2.nstreams]
+   1.00  2135     mov     eax, [rbx + Conn.h2 + H2.closed_pos]
+   1.00  2136     and     eax, H2_RING - 1
+   1.00  2137     mov     ecx, [r12 + Stream.id]
+   1.00  2138     mov     [rbx + Conn.h2 + H2.closed_ring + rax*4], ecx
+   1.00  2139     inc     qword [rbx + Conn.h2 + H2.closed_pos]
+   1.00  2140     test    qword [r12 + Stream.h2flags], SN_PENDING
+   1.00  2141     jz      .unqueued
+   1.00  2146     test    qword [r12 + Stream.flags], ST_BATCHED
+   1.00  2147     jnz     .batched
+   1.00  2148     mov     rdi, rbx
+   1.00  2149     mov     rsi, r12
+   1.00  2150     call    kv_grpc_stream_release wrt ..plt
+   1.00  2151     jmp     .out
+   1.00  2155     add     rsp, 8
+   1.00  2156     pop     r12
+   1.00  2157     pop     rbx
+   1.00  2158     ret
+==== response_done  (h2n.asm:2211-2229)  7.0 Ir/request
+   1.00  2212     test    qword [rsi + Stream.h2flags], SN_REMOTE_CLOSED
+   1.00  2213     jz      .early
+   1.00  2214     sub     rsp, 8                      ; aligned for the call
+   1.00  2215     call    stream_close
+   1.00  2216     add     rsp, 8
+   1.00  2217     xor     eax, eax
+   1.00  2218     ret
+==== kv_h2n_reply_parts  (h2n.asm:2351-2428)  26.0 Ir/request
+   1.00  2352     push    rbx
+   1.00  2353     push    rbp
+   1.00  2354     push    r12
+   1.00  2355     push    r13
+   1.00  2356     push    r14
+   1.00  2357     push    r15
+   1.00  2358     sub     rsp, 8                      ; 6 pushes + 8: aligned for calls
+   1.00  2359     mov     rbx, rdi
+   1.00  2360     mov     rbp, rsi
+   1.00  2361     mov     r12, rdx
+   1.00  2362     mov     r13, rcx
+   1.00  2363     mov     r14, r8
+   1.00  2364     mov     r15, r9
+   1.00  2365     test    qword [rbx + Conn.h2 + H2.flags], H2F_CLOSING
+   1.00  2366     jnz     .drop
+   1.00  2367     call    reply_fast                  ; same arguments, still in place
+   1.00  2368     test    eax, eax
+   1.00  2369     jle     .out                        ; 0 answered, -1 out of memory
+   1.00  2406     add     rsp, 8
+   1.00  2407     pop     r15
+   1.00  2408     pop     r14
+   1.00  2409     pop     r13
+   1.00  2410     pop     r12
+   1.00  2411     pop     rbp
+   1.00  2412     pop     rbx
+   1.00  2413     ret
+==== reply_fast  (h2n.asm:2591-2707)  84.0 Ir/request
+   1.00  2592     push    rbx
+   1.00  2593     push    rbp
+   1.00  2594     push    r12
+   1.00  2595     push    r13
+   1.00  2596     push    r14
+   1.00  2597     push    r15
+   1.00  2598     sub     rsp, 24                     ; [0] message length, [8] start, [16] cursor
+   1.00  2599     mov     rbx, rdi
+   1.00  2600     mov     rbp, rsi
+   1.00  2601     mov     r12, rdx
+   1.00  2602     mov     r13, rcx
+   1.00  2603     mov     r14, r8
+   1.00  2604     mov     r15, r9
+   1.00  2605     lea     rax, [r13 + r15]
+   1.00  2606     mov     [rsp], rax
+   1.00  2607     cmp     qword [rbx + Conn.out_len], OUT_HIGH_WATER
+   1.00  2608     jae     .later
+   1.00  2609     cmp     rax, [rbx + Conn.h2 + H2.send_window]
+   1.00  2610     jg      .later
+   1.00  2611     cmp     rax, [rbp + Stream.send_window]
+   1.00  2612     jg      .later
+   1.00  2613     cmp     rax, [rbx + Conn.h2 + H2.peer_frame]
+   1.00  2614     ja      .later
+   1.00  2615     lea     rsi, [rax + 3 * FRAME_HDR + 64]
+   1.00  2616     mov     rdi, rbx
+   1.00  2617     call    out_reserve
+   1.00  2618     test    rax, rax
+   1.00  2619     jz      .nomem
+   1.00  2620     mov     [rsp + 8], rax
+   1.00  2621     mov     rdi, rbx
+   1.00  2622     mov     rsi, rax
+   1.00  2623     mov     edx, [rbp + Stream.id]
+   1.00  2624     call    put_response_headers
+   1.00  2625     add     rax, [rsp + 8]
+   1.00  2626     mov     [rsp + 16], rax             ; the DATA frame starts here
+   1.00  2627     mov     rdi, rax
+   1.00  2628     mov     esi, [rsp]
+   1.00  2629     mov     edx, FT_DATA
+   1.00  2630     xor     ecx, ecx
+   1.00  2631     mov     r8d, [rbp + Stream.id]
+   1.00  2632     call    put_hdr
+   1.00  2637     mov     rdi, [rsp + 16]
+   1.00  2638     add     rdi, FRAME_HDR
+   1.00  2639     cmp     r13, 16
+   1.00  2640     ja      .head_call
+   1.00  2641     cmp     r13, 8
+   1.00  2642     jb      .head_small
+   1.00  2643     mov     rax, [r12]
+   1.00  2644     mov     rcx, [r12 + r13 - 8]
+   1.00  2645     mov     [rdi], rax
+   1.00  2646     mov     [rdi + r13 - 8], rcx
+   1.00  2647     jmp     .head_done
+   1.00  2661     test    r15, r15
+   1.00  2662     jz      .trailers
+   1.00  2663     mov     rdi, [rsp + 16]
+   1.00  2664     lea     rdi, [rdi + FRAME_HDR + r13]
+   1.00  2665     mov     rsi, r14
+   1.00  2666     mov     rdx, r15
+   2.00  2667     call    memcpy wrt ..plt
+   1.00  2669     mov     rax, [rsp]
+   1.00  2670     sub     [rbx + Conn.h2 + H2.send_window], rax
+   1.00  2671     sub     [rbp + Stream.send_window], rax
+   1.00  2672     mov     rsi, [rsp + 16]
+   1.00  2673     lea     rsi, [rsi + FRAME_HDR + rax]
+   1.00  2674     mov     [rsp + 16], rsi
+   1.00  2675     mov     rdi, rbx
+   1.00  2676     mov     edx, [rbp + Stream.id]
+   1.00  2677     call    put_trailers
+   1.00  2678     add     rax, [rsp + 16]
+   1.00  2679     sub     rax, [rbx + Conn.out_buf]
+   1.00  2680     mov     [rbx + Conn.out_len], rax   ; trim the reservation
+   1.00  2681     mov     rdi, rbx
+   1.00  2682     mov     rsi, rbp
+   1.00  2683     call    response_done               ; 0, or -1 (out of memory for an RST)
+   1.00  2684     jmp     .out
+   1.00  2691     add     rsp, 24
+   1.00  2692     pop     r15
+   1.00  2693     pop     r14
+   1.00  2694     pop     r13
+   1.00  2695     pop     r12
+   1.00  2696     pop     rbp
+   1.00  2697     pop     rbx
+   1.00  2698     ret
+==== put_response_headers  (h2n.asm:2871-2936)  30.0 Ir/request
+   1.00  2872     push    rbx
+   1.00  2873     push    r12
+   1.00  2874     push    r13                         ; 3 pushes: aligned for calls
+   1.00  2875     mov     rbx, rdi
+   1.00  2876     mov     r12, rsi
+   1.00  2877     mov     r13d, edx
+   1.00  2878     lea     rdi, [r12 + FRAME_HDR]      ; block cursor
+   1.00  2879     call    put_tsu
+   1.00  2880     mov     rax, [rbx + Conn.h2 + H2.enc]
+   1.00  2881     cmp     rax, H2E_BOTH
+   1.00  2882     je      .both
+   1.00  2907     mov     word [rdi], 0xBF88          ; :status 200, [63] content-type
+   1.00  2908     add     rdi, 2
+   1.00  2910     mov     rsi, rdi
+   1.00  2911     sub     rsi, r12
+   1.00  2912     sub     rsi, FRAME_HDR              ; block length
+   1.00  2913     push    rsi
+   1.00  2914     push    rsi                         ; keeps alignment (put_hdr is a leaf anyway)
+   1.00  2915     mov     rdi, r12
+   1.00  2916     mov     edx, FT_HEADERS
+   1.00  2917     mov     ecx, FF_END_HEADERS
+   1.00  2918     mov     r8d, r13d
+   1.00  2919     call    put_hdr
+   1.00  2920     pop     rax
+   1.00  2921     pop     rax
+   1.00  2922     add     rax, FRAME_HDR
+   1.00  2923     pop     r13
+   1.00  2924     pop     r12
+   1.00  2925     pop     rbx
+   1.00  2926     ret
+==== put_trailers  (h2n.asm:2937-2987)  30.0 Ir/request
+   1.00  2938     push    rbx
+   1.00  2939     push    r12
+   1.00  2940     push    r13                         ; 3 pushes: aligned for calls
+   1.00  2941     mov     rbx, rdi
+   1.00  2942     mov     r12, rsi
+   1.00  2943     mov     r13d, edx
+   1.00  2944     lea     rdi, [r12 + FRAME_HDR]
+   1.00  2945     call    put_tsu
+   1.00  2946     mov     rax, [rbx + Conn.h2 + H2.enc]
+   1.00  2947     cmp     rax, H2E_BOTH
+   1.00  2948     je      .both
+   1.00  2960     mov     byte [rdi], 0xBE            ; [62] grpc-status: 0
+   1.00  2961     inc     rdi
+   1.00  2963     mov     rsi, rdi
+   1.00  2964     sub     rsi, r12
+   1.00  2965     sub     rsi, FRAME_HDR
+   1.00  2966     push    rsi
+   1.00  2967     push    rsi
+   1.00  2968     mov     rdi, r12
+   1.00  2969     mov     edx, FT_HEADERS
+   1.00  2970     mov     ecx, FF_END_HEADERS | FF_END_STREAM
+   1.00  2971     mov     r8d, r13d
+   1.00  2972     call    put_hdr
+   1.00  2973     pop     rax
+   1.00  2974     pop     rax
+   1.00  2975     add     rax, FRAME_HDR
+   1.00  2976     pop     r13
+   1.00  2977     pop     r12
+   1.00  2978     pop     rbx
+   1.00  2979     ret
+==== put_tsu  (h2n.asm:2988-3002)  6.0 Ir/request
+   2.00  2989     test    qword [rbx + Conn.h2 + H2.flags], H2F_TSU
+   2.00  2990     jz      .out
+   2.00  2995     ret
+==== out_reserve  (h2n.asm:3218-3257)  7.0 Ir/request
+   1.00  3219     mov     rax, [rdi + Conn.out_len]
+   1.00  3220     lea     rdx, [rax + rsi]
+   1.00  3221     cmp     rdx, [rdi + Conn.out_cap]
+   1.00  3222     ja      .grow
+   1.00  3223     mov     [rdi + Conn.out_len], rdx
+   1.00  3224     add     rax, [rdi + Conn.out_buf]
+   1.00  3225     ret
+==== put_hdr  (h2n.asm:3258-3275)  30.0 Ir/request
+   3.00  3259     mov     eax, esi
+   3.00  3260     shl     eax, 8
+   3.00  3261     bswap   eax                         ; length bytes big-endian, low byte free
+   3.00  3262     shl     edx, 24
+   3.00  3263     or      eax, edx                    ; ... followed by the type
+   3.00  3264     mov     [rdi], eax
+   3.00  3265     mov     [rdi + 4], cl
+   3.00  3266     bswap   r8d
+   3.00  3267     mov     [rdi + 5], r8d
+   3.00  3268     ret
+==== kv_pool_malloc  (pool.asm:82-160)  8.0 Ir/request
+   1.00    84     test    rcx, rcx
+   1.00    85     js      .large
+   1.00    86     mov     rax, [rsi + Pool.free + rcx*8]
+   1.00    87     test    rax, rax
+   1.00    88     jz      .carve
+   1.00    89     mov     rdx, [rax]                  ; LIFO pop: next free block
+   1.00    90     mov     [rsi + Pool.free + rcx*8], rdx
+   1.00    91     ret                                 ; the header still holds the class
+==== kv_pool_free  (pool.asm:161-180)  9.0 Ir/request
+   1.00   162     test    rdi, rdi
+   1.00   163     jz      .out
+   1.00   164     mov     rax, [rdi - POOL_HDR]
+   1.00   165     cmp     rax, POOL_LARGE
+   1.00   166     je      .large
+   1.00   167     mov     rdx, [rsi + Pool.free + rax*8]
+   1.00   168     mov     [rdi], rdx                  ; LIFO push
+   1.00   169     mov     [rsi + Pool.free + rax*8], rdi
+   1.00   171     ret
+==== kv_pool_calloc  (pool.asm:181-217)  25.0 Ir/request
+   1.00   182     push    rbx
+   1.00   183     push    r12
+   1.00   184     sub     rsp, 8                      ; 2 pushes + 8: rsp 16-aligned for calls
+   1.00   185     mov     r12, rdx                    ; Pool* (mul clobbers rdx)
+   1.00   186     mov     rax, rdi
+   1.00   187     mul     rsi                         ; rdx:rax = nmemb * size
+   1.00   188     jc      .fail                       ; product needs more than 64 bits
+   1.00   189     mov     rbx, rax
+   1.00   190     mov     rdi, rax
+   1.00   191     mov     rsi, r12
+   1.00   192     call    kv_pool_malloc
+   1.00   193     test    rax, rax
+   1.00   194     jz      .out
+   1.00   195     mov     r12, rax
+   1.00   196     mov     rdi, rax
+   1.00   197     xor     esi, esi
+   1.00   198     mov     rdx, rbx
+   2.04   199     call    memset wrt ..plt
+   1.00   200     mov     rax, r12
+   1.00   201     jmp     .out
+   1.00   205     add     rsp, 8
+   1.00   206     pop     r12
+   1.00   207     pop     rbx
+   1.00   208     ret
+==== kv_pb_decode_kv  (proto.asm:76-166)  40.0 Ir/request
+   1.00    77     xor     eax, eax
+   1.00    78     mov     [rdx + PbKv.key], rax
+   1.00    79     mov     [rdx + PbKv.key_len], rax
+   1.00    80     mov     [rdx + PbKv.value], rax
+   1.00    81     mov     [rdx + PbKv.value_len], rax
+   1.00    82     mov     [rdx + PbKv.has_key], eax
+   1.00    83     mov     [rdx + PbKv.has_value], eax
+   1.00    84     mov     r10, rdx                    ; out
+   1.00    85     lea     rdx, [rdi + rsi]            ; end
+   1.00    86     mov     rsi, rdi                    ; cursor
+   2.00    88     cmp     rsi, rdx
+   2.00    89     jae     .ok                         ; clean end of message
+   1.00    90     call    pb_read_varint              ; tag
+   1.00    91     jc      .bad
+   1.00    92     mov     r11, rax
+   1.00    93     shr     r11, 3                      ; field number
+   1.00    94     jz      .bad                        ; field 0 is invalid
+   1.00    95     mov     rcx, 0xFFFFFFFF
+   1.00    96     cmp     rax, rcx
+   1.00    97     ja      .bad                        ; field numbers are < 2^29
+   1.00    98     and     eax, 7                      ; wire type
+   1.00    99     cmp     eax, 2
+   1.00   100     je      .length_delimited
+   1.00   127     call    pb_read_varint              ; payload length
+   1.00   128     jc      .bad
+   1.00   129     mov     rcx, rdx
+   1.00   130     sub     rcx, rsi                    ; bytes remaining
+   1.00   131     cmp     rax, rcx
+   1.00   132     ja      .bad                        ; checked before rsi+rax is ever formed
+   1.00   133     cmp     r11, 1
+   1.00   134     je      .key
+   1.00   140     mov     [r10 + PbKv.key], rsi
+   1.00   141     mov     [r10 + PbKv.key_len], rax
+   1.00   142     mov     dword [r10 + PbKv.has_key], 1
+   1.00   143     add     rsi, rax
+   1.00   144     jmp     .field
+   1.00   152     xor     eax, eax
+   1.00   153     ret
+==== pb_read_varint  (proto.asm:167-201)  32.0 Ir/request
+   2.00   168     xor     eax, eax
+   2.00   169     xor     ecx, ecx                    ; shift
+   2.00   171     cmp     rsi, rdx
+   2.00   172     jae     .err                        ; truncated
+   2.00   173     movzx   r8d, byte [rsi]
+   2.00   174     inc     rsi
+   2.00   175     mov     r9d, r8d
+   2.00   176     and     r9d, 0x7F
+   2.00   177     cmp     ecx, 63
+   2.00   178     jne     .fits
+   2.00   182     shl     r9, cl
+   2.00   183     or      rax, r9
+   2.00   184     test    r8b, 0x80
+   2.00   185     jz      .done
+   2.00   191     clc
+   2.00   192     ret
+==== kv_pb_write_varint  (proto.asm:219-254)  7.0 Ir/request
+   1.00   220     mov     rax, rdi
+   1.00   222     cmp     rsi, 0x80
+   1.00   223     jb      .last
+   1.00   231     mov     [rax], sil
+   1.00   232     inc     rax
+   1.00   233     sub     rax, rdi
+   1.00   234     ret
+==== kv_siphash128  (siphash.asm:61-168)  53.0 Ir/request
+   1.00    62     mov     r8, 0x736f6d6570736575      ; v0 = k0 ^ "somepseu"
+   1.00    63     mov     r9, 0x646f72616e646f6d      ; v1 = k1 ^ "dorandom"
+   1.00    64     mov     r10, 0x6c7967656e657261     ; v2 = k0 ^ "lygenera"
+   1.00    65     mov     r11, 0x7465646279746573     ; v3 = k1 ^ "tedbytes"
+   1.00    66     mov     rax, [rdx]                  ; k0
+   1.00    67     xor     r8, rax
+   1.00    68     xor     r10, rax
+   1.00    69     mov     rax, [rdx + 8]              ; k1
+   1.00    70     xor     r9, rax
+   1.00    71     xor     r11, rax
+   1.00    72     xor     r9, 0xee                    ; 128-bit output domain separation
+   1.00    74     push    rcx                         ; out pointer, restored at the end
+   1.00    75     mov     rcx, rsi
+   1.00    76     shr     rcx, 3                      ; number of full 8-byte words
+   1.00    77     jz      .tail
+   2.00    79     mov     rax, [rdi]
+   2.00    80     xor     r11, rax
+   2.00    83     xor     r8, rax
+   2.00    84     add     rdi, 8
+   2.00    85     dec     rcx
+   2.00    86     jnz     .block
+   1.00    90     mov     rdx, rsi
+   1.00    91     and     edx, 7                      ; left = len % 8
+   1.00    92     xor     eax, eax
+   1.00    93     test    edx, edx
+   1.00    94     jz      .final
+   1.00   131     mov     rdx, rsi
+   1.00   132     shl     rdx, 56
+   1.00   133     or      rax, rdx                    ; b
+   1.00   134     xor     r11, rax
+   1.00   137     xor     r8, rax
+   1.00   139     xor     r10, 0xee                   ; finalization (128-bit variant)
+   1.00   144     mov     rax, r8
+   1.00   145     xor     rax, r9
+   1.00   146     xor     rax, r10
+   1.00   147     xor     rax, r11                    ; h1
+   1.00   149     xor     r9, 0xdd
+   1.00   154     mov     rdx, r8
+   1.00   155     xor     rdx, r9
+   1.00   156     xor     rdx, r10
+   1.00   157     xor     rdx, r11                    ; h2
+   1.00   159     pop     rcx
+   1.00   160     test    rcx, rcx
+   1.00   161     jz      .done
+   1.00   162     mov     [rcx], rax
+   1.00   163     mov     [rcx + 8], rdx
+   1.00   165     ret
+==== kv_store_hash  (store.asm:380-396)  5.0 Ir/request
+   1.00   381     lea     r8, [rdi + Table.seed0]
+   1.00   382     mov     rdi, rsi
+   1.00   383     mov     rsi, rdx
+   1.00   384     mov     rdx, r8
+   1.00   385     jmp     kv_siphash128 wrt ..plt
+==== kv_keyeq  (util.asm:33-95)  18.1 Ir/request
+   1.01    34     cmp     rdx, 8
+   1.01    35     jb      .small
+   1.01    36     lea     rcx, [rdx - 8]              ; offset of the final (overlapping) word
+   1.01    37     xor     r8d, r8d
+   2.01    39     cmp     r8, rcx
+   2.01    40     jae     .last
+   1.01    41     mov     rax, [rdi + r8]
+   1.01    42     cmp     rax, [rsi + r8]
+   1.01    43     jne     .ne
+   1.01    44     add     r8, 8
+   1.01    45     jmp     .words
+   1.01    47     mov     rax, [rdi + rcx]
+   1.01    48     cmp     rax, [rsi + rcx]
+   1.01    49     jne     .ne
+   1.00    50     mov     eax, 1
+   1.00    51     ret
+   0.01    78     xor     eax, eax
+   0.01    79     ret

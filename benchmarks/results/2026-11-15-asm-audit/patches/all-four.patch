@@ -1,0 +1,643 @@
+diff --git a/server/src/h2n.asm b/server/src/h2n.asm
+index 6296408..dccb581 100644
+--- a/server/src/h2n.asm
++++ b/server/src/h2n.asm
+@@ -122,6 +122,17 @@ extern kv_grpc_gen_fill
+ %define H2F_GOAWAY_SENT     2           ; no new streams; close when the last one ends
+ %define H2F_GOAWAY_RECV     4           ; the peer is leaving: same
+ %define H2F_TSU             8           ; next header block starts with a size update to 0
++; An early drain (out_try_drain) found the socket full during this read: no
++; further attempt until the next read, so a slow reader costs one refused
++; sendto per read instead of one per response. Cleared by kv_h2n_read.
++%define H2F_OUT_FULL        16
++
++; Largest gRPC message reply_fast frames in place when it needs more than one
++; DATA frame. It bounds what a single response can add to the output buffer
++; (out_buf then peaks near OUT_HIGH_WATER + DIRECT_MAX, the same order as
++; before); larger messages keep the buffered path (reply_slow).
++%define DIRECT_MAX          65536
++%define MSG_NOSIGNAL        0x4000      ; sendto: a vanished peer must not SIGPIPE us
+ 
+ ; Response encoder (our HPACK dynamic table as the peer's decoder sees it).
+ %define H2E_FRESH           0           ; empty
+@@ -407,6 +418,9 @@ kv_h2n_read:
+     sub     rsp, 16                     ; 5 pushes + 16: aligned for calls
+     mov     r14, rdi                    ; Worker*
+     mov     rbx, rsi                    ; Conn*
++    ; A new read: the previous pass's flush has run since the last refused
++    ; early drain, so the socket may take output again (out_try_drain).
++    and     qword [rbx + Conn.h2 + H2.flags], ~H2F_OUT_FULL
+     mov     r12, [r14 + Worker.read_buf]
+     mov     r13, [rbx + Conn.h2 + H2.carry_len]
+     test    r13, r13
+@@ -2583,10 +2597,20 @@ kv_h2n_reply_stream:
+ ; @param  rcx  head length   @param r8  body   @param r9  body length
+ ; @returns eax = 0 (answered, stream closed), 1 (does not fit now: nothing
+ ;          written), or -1 (out of memory).
+-; @remarks "Fits" = output buffer below OUT_HIGH_WATER, and the message fits
+-;          the connection window, the stream window and one frame. The
+-;          output reservation is generous (headers <= 30, trailers <= 25
+-;          bytes) and trimmed to what was written.
++; @remarks "Fits" = the message fits the connection window and the stream
++;          window, and the output buffer is below OUT_HIGH_WATER — or can be
++;          emptied into the socket right now (out_try_drain). The output
++;          reservation is generous (headers <= 30, trailers <= 25 bytes) and
++;          trimmed to what was written.
++;          A message larger than the peer's frame size (a 16 KiB value plus
++;          its 11 bytes of gRPC and protobuf framing already is) is split
++;          over several DATA frames, still copied once, straight from the
++;          caller's body — up to DIRECT_MAX bytes, and only for a small head.
++;          Why both: without them every such GET took the buffered path — a
++;          malloc of the message, a copy into it, the pend list, a second
++;          copy into the output buffer and a free — and so did every reply
++;          after the first 64 KiB of a read's output (measured: 16 KiB values
++;          cost 2 copies and 0.69 heap growths per GET, callgrind).
+ ; =============================================================================
+ reply_fast:
+     push    rbx
+@@ -2595,7 +2619,8 @@ reply_fast:
+     push    r13
+     push    r14
+     push    r15
+-    sub     rsp, 24                     ; [0] message length, [8] start, [16] cursor
++    sub     rsp, 40                     ; [0] message length, [8] start, [16] cursor,
++                                        ; [24] first-frame payload; 6 pushes + 40: aligned
+     mov     rbx, rdi
+     mov     rbp, rsi
+     mov     r12, rdx
+@@ -2605,13 +2630,97 @@ reply_fast:
+     lea     rax, [r13 + r15]
+     mov     [rsp], rax
+     cmp     qword [rbx + Conn.out_len], OUT_HIGH_WATER
+-    jae     .later
++    jb      .room
++    ; Over the high-water mark: hand the buffer to the socket now rather than
++    ; buffer this reply a second time. The syscall clobbers rax, rcx, r11.
++    mov     rdi, rbx
++    call    out_try_drain
++    test    eax, eax
++    jnz     .later                      ; socket full (or replies already queued)
++    mov     rax, [rsp]
++.room:
+     cmp     rax, [rbx + Conn.h2 + H2.send_window]
+     jg      .later
+     cmp     rax, [rbp + Stream.send_window]
+     jg      .later
+     cmp     rax, [rbx + Conn.h2 + H2.peer_frame]
+-    ja      .later
++    ja      .multi
++    ; ---- steady state: the whole response from one template ----
++    ; Once a connection's first response is out, both response fields are in
++    ; the peer's dynamic table (H2E_BOTH), so every later response is the same
++    ; 30 bytes around the message:
++    ;   HEADERS  00 00 02 | 01 | 04 | id | 88 BF      (:status 200, [63] content-type)
++    ;   DATA     len      | 00 | 00 | id | message
++    ;   HEADERS  00 00 01 | 01 | 05 | id | BE         ([62] grpc-status: 0)
++    ; Written here with constant stores instead of through put_response_headers,
++    ; put_tsu, put_hdr (three times), put_trailers and out_reserve: the same
++    ; bytes for under half the instructions (callgrind, a GET: 187 -> 82 for
++    ; the framing, 1,446 -> 1,341 in all; in-process timing: 355 -> 333 core
++    ; cycles per GET, 211 -> 178 per health check).
++    ; Anything unusual keeps the general path below: another encoder state, a
++    ; pending table size update, a head the two overlapping moves cannot copy,
++    ; or a buffer that must grow.
++    cmp     qword [rbx + Conn.h2 + H2.enc], H2E_BOTH
++    jne     .general
++    test    qword [rbx + Conn.h2 + H2.flags], H2F_TSU
++    jnz     .general
++    lea     rcx, [r13 - 4]
++    cmp     rcx, 12
++    ja      .general                    ; head not 4..16 bytes
++    mov     rdi, [rbx + Conn.out_len]
++    lea     rdx, [rdi + rax + 2 * FRAME_HDR + 12] ; 11 + 9 + message + 10
++    cmp     rdx, [rbx + Conn.out_cap]
++    ja      .general                    ; no room: out_reserve grows the buffer
++    mov     [rbx + Conn.out_len], rdx
++    add     rdi, [rbx + Conn.out_buf]   ; rdi = first byte of the response
++    mov     ecx, [rbp + Stream.id]
++    bswap   ecx                         ; stream id as the wire has it
++    mov     dword [rdi], 0x01020000     ; length 2, type HEADERS
++    mov     byte [rdi + 4], FF_END_HEADERS
++    mov     [rdi + 5], ecx
++    mov     word [rdi + 9], 0xBF88
++    mov     edx, eax
++    shl     edx, 8
++    bswap   edx                         ; message length big-endian, then type DATA (0)
++    mov     [rdi + 11], edx
++    mov     byte [rdi + 15], 0          ; no flags: the trailers end the stream
++    mov     [rdi + 16], ecx
++    lea     rdx, [rdi + rax + 2 * FRAME_HDR + 2] ; the trailers follow the message
++    mov     dword [rdx], 0x01010000     ; length 1, type HEADERS
++    mov     byte [rdx + 4], FF_END_HEADERS | FF_END_STREAM
++    mov     [rdx + 5], ecx
++    mov     byte [rdx + 9], 0xBE
++    sub     [rbx + Conn.h2 + H2.send_window], rax
++    sub     [rbp + Stream.send_window], rax
++    add     rdi, 2 * FRAME_HDR + 2      ; the message goes here
++    ; The head with two overlapping moves (both loads inside [head, head+len),
++    ; both stores inside the bytes just reserved), as in the general path.
++    cmp     r13, 8
++    jb      .t_head_small
++    mov     rax, [r12]
++    mov     rcx, [r12 + r13 - 8]
++    mov     [rdi], rax
++    mov     [rdi + r13 - 8], rcx
++    jmp     .t_body
++.t_head_small:
++    mov     eax, [r12]
++    mov     ecx, [r12 + r13 - 4]
++    mov     [rdi], eax
++    mov     [rdi + r13 - 4], ecx
++.t_body:
++    test    r15, r15
++    jz      .t_done
++    add     rdi, r13
++    mov     rsi, r14
++    mov     rdx, r15
++    call    memcpy wrt ..plt
++.t_done:
++    mov     rdi, rbx
++    mov     rsi, rbp
++    call    response_done               ; 0, or -1 (out of memory for an RST)
++    jmp     .out
++.general:
++    mov     rax, [rsp]
+     lea     rsi, [rax + 3 * FRAME_HDR + 64]
+     mov     rdi, rbx
+     call    out_reserve
+@@ -2671,6 +2780,7 @@ reply_fast:
+     sub     [rbp + Stream.send_window], rax
+     mov     rsi, [rsp + 16]
+     lea     rsi, [rsi + FRAME_HDR + rax]
++.trailers_at:                           ; rsi = first byte after the last DATA frame
+     mov     [rsp + 16], rsi
+     mov     rdi, rbx
+     mov     edx, [rbp + Stream.id]
+@@ -2682,13 +2792,89 @@ reply_fast:
+     mov     rsi, rbp
+     call    response_done               ; 0, or -1 (out of memory for an RST)
+     jmp     .out
++
++    ; ---- the message needs more than one DATA frame (rax = its length) ----
++.multi:
++    cmp     rax, DIRECT_MAX
++    ja      .later                      ; large: buffered path (bounds out_buf growth)
++    cmp     r13, 64
++    ja      .later                      ; the head must fit the first frame beside body bytes
++    ; Reserve the message, one frame header per started FRAME_MIN bytes (the
++    ; peer's frame size is never below FRAME_MIN, so that many frames is the
++    ; most it can take) and the same headers/trailers slack as one frame.
++    mov     rsi, rax
++    shr     rsi, 14                     ; / FRAME_MIN
++    inc     rsi
++    lea     rsi, [rsi + rsi*8]          ; * FRAME_HDR
++    lea     rsi, [rsi + rax + 2 * FRAME_HDR + 64]
++    mov     rdi, rbx
++    call    out_reserve
++    test    rax, rax
++    jz      .nomem
++    mov     [rsp + 8], rax
++    mov     rdi, rbx
++    mov     rsi, rax
++    mov     edx, [rbp + Stream.id]
++    call    put_response_headers
++    add     rax, [rsp + 8]
++    mov     [rsp + 16], rax             ; cursor: the first DATA frame starts here
++    ; First frame: a full one (the message is longer than a frame), holding
++    ; the head and the first peer_frame - head bytes of the body.
++    mov     rsi, [rbx + Conn.h2 + H2.peer_frame]
++    mov     [rsp + 24], rsi
++    mov     rdi, rax
++    mov     edx, FT_DATA
++    xor     ecx, ecx
++    mov     r8d, [rbp + Stream.id]
++    call    put_hdr                     ; leaf: clobbers rax, rdx, r8 only
++    mov     rdi, [rsp + 16]
++    add     rdi, FRAME_HDR
++    mov     rsi, r12
++    mov     rdx, r13
++    call    memcpy wrt ..plt
++    mov     rdi, [rsp + 16]
++    lea     rdi, [rdi + FRAME_HDR + r13]
++    mov     rsi, r14
++    mov     rdx, [rsp + 24]
++    sub     rdx, r13                    ; body bytes that complete the first frame
++    add     r14, rdx                    ; body cursor and bytes left, for the next frames
++    sub     r15, rdx                    ; > 0: the message exceeds one frame
++    call    memcpy wrt ..plt
++    mov     rax, [rsp + 24]
++    add     rax, FRAME_HDR
++    add     [rsp + 16], rax
++.multi_next:
++    mov     r12, [rbx + Conn.h2 + H2.peer_frame]
++    cmp     r12, r15
++    cmova   r12, r15                    ; this frame's payload: a full frame, or the rest
++    mov     rdi, [rsp + 16]
++    mov     esi, r12d
++    mov     edx, FT_DATA
++    xor     ecx, ecx
++    mov     r8d, [rbp + Stream.id]
++    call    put_hdr
++    mov     rdi, [rsp + 16]
++    add     rdi, FRAME_HDR
++    mov     rsi, r14
++    mov     rdx, r12
++    call    memcpy wrt ..plt
++    lea     rax, [r12 + FRAME_HDR]
++    add     [rsp + 16], rax
++    add     r14, r12
++    sub     r15, r12
++    jnz     .multi_next
++    mov     rax, [rsp]
++    sub     [rbx + Conn.h2 + H2.send_window], rax
++    sub     [rbp + Stream.send_window], rax
++    mov     rsi, [rsp + 16]
++    jmp     .trailers_at
+ .later:
+     mov     eax, 1
+     jmp     .out
+ .nomem:
+     mov     eax, -1
+ .out:
+-    add     rsp, 24
++    add     rsp, 40
+     pop     r15
+     pop     r14
+     pop     r13
+@@ -3249,6 +3435,76 @@ out_reserve:
+     pop     rbx
+     ret
+ 
++; =============================================================================
++; out_try_drain — send the queued output now, before the worker's flush.
++; Internal.
++; @param  rdi  Conn*
++; @returns eax = 0 when the output buffer is empty afterwards (out_len and
++;          out_off reset: the caller may frame into it from the start), or 1
++;          when bytes remain — the socket is full, a send failed, or replies
++;          are queued on the pend list.
++; @remarks When to use: only once the buffer is past OUT_HIGH_WATER (called
++;          by reply_fast). Sending early gives up the one-burst-per-pass
++;          property of the two-phase loop (ADR 0009) for this connection, which
++;          is the right trade there: the peer has at least 64 KiB to read, so
++;          it is awake either way, and the alternative is copying every
++;          further reply of the read into a private buffer.
++;          Nothing else of the worker's flush is done here — no pump, no epoll
++;          interest change, no close: phase 2 still runs conn_flush for this
++;          connection and finds either an empty buffer or the unsent rest
++;          (out_off advanced), exactly the states it already handles. A send
++;          error is left for that flush to meet again and act on.
++;          Footgun: one refused send sets H2F_OUT_FULL, and every later call
++;          returns 1 without a syscall until kv_h2n_read clears it — callers
++;          must not expect a retry within the same read.
++;          Replies waiting on the pend list keep their turn: with any queued,
++;          nothing is sent here and the caller buffers as before.
++;          Raw syscall: clobbers rax, rcx, rdx, rsi, rdi, r8-r11.
++; =============================================================================
++out_try_drain:
++    cmp     qword [rdi + Conn.h2 + H2.pend_head], 0
++    jne     .busy
++    test    qword [rdi + Conn.h2 + H2.flags], H2F_OUT_FULL
++    jnz     .busy
++    push    rbx                         ; no calls below, only syscalls: alignment is moot
++    mov     rbx, rdi
++.send:
++    mov     rdx, [rbx + Conn.out_len]
++    mov     rax, [rbx + Conn.out_off]
++    sub     rdx, rax
++    jz      .empty
++    mov     rdi, [rbx + Conn.fd]
++    mov     rsi, [rbx + Conn.out_buf]
++    add     rsi, rax
++    mov     r10d, MSG_NOSIGNAL
++    xor     r8d, r8d
++    xor     r9d, r9d
++    mov     eax, SYS_sendto
++    syscall
++    cmp     rax, -EINTR
++    je      .send
++    test    rax, rax
++    jle     .full                       ; EAGAIN, or an error the worker's flush will see
++    add     [rbx + Conn.out_off], rax
++    ; Output the peer accepts is activity (as in conn_flush): the idle timer
++    ; must not cut a connection that is only receiving.
++    mov     rcx, [rbx + Conn.worker]
++    mov     rcx, [rcx + Worker.now]
++    mov     [rbx + Conn.last_active], rcx
++    jmp     .send                       ; a short send: retry until done or EAGAIN
++.empty:
++    xor     eax, eax
++    mov     [rbx + Conn.out_len], rax
++    mov     [rbx + Conn.out_off], rax
++    pop     rbx
++    ret
++.full:
++    or      qword [rbx + Conn.h2 + H2.flags], H2F_OUT_FULL
++    pop     rbx
++.busy:
++    mov     eax, 1
++    ret
++
+ ; =============================================================================
+ ; put_hdr — write a 9-byte frame header. Internal, leaf.
+ ; @param  rdi  destination   @param esi  payload length (< 2^24)
+diff --git a/server/src/siphash.asm b/server/src/siphash.asm
+index aafbd24..973c5f5 100644
+--- a/server/src/siphash.asm
++++ b/server/src/siphash.asm
+@@ -164,4 +164,128 @@ kv_siphash128:
+ .done:
+     ret
+ 
++global kv_siphash64
++
++; =============================================================================
++; kv_siphash64 — SipHash-2-4 with the standard 64-bit output, returned twice.
++;
++; @param  rdi  const uint8_t *msg (may be NULL when len == 0)
++; @param  rsi  size_t len
++; @param  rdx  const uint64_t key[2] (k0, k1; little-endian key bytes)
++; @param  rcx  uint64_t out[2] — receives (h, h); may be NULL
++; @returns rax = rdx = h, the 64-bit SipHash-2-4 of the message (also stored
++;          to both words of out when non-NULL).
++; @remarks When to use: as the store's placement hash in place of
++;          kv_siphash128. The table needs two things from a key's hash — a
++;          bucket index (low bits) and a one-byte tag (top byte) — and disjoint
++;          bits of one 64-bit pseudo-random word serve both, so the second
++;          64-bit word of the 128-bit variant is never needed: this saves its
++;          four extra finalization rounds (56 instructions; 24 core cycles of
++;          72-88 per 16-byte key, measured). Same function, same key, same
++;          HashDoS argument as SipHash-2-4-128.
++;          Tradeoff: callers that want two INDEPENDENT 64-bit words (the
++;          private caches index by h2, hcache.asm) get the same word twice —
++;          still correct there, because every candidate is confirmed by an
++;          exact key compare, but their two indices then come from one word.
++;          It returns the word in both result registers so every caller of
++;          kv_store_hash keeps working unchanged with (h1, h2) = (h, h).
++;          Never reads outside [msg, msg+len) (same tail handling as
++;          kv_siphash128). Clobbers rdi and r8-r11; rsi and rcx are preserved.
++; =============================================================================
++kv_siphash64:
++    mov     r8, 0x736f6d6570736575      ; v0 = k0 ^ "somepseu"
++    mov     r9, 0x646f72616e646f6d      ; v1 = k1 ^ "dorandom"
++    mov     r10, 0x6c7967656e657261     ; v2 = k0 ^ "lygenera"
++    mov     r11, 0x7465646279746573     ; v3 = k1 ^ "tedbytes"
++    mov     rax, [rdx]                  ; k0
++    xor     r8, rax
++    xor     r10, rax
++    mov     rax, [rdx + 8]              ; k1
++    xor     r9, rax
++    xor     r11, rax                    ; (no 0xee: that is the 128-bit variant's separator)
++
++    push    rcx                         ; out pointer, restored at the end
++    mov     rcx, rsi
++    shr     rcx, 3                      ; number of full 8-byte words
++    jz      .tail
++.block:
++    mov     rax, [rdi]
++    xor     r11, rax
++    SIPROUND
++    SIPROUND
++    xor     r8, rax
++    add     rdi, 8
++    dec     rcx
++    jnz     .block
++
++.tail:
++    ; b = (len << 56) | remaining (len % 8) bytes, little-endian.
++    mov     rdx, rsi
++    and     edx, 7                      ; left = len % 8
++    xor     eax, eax
++    test    edx, edx
++    jz      .final
++    cmp     rsi, 8
++    jb      .short_msg
++    ; len >= 8: the last 8 bytes end at msg+len; the wanted `left` bytes are
++    ; the top `left` bytes of that word. rdi already points at the tail.
++    mov     rax, [rdi + rdx - 8]
++    mov     ecx, 8
++    sub     ecx, edx
++    shl     ecx, 3                      ; shift = 64 - 8*left (1..7 bytes kept)
++    shr     rax, cl
++    jmp     .final
++.short_msg:
++    ; len < 8 (so left == len): gather 4/2/1-byte pieces without overreading.
++    xor     ecx, ecx                    ; byte offset
++    test    dl, 4
++    jz      .t2
++    mov     eax, [rdi]
++    mov     ecx, 4
++.t2:
++    test    dl, 2
++    jz      .t1
++    push    rdx
++    movzx   edx, word [rdi + rcx]
++    shl     ecx, 3
++    shl     rdx, cl
++    shr     ecx, 3
++    or      rax, rdx
++    pop     rdx
++    add     ecx, 2
++.t1:
++    test    dl, 1
++    jz      .final
++    movzx   edx, byte [rdi + rcx]
++    shl     ecx, 3
++    shl     rdx, cl
++    or      rax, rdx
++.final:
++    mov     rdx, rsi
++    shl     rdx, 56
++    or      rax, rdx                    ; b
++    xor     r11, rax
++    SIPROUND
++    SIPROUND
++    xor     r8, rax
++
++    xor     r10, 0xff                   ; finalization (64-bit variant)
++    SIPROUND
++    SIPROUND
++    SIPROUND
++    SIPROUND
++    mov     rax, r8
++    xor     rax, r9
++    xor     rax, r10
++    xor     rax, r11                    ; h
++    mov     rdx, rax                    ; the same word as "h2": the tag is its top byte
++
++    pop     rcx
++    test    rcx, rcx
++    jz      .done
++    mov     [rcx], rax
++    mov     [rcx + 8], rdx
++.done:
++    ret
++
+ section .note.GNU-stack noalloc noexec nowrite progbits
+diff --git a/server/src/store.asm b/server/src/store.asm
+index 036d768..e8ef768 100644
+--- a/server/src/store.asm
++++ b/server/src/store.asm
+@@ -69,7 +69,7 @@ extern calloc
+ extern free
+ extern memcpy
+ extern memset
+-extern kv_siphash128
++extern kv_siphash64
+ extern kv_cuckoo_get
+ extern kv_cuckoo_upsert
+ extern kv_cuckoo_remove
+@@ -369,11 +369,14 @@ kv_store_destroy:
+     ret
+ 
+ ; =============================================================================
+-; kv_store_hash — the store's keyed hash of a key (SipHash-2-4-128).
++; kv_store_hash — the store's keyed hash of a key (SipHash-2-4, 64 bits).
+ ;
+ ; @param  rdi  Table*   @param rsi  key   @param rdx  len
+ ; @param  rcx  uint64_t out[2] (may be NULL)
+-; @returns rax = h1, rdx = h2 (also written to out when non-NULL).
++; @returns rax = h1, rdx = h2 (also written to out when non-NULL), with
++;          h2 == h1: the bucket index comes from the word's low bits and the
++;          tag from its top byte (kv_siphash64 explains why one word is
++;          enough and what it saves).
+ ; @remarks Callers hash once and pass (h1, h2) to get/put/delete, so the
+ ;          per-process secret seed never leaves the Table.
+ ; =============================================================================
+@@ -382,7 +385,7 @@ kv_store_hash:
+     mov     rdi, rsi
+     mov     rsi, rdx
+     mov     rdx, r8
+-    jmp     kv_siphash128 wrt ..plt
++    jmp     kv_siphash64 wrt ..plt
+ 
+ ; =============================================================================
+ ; kv_store_get — lock-free lookup.
+diff --git a/server/src/worker.asm b/server/src/worker.asm
+index 3eccdb3..ec6a70a 100644
+--- a/server/src/worker.asm
++++ b/server/src/worker.asm
+@@ -614,18 +614,15 @@ worker_main:
+     mov     [rbx + Worker.next_tick], rax
+ 
+ .loop:
+-    mov     rdi, r12
+-    mov     esi, r13d
+-    call    kv_qsbr_quiescent wrt ..plt ; no record pointers are held here
+-    mov     rdi, [rbx + Worker.epfd]
+-    mov     rsi, [rbx + Worker.events]
+-    mov     edx, MAX_EVENTS
+-    xor     r10d, r10d                  ; poll: do not block yet
+-    mov     eax, SYS_epoll_wait
+-    syscall
+-    test    rax, rax
+-    jnz     .have_events
+-    ; Nothing ready: go offline so reclamation never waits on an idle worker.
++    ; One epoll_wait per pass, entered offline: no record pointers are held
++    ; here, so the worker leaves the readers' set for the wait (reclamation
++    ; never waits on a sleeping worker) and rejoins it after — an offline
++    ; announcement is also a quiescent state, so nothing else is needed.
++    ; Why not poll first (timeout 0) and block only when nothing is ready, as
++    ; this loop used to: the poll saved the rejoin's XCHG (~20 cycles) on a
++    ; busy pass, but cost a whole extra syscall before every sleep — once per
++    ; wakeup whenever the worker is not saturated, e.g. one of the four
++    ; syscalls an unpipelined request needs.
+     mov     rdi, r12
+     mov     esi, r13d
+     call    kv_qsbr_offline wrt ..plt
+diff --git a/server/tests/test_siphash.c b/server/tests/test_siphash.c
+index 615e123..6ff2f37 100644
+--- a/server/tests/test_siphash.c
++++ b/server/tests/test_siphash.c
+@@ -8,12 +8,20 @@
+  *  3. Overread proof: messages ending exactly at a PROT_NONE guard page for
+  *     every length 0..64 — any read past the end would crash the test.
+  *  4. The out pointer may be NULL and the rax/rdx return pair matches out[].
++ *  5. kv_siphash64 (the store's placement hash): the SipHash paper's test
++ *     vector and the first official 64-bit reference vector, a differential
++ *     test against a C port of the 64-bit reference over every length
++ *     0..1100, the same overread proof, and its contract that both result
++ *     registers and both words of out[] carry the one 64-bit word.
+  */
+ #include "test_common.h"
+ #include "siphash_vectors.h"
+ 
+ /* siphash.asm: returns h1 in rax; we only use the out[] array from C. */
+ uint64_t kv_siphash128(const void *msg, size_t len, const uint64_t key[2], uint64_t out[2]);
++/* siphash.asm: the 64-bit word comes back in rax AND rdx (a 128-bit integer
++ * return in the System V ABI), so C can check both registers. */
++unsigned __int128 kv_siphash64(const void *msg, size_t len, const uint64_t key[2], uint64_t out[2]);
+ 
+ #define ROTL(x, b) (uint64_t)(((x) << (b)) | ((x) >> (64 - (b))))
+ #define SIPROUND                                                               \
+@@ -58,6 +66,29 @@ static void ref_siphash128(const uint8_t *in, size_t inlen, uint64_t k0, uint64_
+   out[1] = v0 ^ v1 ^ v2 ^ v3;
+ }
+ 
++/**
++ * Reference SipHash-2-4 with the standard 64-bit output in portable C
++ * (transcribed from the reference siphash.c, outlen = 8): the oracle for
++ * kv_siphash64.
++ * @param in message. @param inlen length. @param k0,k1 key words.
++ * @return the 64-bit hash.
++ */
++static uint64_t ref_siphash64(const uint8_t *in, size_t inlen, uint64_t k0, uint64_t k1) {
++  uint64_t v0 = 0x736f6d6570736575ull ^ k0, v1 = 0x646f72616e646f6dull ^ k1;
++  uint64_t v2 = 0x6c7967656e657261ull ^ k0, v3 = 0x7465646279746573ull ^ k1;
++  const uint8_t *end = in + inlen - (inlen % 8);
++  for (; in != end; in += 8) {
++    uint64_t m;
++    memcpy(&m, in, 8);
++    v3 ^= m; SIPROUND; SIPROUND; v0 ^= m;
++  }
++  uint64_t b = (uint64_t)inlen << 56;
++  for (size_t i = 0; i < (inlen & 7); i++) b |= (uint64_t)in[i] << (8 * i);
++  v3 ^= b; SIPROUND; SIPROUND; v0 ^= b;
++  v2 ^= 0xff; SIPROUND; SIPROUND; SIPROUND; SIPROUND;
++  return v0 ^ v1 ^ v2 ^ v3;
++}
++
+ /** Entry point. @return 0 when every check passed. */
+ int main(void) {
+   /* 1. Reference vectors: key 00..0f, message 00..(i-1). */
+@@ -102,5 +133,40 @@ int main(void) {
+   /* 4. NULL out pointer is allowed (result only in registers). */
+   kv_siphash128(msg, 10, key, NULL);
+ 
++  /* 5. kv_siphash64. Published vectors first (key 00..0f): the empty message
++   * (reference vectors_sip64[0]) and the 15-byte message 00..0e (the SipHash
++   * paper, Appendix A). */
++  {
++    uint64_t out[2] = {0, 0};
++    unsigned __int128 r = kv_siphash64(msg, 0, key, out);
++    CHECK_EQ_U64(out[0], 0x726fdb47dd0e0e31ull);
++    CHECK_EQ_U64(out[1], out[0]);                    /* the word is returned twice */
++    CHECK_EQ_U64((uint64_t)r, out[0]);               /* rax */
++    CHECK_EQ_U64((uint64_t)(r >> 64), out[0]);       /* rdx */
++    kv_siphash64(msg, 15, key, out);
++    CHECK_EQ_U64(out[0], 0xa129ca6149be45e5ull);
++    r = kv_siphash64(msg, 15, key, NULL);            /* NULL out: registers only */
++    CHECK_EQ_U64((uint64_t)r, 0xa129ca6149be45e5ull);
++    CHECK_EQ_U64((uint64_t)(r >> 64), 0xa129ca6149be45e5ull);
++  }
++  for (size_t len = 0; len <= 1100; len++) {
++    for (int rep = 0; rep < 4; rep++) {
++      uint64_t k[2] = {rng_next(&s), rng_next(&s)}, a[2];
++      rng_fill(&s, buf, len);
++      kv_siphash64(buf, len, k, a);
++      CHECK_EQ_U64(a[0], ref_siphash64(buf, len, k[0], k[1]));
++      CHECK_EQ_U64(a[1], a[0]);
++    }
++  }
++  for (size_t len = 0; len <= 64; len++) {           /* no overread */
++    void *base;
++    uint8_t *p = guard_alloc(len, &base);
++    rng_fill(&s, p, len);
++    uint64_t k[2] = {rng_next(&s), rng_next(&s)}, a[2];
++    kv_siphash64(p, len, k, a);
++    CHECK_EQ_U64(a[0], ref_siphash64(p, len, k[0], k[1]));
++    guard_free(base);
++  }
++
+   return test_finish("test_siphash");
+ }

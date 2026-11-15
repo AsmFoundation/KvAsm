@@ -1,0 +1,19 @@
+## syscount.sh: syscalls per unpipelined request, open loop 4,000 requests/s, strace -c
+head: 19948 measured requests
+   epoll_wait        29088 calls     1.46 per measured request
+   read              21220 calls     1.06 per measured request
+   sendto            21218 calls     1.06 per measured request
+   mprotect            779 calls     0.04 per measured request
+   close                19 calls     0.00 per measured request
+   setsockopt           17 calls     0.00 per measured request
+p2: 19948 measured requests
+   read              21220 calls     1.06 per measured request
+   sendto            21218 calls     1.06 per measured request
+   epoll_wait        17031 calls     0.85 per measured request
+   mprotect            786 calls     0.04 per measured request
+   close                19 calls     0.00 per measured request
+   setsockopt           17 calls     0.00 per measured request
+
+## epollcost: taskset -c 13 ./epollcost
+epoll_wait(timeout 0), nothing ready: 95.0 ns per call
+QSBR offline + online (store + XCHG):  8.4 ns per pair

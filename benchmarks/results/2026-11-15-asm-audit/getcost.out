@@ -1,0 +1,46 @@
+## getcost.sh: one worker (vCPU 12), kvbench 3 threads x 12 connections x 16 in flight (vCPUs 13-15), 5 s
+## head = 6a31d0a, p1 = patch 0001 alone, all = patches 0001-0004
+
+# 16,384-byte values (the gRPC message is 11 bytes over one HTTP/2 frame) and 16,000-byte values (one frame)
+head                   value  16384     117,632 req/s  CPU/req    8737 ns (ticks: user   2548, kernel   6178)  minor faults/req  1.958  p50    1466 us  client util 0.30  errors 0 bad 0 misses 0
+p1                     value  16384     176,347 req/s  CPU/req    5815 ns (ticks: user   2082, kernel   3725)  minor faults/req  0.000  p50     930 us  client util 0.62  errors 0 bad 0 misses 0
+all                    value  16384     175,529 req/s  CPU/req    5811 ns (ticks: user   1606, kernel   3188)  minor faults/req  0.000  p50     913 us  client util 0.63  errors 0 bad 0 misses 0
+head                   value  16384     105,904 req/s  CPU/req    9697 ns (ticks: user   3395, kernel   6319)  minor faults/req  1.973  p50    1532 us  client util 0.31  errors 0 bad 0 misses 0
+p1                     value  16384     126,463 req/s  CPU/req    7806 ns (ticks: user   2665, kernel   5034)  minor faults/req  0.000  p50     930 us  client util 0.53  errors 0 bad 0 misses 0
+all                    value  16384     182,728 req/s  CPU/req    5436 ns (ticks: user   2009, kernel   3404)  minor faults/req  0.000  p50     807 us  client util 0.54  errors 0 bad 0 misses 0
+head                   value  16384     114,793 req/s  CPU/req    8960 ns (ticks: user   3546, kernel   5417)  minor faults/req  1.904  p50    1483 us  client util 0.32  errors 0 bad 0 misses 0
+p1                     value  16384     225,444 req/s  CPU/req    4558 ns (ticks: user   1404, kernel   2343)  minor faults/req  0.000  p50     766 us  client util 0.62  errors 0 bad 0 misses 0
+all                    value  16384     213,474 req/s  CPU/req    4802 ns (ticks: user   1848, kernel   2959)  minor faults/req  0.000  p50     815 us  client util 0.56  errors 0 bad 0 misses 0
+head                   value  16000     146,167 req/s  CPU/req    7034 ns (ticks: user   2597, kernel   4443)  minor faults/req  1.199  p50    1122 us  client util 0.37  errors 0 bad 0 misses 0
+p1                     value  16000     222,762 req/s  CPU/req    4616 ns (ticks: user   1838, kernel   2780)  minor faults/req  0.000  p50     774 us  client util 0.60  errors 0 bad 0 misses 0
+all                    value  16000     165,464 req/s  CPU/req    6121 ns (ticks: user   2128, kernel   4029)  minor faults/req  0.000  p50     889 us  client util 0.59  errors 0 bad 0 misses 0
+head                   value  16000     102,267 req/s  CPU/req   10005 ns (ticks: user   3078, kernel   5830)  minor faults/req  1.188  p50    1466 us  client util 0.35  errors 0 bad 0 misses 0
+p1                     value  16000     231,887 req/s  CPU/req    4424 ns (ticks: user   1583, kernel   2833)  minor faults/req  0.000  p50     774 us  client util 0.53  errors 0 bad 0 misses 0
+all                    value  16000     238,677 req/s  CPU/req    4304 ns (ticks: user   1790, kernel   2512)  minor faults/req  0.000  p50     717 us  client util 0.61  errors 0 bad 0 misses 0
+head                   value  16000     142,168 req/s  CPU/req    7232 ns (ticks: user   2635, kernel   4585)  minor faults/req  1.255  p50    1188 us  client util 0.34  errors 0 bad 0 misses 0
+p1                     value  16000     229,531 req/s  CPU/req    4477 ns (ticks: user   1763, kernel   2698)  minor faults/req  0.000  p50     758 us  client util 0.58  errors 0 bad 0 misses 0
+all                    value  16000     226,660 req/s  CPU/req    4528 ns (ticks: user   1719, kernel   2810)  minor faults/req  0.000  p50     750 us  client util 0.60  errors 0 bad 0 misses 0
+
+# value sizes across the frame boundary (16,373|16,374) and the direct-path limit (65,525|65,526), all four patches
+all                    value   4096     834,018 req/s  CPU/req    1187 ns (ticks: user    323, kernel    868)  minor faults/req  0.000  p50     171 us  client util 0.77  errors 0 bad 0 misses 0
+all                    value  16372     177,854 req/s  CPU/req    5748 ns (ticks: user   1792, kernel   3948)  minor faults/req  0.000  p50     856 us  client util 0.64  errors 0 bad 0 misses 0
+all                    value  16373     182,973 req/s  CPU/req    5613 ns (ticks: user   1854, kernel   3789)  minor faults/req  0.000  p50     848 us  client util 0.65  errors 0 bad 0 misses 0
+all                    value  16374     185,205 req/s  CPU/req    5554 ns (ticks: user   1535, kernel   4039)  minor faults/req  0.000  p50     848 us  client util 0.65  errors 0 bad 0 misses 0
+all                    value  16375     253,000 req/s  CPU/req    4059 ns (ticks: user   1342, kernel   2684)  minor faults/req  0.000  p50     709 us  client util 0.63  errors 0 bad 0 misses 0
+all                    value  20000     162,227 req/s  CPU/req    6308 ns (ticks: user   1951, kernel   3337)  minor faults/req  0.000  p50     995 us  client util 0.65  errors 0 bad 0 misses 0
+all                    value  32768      99,998 req/s  CPU/req   10273 ns (ticks: user   3989, kernel   6233)  minor faults/req  0.000  p50    1647 us  client util 0.61  errors 0 bad 0 misses 0
+all                    value  49152      78,040 req/s  CPU/req   13164 ns (ticks: user   5877, kernel   7283)  minor faults/req  0.000  p50    2212 us  client util 0.58  errors 0 bad 0 misses 0
+all                    value  65000      82,448 req/s  CPU/req   12444 ns (ticks: user   4420, kernel   8052)  minor faults/req  0.000  p50    2179 us  client util 0.48  errors 0 bad 0 misses 0
+all                    value  65525      69,527 req/s  CPU/req   14761 ns (ticks: user   6458, kernel   8324)  minor faults/req  0.000  p50    2540 us  client util 0.44  errors 0 bad 0 misses 0
+all                    value  65526      39,928 req/s  CPU/req   25737 ns (ticks: user  13747, kernel  11997)  minor faults/req  0.092  p50    4424 us  client util 0.39  errors 0 bad 0 misses 0
+all                    value  65536      42,563 req/s  CPU/req   24144 ns (ticks: user  13598, kernel  10550)  minor faults/req  0.066  p50    4145 us  client util 0.35  errors 0 bad 0 misses 0
+all                    value 131072      21,159 req/s  CPU/req   48551 ns (ticks: user  22486, kernel  17598)  minor faults/req  0.010  p50    8978 us  client util 0.35  errors 0 bad 0 misses 0
+
+# the same sizes on HEAD
+head                   value   4096     576,989 req/s  CPU/req    1670 ns (ticks: user    501, kernel   1150)  minor faults/req  0.000  p50     230 us  client util 0.71  errors 0 bad 0 misses 0
+head                   value  16373     131,174 req/s  CPU/req    7839 ns (ticks: user   2282, kernel   5592)  minor faults/req  1.633  p50    1270 us  client util 0.35  errors 0 bad 0 misses 0
+head                   value  16374     128,549 req/s  CPU/req    8005 ns (ticks: user   2446, kernel   5590)  minor faults/req  1.658  p50    1368 us  client util 0.32  errors 0 bad 0 misses 0
+head                   value  32768      58,526 req/s  CPU/req   17581 ns (ticks: user   7749, kernel   9963)  minor faults/req  0.548  p50    3031 us  client util 0.41  errors 0 bad 0 misses 0
+head                   value  65525      33,204 req/s  CPU/req   30980 ns (ticks: user  14566, kernel  16218)  minor faults/req  0.105  p50    5931 us  client util 0.39  errors 0 bad 0 misses 0
+head                   value  65526      31,298 req/s  CPU/req   32855 ns (ticks: user  18484, kernel  14500)  minor faults/req  0.125  p50    5341 us  client util 0.37  errors 0 bad 0 misses 0
+head                   value 131072      22,457 req/s  CPU/req   45775 ns (ticks: user  17250, kernel  14919)  minor faults/req  0.037  p50    8454 us  client util 0.31  errors 0 bad 0 misses 0

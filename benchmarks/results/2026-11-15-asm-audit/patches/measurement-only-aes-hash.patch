@@ -1,0 +1,295 @@
+diff --git a/server/Makefile b/server/Makefile
+index 5cf4582..f09fb9e 100644
+--- a/server/Makefile
++++ b/server/Makefile
+@@ -57,7 +57,7 @@ INCLUDES  := $(wildcard include/*.inc)
+ # crc32c.asm: CRC-32C for Upload/Download integrity (SSE4.2 or table).
+ CORE_ASM  := src/siphash.asm src/util.asm src/cuckoo.asm src/wlock.asm \
+              src/store.asm src/proto.asm src/log.asm src/snapshot.asm src/abi.asm \
+-             src/pool.asm src/hcache.asm src/hpack.asm src/crc32c.asm
++             src/pool.asm src/hcache.asm src/hpack.asm src/crc32c.asm src/aeshash.asm
+ CORE_OBJ  := $(CORE_ASM:src/%.asm=$(BUILD)/obj/%.o)
+ 
+ # Network server on top of the core: gRPC request handling (grpc.asm), the
+diff --git a/server/src/aeshash.asm b/server/src/aeshash.asm
+new file mode 100644
+index 0000000..9aedd87
+--- /dev/null
++++ b/server/src/aeshash.asm
+@@ -0,0 +1,235 @@
++; =============================================================================
++; aeshash.asm — AES-128 as the store's keyed hash (AES-NI).
++;
++; MEASUREMENT PROTOTYPE (audit 2026-11-15), not a shippable module: the key
++; block is one static area, so a process may hold only ONE store (the server
++; does; the unit tests, which create several, do not), and there is no CPUID
++; dispatch — it faults on a CPU without AES-NI. It exists to measure what the
++; hash costs inside the real request path. A shippable version keeps the key
++; block in the Table and falls back to SipHash when CPUID lacks AES.
++;
++; The construction: AES-128 under a secret key is a pseudo-random permutation,
++; so for a key of up to 16 bytes
++;     h = AES_K(pad(key) XOR mask[len])
++; is a keyed 128-bit hash nobody without K can predict — the same HashDoS
++; argument as SipHash, by a primitive with far more analysis behind it. Longer
++; keys are chained block by block (CBC-MAC) and the last block gets the secret
++; mask of its length, which is the CMAC construction (NIST SP 800-38B) with
++; one mask per final length instead of CMAC's two.
++; Cost, measured (hashbench.c): 8 core cycles per 16-byte key when hashes
++; overlap, 45 as a dependency chain; SipHash-2-4-128 takes 72 and 88.
++; =============================================================================
++
++default rel
++bits 64
++
++%define AES_RK_BYTES    176             ; 11 round keys
++%define AES_MASKS       17              ; one per final-block length 0..16
++
++section .bss align=64
++aes_keyblock:   resb AES_RK_BYTES + AES_MASKS * 16
++
++section .text
++
++global kv_aeshash_setup
++global kv_aeshash_static
++
++; AES-128 key expansion step (FIPS-197 5.2): xmm1 = previous round key in,
++; next round key out; %1 = the round constant. Clobbers xmm2, xmm3.
++%macro KEYEXP 1
++    aeskeygenassist xmm2, xmm1, %1
++    pshufd  xmm2, xmm2, 0xFF
++    movdqa  xmm3, xmm1
++    pslldq  xmm3, 4
++    pxor    xmm1, xmm3
++    pslldq  xmm3, 4
++    pxor    xmm1, xmm3
++    pslldq  xmm3, 4
++    pxor    xmm1, xmm3
++    pxor    xmm1, xmm2
++%endmacro
++
++; xmm0 = AES-128 encrypt(xmm0) under the round keys at [rdx].
++%macro AES10 0
++    pxor    xmm0, [rdx]
++    aesenc  xmm0, [rdx + 16]
++    aesenc  xmm0, [rdx + 32]
++    aesenc  xmm0, [rdx + 48]
++    aesenc  xmm0, [rdx + 64]
++    aesenc  xmm0, [rdx + 80]
++    aesenc  xmm0, [rdx + 96]
++    aesenc  xmm0, [rdx + 112]
++    aesenc  xmm0, [rdx + 128]
++    aesenc  xmm0, [rdx + 144]
++    aesenclast xmm0, [rdx + 160]
++%endmacro
++
++; =============================================================================
++; kv_aeshash_setup — derive the hash's key block from the store's 16-byte seed.
++;
++; @param  rdi  const uint8_t seed[16] (secret, random: getrandom)
++; @returns nothing.
++; @remarks Expands the seed into the 11 AES-128 round keys, then derives the
++;          17 length masks as mask[n] = AES_K(n + 1) — distinct blocks under
++;          the secret key, the way CMAC derives its subkeys from AES_K(0).
++;          Footgun: overwrites the process-wide key block. Calling it again
++;          (a second store) re-keys every hash of the first store, whose
++;          lookups then miss. Not synchronized: call before any reader runs.
++;          Leaf; clobbers rax, rcx, rdx, xmm0-xmm3.
++; =============================================================================
++kv_aeshash_setup:
++    lea     rdx, [aes_keyblock]
++    movdqu  xmm1, [rdi]
++    movdqa  [rdx], xmm1
++    KEYEXP  0x01
++    movdqa  [rdx + 16], xmm1
++    KEYEXP  0x02
++    movdqa  [rdx + 32], xmm1
++    KEYEXP  0x04
++    movdqa  [rdx + 48], xmm1
++    KEYEXP  0x08
++    movdqa  [rdx + 64], xmm1
++    KEYEXP  0x10
++    movdqa  [rdx + 80], xmm1
++    KEYEXP  0x20
++    movdqa  [rdx + 96], xmm1
++    KEYEXP  0x40
++    movdqa  [rdx + 112], xmm1
++    KEYEXP  0x80
++    movdqa  [rdx + 128], xmm1
++    KEYEXP  0x1B
++    movdqa  [rdx + 144], xmm1
++    KEYEXP  0x36
++    movdqa  [rdx + 160], xmm1
++    xor     ecx, ecx                    ; n
++.mask:
++    lea     eax, [rcx + 1]
++    movd    xmm0, eax                   ; the block n + 1
++    AES10
++    mov     eax, ecx
++    shl     eax, 4
++    movdqa  [rdx + AES_RK_BYTES + rax], xmm0
++    inc     ecx
++    cmp     ecx, AES_MASKS
++    jb      .mask
++    ret
++
++; =============================================================================
++; kv_aeshash_static — the keyed hash of a key under the process's key block.
++;
++; @param  rdi  const uint8_t *msg (may be NULL when len == 0)
++; @param  rsi  size_t len
++; @param  rcx  uint64_t out[2] — receives (h1, h2); may be NULL
++; @returns rax = h1 (low 64 bits of the AES output), rdx = h2 (high 64 bits);
++;          also stored to out when non-NULL. Same result registers and the
++;          same preserved registers (rsi, rcx) as kv_siphash128, so
++;          kv_store_hash's callers need no change.
++; @remarks kv_aeshash_setup must have run. Never reads outside [msg, msg+len):
++;          a key of 8..15 bytes is two overlapping 8-byte loads, a shorter one
++;          4/2/1-byte loads; after full blocks the tail is one 16-byte load
++;          that ends at msg+len, shifted down by a PSHUFB mask (SSSE3, present
++;          on every CPU with AES-NI). Constant time in the key bytes.
++;          Clobbers rdi, r8-r11, xmm0-xmm2 (the SipHash path uses no XMM
++;          register: a caller that kept one live across the hash must not
++;          switch to this one unexamined).
++; =============================================================================
++kv_aeshash_static:
++    mov     r10, rcx                    ; out pointer: rcx is the shift count below
++    lea     rdx, [aes_keyblock]
++    cmp     rsi, 16
++    ja      .long
++    je      .full
++    ; ---- 0..15 bytes: gather into r8 (low) / r9 (high) without overreading ----
++    xor     r8d, r8d
++    xor     r9d, r9d
++    cmp     rsi, 8
++    jb      .lt8
++    mov     r8, [rdi]                   ; first 8 bytes
++    lea     ecx, [rsi - 8]              ; 0..7 bytes beyond them
++    test    ecx, ecx
++    jz      .gathered
++    mov     r9, [rdi + rsi - 8]         ; last 8 bytes: they overlap the first word
++    neg     ecx
++    add     ecx, 8
++    shl     ecx, 3                      ; drop the overlapping low bytes
++    shr     r9, cl
++    jmp     .gathered
++.lt8:
++    xor     ecx, ecx                    ; byte offset gathered so far
++    test    sil, 4
++    jz      .lt4
++    mov     r8d, [rdi]
++    mov     ecx, 4
++.lt4:
++    test    sil, 2
++    jz      .lt2
++    movzx   eax, word [rdi + rcx]
++    shl     ecx, 3
++    shl     rax, cl
++    shr     ecx, 3
++    or      r8, rax
++    add     ecx, 2
++.lt2:
++    test    sil, 1
++    jz      .gathered
++    movzx   eax, byte [rdi + rcx]
++    shl     ecx, 3
++    shl     rax, cl
++    or      r8, rax
++.gathered:
++    movq    xmm0, r8
++    movq    xmm1, r9
++    punpcklqdq xmm0, xmm1
++    jmp     .mask
++.full:
++    movdqu  xmm0, [rdi]
++.mask:
++    mov     rax, rsi
++    shl     rax, 4
++    pxor    xmm0, [rdx + AES_RK_BYTES + rax] ; the secret mask of this length
++    AES10
++.result:
++    movq    rax, xmm0
++    pextrq  rdx, xmm0, 1
++    mov     rcx, r10
++    test    rcx, rcx
++    jz      .done
++    mov     [rcx], rax
++    mov     [rcx + 8], rdx
++.done:
++    ret
++.long:
++    ; ---- more than 16 bytes: CBC-MAC over 16-byte blocks ----
++    pxor    xmm2, xmm2                  ; chaining state
++    mov     rcx, rsi
++.block:
++    movdqu  xmm0, [rdi]
++    pxor    xmm0, xmm2
++    AES10
++    movdqa  xmm2, xmm0
++    add     rdi, 16
++    sub     rcx, 16
++    cmp     rcx, 16
++    ja      .block
++    ; last block: the 1..16 bytes that end at msg+len (= rdi + rcx)
++    movdqu  xmm0, [rdi + rcx - 16]      ; in bounds: at least 16 bytes precede the end
++    lea     r8, [shift_tab]
++    mov     eax, 16
++    sub     rax, rcx                    ; bytes to shift out (0..15)
++    movdqu  xmm1, [r8 + rax]
++    pshufb  xmm0, xmm1                  ; the last rcx bytes, moved to the bottom, zero above
++    shl     rcx, 4
++    pxor    xmm0, [rdx + AES_RK_BYTES + rcx] ; length mask: ends the chain (CMAC)
++    pxor    xmm0, xmm2
++    AES10
++    jmp     .result
++
++section .rodata
++align 16
++; PSHUFB control for "shift right by n bytes" (n = 0..15), read at
++; shift_tab + n: indices n..15 select the kept bytes, 0x80 zeroes the rest.
++shift_tab:
++    db 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
++    times 16 db 0x80
++
++section .note.GNU-stack noalloc noexec nowrite progbits
+diff --git a/server/src/store.asm b/server/src/store.asm
+index 036d768..41d43f3 100644
+--- a/server/src/store.asm
++++ b/server/src/store.asm
+@@ -70,6 +70,8 @@ extern free
+ extern memcpy
+ extern memset
+ extern kv_siphash128
++extern kv_aeshash_setup
++extern kv_aeshash_static
+ extern kv_cuckoo_get
+ extern kv_cuckoo_upsert
+ extern kv_cuckoo_remove
+@@ -252,6 +254,11 @@ kv_store_create:
+     mov     [rbx + Table.seed0], rax
+     mov     rax, [r14 + 8]
+     mov     [rbx + Table.seed1], rax
++    ; MEASUREMENT PROTOTYPE: key the AES hash from the same seed. A leaf that
++    ; clobbers only rax, rcx, rdx and xmm0-xmm3; it re-keys the whole process
++    ; (one store per process, see aeshash.asm).
++    mov     rdi, r14
++    call    kv_aeshash_setup wrt ..plt
+     mov     [rbx + Table.max_records], r12
+     test    r15, r15
+     jnz     .have_limit
+@@ -378,11 +385,12 @@ kv_store_destroy:
+ ;          per-process secret seed never leaves the Table.
+ ; =============================================================================
+ kv_store_hash:
+-    lea     r8, [rdi + Table.seed0]
++    ; MEASUREMENT PROTOTYPE: AES-128 under the process-wide key block that
++    ; kv_store_create derived from this table's seed (aeshash.asm). The out
++    ; pointer stays in rcx, as kv_aeshash_static expects.
+     mov     rdi, rsi
+     mov     rsi, rdx
+-    mov     rdx, r8
+-    jmp     kv_siphash128 wrt ..plt
++    jmp     kv_aeshash_static wrt ..plt
+ 
+ ; =============================================================================
+ ; kv_store_get — lock-free lookup.

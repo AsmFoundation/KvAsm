@@ -1,0 +1,29 @@
+## abpair.sh: concurrent paired A/B, server CPU per request (schedstat); 100-byte values, 16 in flight
+# control: HEAD against itself
+block 0 (A in slot 0): A 1,057,282 req/s    588 ns/req | B 1,052,957 req/s    598 ns/req | B/A CPU 1.018 errors 0 bad 0
+block 1 (A in slot 1): A 1,035,947 req/s    621 ns/req | B 1,039,013 req/s    602 ns/req | B/A CPU 0.970 errors 0 bad 0
+block 2 (A in slot 0): A 1,038,451 req/s    582 ns/req | B 1,060,458 req/s    568 ns/req | B/A CPU 0.976 errors 0 bad 0
+block 3 (A in slot 1): A 1,085,296 req/s    552 ns/req | B 1,118,028 req/s    540 ns/req | B/A CPU 0.980 errors 0 bad 0
+block 4 (A in slot 0): A   941,781 req/s    740 ns/req | B   927,006 req/s    749 ns/req | B/A CPU 1.013 errors 0 bad 0
+block 5 (A in slot 1): A   673,293 req/s   1126 ns/req | B   670,104 req/s   1132 ns/req | B/A CPU 1.005 errors 0 bad 0
+B/A server CPU per request: geometric mean 0.993 over 6 blocks; B cheaper in 3/6; range 0.970-1.018
+
+# A = HEAD, B = all four patches
+block 0 (A in slot 0): A   673,879 req/s   1129 ns/req | B   674,584 req/s   1090 ns/req | B/A CPU 0.965 errors 0 bad 0
+block 1 (A in slot 1): A   604,245 req/s   1129 ns/req | B   607,785 req/s   1118 ns/req | B/A CPU 0.990 errors 0 bad 0
+block 2 (A in slot 0): A   548,981 req/s   1243 ns/req | B   546,985 req/s   1192 ns/req | B/A CPU 0.959 errors 0 bad 0
+block 3 (A in slot 1): A   572,255 req/s   1161 ns/req | B   580,100 req/s   1176 ns/req | B/A CPU 1.013 errors 0 bad 0
+block 4 (A in slot 0): A   615,947 req/s   1131 ns/req | B   620,980 req/s   1084 ns/req | B/A CPU 0.959 errors 0 bad 0
+block 5 (A in slot 1): A   671,653 req/s   1066 ns/req | B   661,799 req/s   1080 ns/req | B/A CPU 1.013 errors 0 bad 0
+block 6 (A in slot 0): A   634,891 req/s   1163 ns/req | B   650,961 req/s   1109 ns/req | B/A CPU 0.954 errors 0 bad 0
+block 7 (A in slot 1): A   712,435 req/s   1029 ns/req | B   692,621 req/s   1049 ns/req | B/A CPU 1.019 errors 0 bad 0
+B/A server CPU per request: geometric mean 0.984 over 8 blocks; B cheaper in 5/8; range 0.954-1.019
+
+# A = HEAD, B = all four patches, 16,384-byte values
+block 0 (A in slot 0): A   110,192 req/s   9329 ns/req | B   225,030 req/s   4465 ns/req | B/A CPU 0.479 errors 0 bad 0
+block 1 (A in slot 1): A   122,173 req/s   8412 ns/req | B   226,376 req/s   4449 ns/req | B/A CPU 0.529 errors 0 bad 0
+block 2 (A in slot 0): A    98,616 req/s  10394 ns/req | B   172,763 req/s   5855 ns/req | B/A CPU 0.563 errors 0 bad 0
+block 3 (A in slot 1): A    96,356 req/s  10575 ns/req | B   174,245 req/s   5814 ns/req | B/A CPU 0.550 errors 0 bad 0
+block 4 (A in slot 0): A   122,209 req/s   8402 ns/req | B   211,422 req/s   4757 ns/req | B/A CPU 0.566 errors 0 bad 0
+block 5 (A in slot 1): A   120,046 req/s   8567 ns/req | B   208,727 req/s   4828 ns/req | B/A CPU 0.564 errors 0 bad 0
+B/A server CPU per request: geometric mean 0.541 over 6 blocks; B cheaper in 6/6; range 0.479-0.566

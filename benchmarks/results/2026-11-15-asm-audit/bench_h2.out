@@ -1,0 +1,25 @@
+## GET, in process (bench_h2 get), 10 interleaved rounds per variant, vCPU 13
+head   min  121.24 ns/request   median  122.47   rounds within 2% of min: 9/10
+p1     min  121.75 ns/request   median  123.02   rounds within 2% of min: 8/10
+p2     min  121.98 ns/request   median  123.08   rounds within 2% of min: 8/10
+p3     min  113.71 ns/request   median  114.35   rounds within 2% of min: 9/10
+p4a    min  111.94 ns/request   median  114.40   rounds within 2% of min: 5/10
+p4b    min   97.89 ns/request   median   99.93   rounds within 2% of min: 5/10
+all    min  104.70 ns/request   median  105.68   rounds within 2% of min: 9/10
+
+## health check, in process (bench_h2 ping)
+head   min   72.08 ns/request   median   89.77   rounds within 2% of min: 3/10
+p3     min   60.49 ns/request   median   72.35   rounds within 2% of min: 2/10
+all    min   60.67 ns/request   median   72.70   rounds within 2% of min: 2/10
+
+## one full line per variant (cycles, output digest)
+head  get: 159.74 ns/request min = 442 cycles (cycle 0.3616 ns), 198.30 median, 212.28 p90; sid patch 1.46 ns; 2224 bytes out per batch; output digest ac0261a8a9d4f821; 992001 requests, server counted 992001
+p1  get: 147.83 ns/request min = 406 cycles (cycle 0.3640 ns), 210.51 median, 344.91 p90; sid patch 1.51 ns; 2224 bytes out per batch; output digest ac0261a8a9d4f821; 992001 requests, server counted 992001
+p2  get: 168.11 ns/request min = 495 cycles (cycle 0.3399 ns), 202.92 median, 230.37 p90; sid patch 1.49 ns; 2224 bytes out per batch; output digest ac0261a8a9d4f821; 992001 requests, server counted 992001
+p3  get: 114.35 ns/request min = 336 cycles (cycle 0.3404 ns), 115.61 median, 118.55 p90; sid patch 1.43 ns; 2224 bytes out per batch; output digest ac0261a8a9d4f821; 992001 requests, server counted 992001
+p4a  get: 111.96 ns/request min = 455 cycles (cycle 0.2461 ns), 114.33 median, 116.40 p90; sid patch 1.43 ns; 2224 bytes out per batch; output digest ac0261a8a9d4f821; 992001 requests, server counted 992001
+p4b  get: 99.94 ns/request min = 295 cycles (cycle 0.3390 ns), 102.78 median, 105.46 p90; sid patch 1.43 ns; 2224 bytes out per batch; output digest ac0261a8a9d4f821; 992001 requests, server counted 992001
+all  get: 105.01 ns/request min = 304 cycles (cycle 0.3450 ns), 106.77 median, 121.55 p90; sid patch 1.43 ns; 2224 bytes out per batch; output digest ac0261a8a9d4f821; 992001 requests, server counted 992001
+head  ping: 72.08 ns/request min = 210 cycles (cycle 0.3433 ns), 88.75 median, 117.94 p90; sid patch 1.22 ns; 592 bytes out per batch; output digest 230fab4af7318bff; 992001 requests, server counted 992001
+p3  ping: 60.66 ns/request min = 179 cycles (cycle 0.3385 ns), 63.77 median, 68.38 p90; sid patch 1.22 ns; 592 bytes out per batch; output digest 230fab4af7318bff; 992001 requests, server counted 992001
+all  ping: 61.56 ns/request min = 182 cycles (cycle 0.3387 ns), 65.15 median, 68.06 p90; sid patch 1.23 ns; 592 bytes out per batch; output digest 230fab4af7318bff; 992001 requests, server counted 992001

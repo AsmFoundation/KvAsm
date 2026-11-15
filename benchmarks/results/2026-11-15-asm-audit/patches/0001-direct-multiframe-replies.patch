@@ -1,0 +1,267 @@
+diff --git a/server/src/h2n.asm b/server/src/h2n.asm
+index 6296408..ca9115f 100644
+--- a/server/src/h2n.asm
++++ b/server/src/h2n.asm
+@@ -122,6 +122,17 @@ extern kv_grpc_gen_fill
+ %define H2F_GOAWAY_SENT     2           ; no new streams; close when the last one ends
+ %define H2F_GOAWAY_RECV     4           ; the peer is leaving: same
+ %define H2F_TSU             8           ; next header block starts with a size update to 0
++; An early drain (out_try_drain) found the socket full during this read: no
++; further attempt until the next read, so a slow reader costs one refused
++; sendto per read instead of one per response. Cleared by kv_h2n_read.
++%define H2F_OUT_FULL        16
++
++; Largest gRPC message reply_fast frames in place when it needs more than one
++; DATA frame. It bounds what a single response can add to the output buffer
++; (out_buf then peaks near OUT_HIGH_WATER + DIRECT_MAX, the same order as
++; before); larger messages keep the buffered path (reply_slow).
++%define DIRECT_MAX          65536
++%define MSG_NOSIGNAL        0x4000      ; sendto: a vanished peer must not SIGPIPE us
+ 
+ ; Response encoder (our HPACK dynamic table as the peer's decoder sees it).
+ %define H2E_FRESH           0           ; empty
+@@ -407,6 +418,9 @@ kv_h2n_read:
+     sub     rsp, 16                     ; 5 pushes + 16: aligned for calls
+     mov     r14, rdi                    ; Worker*
+     mov     rbx, rsi                    ; Conn*
++    ; A new read: the previous pass's flush has run since the last refused
++    ; early drain, so the socket may take output again (out_try_drain).
++    and     qword [rbx + Conn.h2 + H2.flags], ~H2F_OUT_FULL
+     mov     r12, [r14 + Worker.read_buf]
+     mov     r13, [rbx + Conn.h2 + H2.carry_len]
+     test    r13, r13
+@@ -2583,10 +2597,20 @@ kv_h2n_reply_stream:
+ ; @param  rcx  head length   @param r8  body   @param r9  body length
+ ; @returns eax = 0 (answered, stream closed), 1 (does not fit now: nothing
+ ;          written), or -1 (out of memory).
+-; @remarks "Fits" = output buffer below OUT_HIGH_WATER, and the message fits
+-;          the connection window, the stream window and one frame. The
+-;          output reservation is generous (headers <= 30, trailers <= 25
+-;          bytes) and trimmed to what was written.
++; @remarks "Fits" = the message fits the connection window and the stream
++;          window, and the output buffer is below OUT_HIGH_WATER — or can be
++;          emptied into the socket right now (out_try_drain). The output
++;          reservation is generous (headers <= 30, trailers <= 25 bytes) and
++;          trimmed to what was written.
++;          A message larger than the peer's frame size (a 16 KiB value plus
++;          its 11 bytes of gRPC and protobuf framing already is) is split
++;          over several DATA frames, still copied once, straight from the
++;          caller's body — up to DIRECT_MAX bytes, and only for a small head.
++;          Why both: without them every such GET took the buffered path — a
++;          malloc of the message, a copy into it, the pend list, a second
++;          copy into the output buffer and a free — and so did every reply
++;          after the first 64 KiB of a read's output (measured: 16 KiB values
++;          cost 2 copies and 0.69 heap growths per GET, callgrind).
+ ; =============================================================================
+ reply_fast:
+     push    rbx
+@@ -2595,7 +2619,8 @@ reply_fast:
+     push    r13
+     push    r14
+     push    r15
+-    sub     rsp, 24                     ; [0] message length, [8] start, [16] cursor
++    sub     rsp, 40                     ; [0] message length, [8] start, [16] cursor,
++                                        ; [24] first-frame payload; 6 pushes + 40: aligned
+     mov     rbx, rdi
+     mov     rbp, rsi
+     mov     r12, rdx
+@@ -2605,13 +2630,21 @@ reply_fast:
+     lea     rax, [r13 + r15]
+     mov     [rsp], rax
+     cmp     qword [rbx + Conn.out_len], OUT_HIGH_WATER
+-    jae     .later
++    jb      .room
++    ; Over the high-water mark: hand the buffer to the socket now rather than
++    ; buffer this reply a second time. The syscall clobbers rax, rcx, r11.
++    mov     rdi, rbx
++    call    out_try_drain
++    test    eax, eax
++    jnz     .later                      ; socket full (or replies already queued)
++    mov     rax, [rsp]
++.room:
+     cmp     rax, [rbx + Conn.h2 + H2.send_window]
+     jg      .later
+     cmp     rax, [rbp + Stream.send_window]
+     jg      .later
+     cmp     rax, [rbx + Conn.h2 + H2.peer_frame]
+-    ja      .later
++    ja      .multi
+     lea     rsi, [rax + 3 * FRAME_HDR + 64]
+     mov     rdi, rbx
+     call    out_reserve
+@@ -2671,6 +2704,7 @@ reply_fast:
+     sub     [rbp + Stream.send_window], rax
+     mov     rsi, [rsp + 16]
+     lea     rsi, [rsi + FRAME_HDR + rax]
++.trailers_at:                           ; rsi = first byte after the last DATA frame
+     mov     [rsp + 16], rsi
+     mov     rdi, rbx
+     mov     edx, [rbp + Stream.id]
+@@ -2682,13 +2716,89 @@ reply_fast:
+     mov     rsi, rbp
+     call    response_done               ; 0, or -1 (out of memory for an RST)
+     jmp     .out
++
++    ; ---- the message needs more than one DATA frame (rax = its length) ----
++.multi:
++    cmp     rax, DIRECT_MAX
++    ja      .later                      ; large: buffered path (bounds out_buf growth)
++    cmp     r13, 64
++    ja      .later                      ; the head must fit the first frame beside body bytes
++    ; Reserve the message, one frame header per started FRAME_MIN bytes (the
++    ; peer's frame size is never below FRAME_MIN, so that many frames is the
++    ; most it can take) and the same headers/trailers slack as one frame.
++    mov     rsi, rax
++    shr     rsi, 14                     ; / FRAME_MIN
++    inc     rsi
++    lea     rsi, [rsi + rsi*8]          ; * FRAME_HDR
++    lea     rsi, [rsi + rax + 2 * FRAME_HDR + 64]
++    mov     rdi, rbx
++    call    out_reserve
++    test    rax, rax
++    jz      .nomem
++    mov     [rsp + 8], rax
++    mov     rdi, rbx
++    mov     rsi, rax
++    mov     edx, [rbp + Stream.id]
++    call    put_response_headers
++    add     rax, [rsp + 8]
++    mov     [rsp + 16], rax             ; cursor: the first DATA frame starts here
++    ; First frame: a full one (the message is longer than a frame), holding
++    ; the head and the first peer_frame - head bytes of the body.
++    mov     rsi, [rbx + Conn.h2 + H2.peer_frame]
++    mov     [rsp + 24], rsi
++    mov     rdi, rax
++    mov     edx, FT_DATA
++    xor     ecx, ecx
++    mov     r8d, [rbp + Stream.id]
++    call    put_hdr                     ; leaf: clobbers rax, rdx, r8 only
++    mov     rdi, [rsp + 16]
++    add     rdi, FRAME_HDR
++    mov     rsi, r12
++    mov     rdx, r13
++    call    memcpy wrt ..plt
++    mov     rdi, [rsp + 16]
++    lea     rdi, [rdi + FRAME_HDR + r13]
++    mov     rsi, r14
++    mov     rdx, [rsp + 24]
++    sub     rdx, r13                    ; body bytes that complete the first frame
++    add     r14, rdx                    ; body cursor and bytes left, for the next frames
++    sub     r15, rdx                    ; > 0: the message exceeds one frame
++    call    memcpy wrt ..plt
++    mov     rax, [rsp + 24]
++    add     rax, FRAME_HDR
++    add     [rsp + 16], rax
++.multi_next:
++    mov     r12, [rbx + Conn.h2 + H2.peer_frame]
++    cmp     r12, r15
++    cmova   r12, r15                    ; this frame's payload: a full frame, or the rest
++    mov     rdi, [rsp + 16]
++    mov     esi, r12d
++    mov     edx, FT_DATA
++    xor     ecx, ecx
++    mov     r8d, [rbp + Stream.id]
++    call    put_hdr
++    mov     rdi, [rsp + 16]
++    add     rdi, FRAME_HDR
++    mov     rsi, r14
++    mov     rdx, r12
++    call    memcpy wrt ..plt
++    lea     rax, [r12 + FRAME_HDR]
++    add     [rsp + 16], rax
++    add     r14, r12
++    sub     r15, r12
++    jnz     .multi_next
++    mov     rax, [rsp]
++    sub     [rbx + Conn.h2 + H2.send_window], rax
++    sub     [rbp + Stream.send_window], rax
++    mov     rsi, [rsp + 16]
++    jmp     .trailers_at
+ .later:
+     mov     eax, 1
+     jmp     .out
+ .nomem:
+     mov     eax, -1
+ .out:
+-    add     rsp, 24
++    add     rsp, 40
+     pop     r15
+     pop     r14
+     pop     r13
+@@ -3249,6 +3359,76 @@ out_reserve:
+     pop     rbx
+     ret
+ 
++; =============================================================================
++; out_try_drain — send the queued output now, before the worker's flush.
++; Internal.
++; @param  rdi  Conn*
++; @returns eax = 0 when the output buffer is empty afterwards (out_len and
++;          out_off reset: the caller may frame into it from the start), or 1
++;          when bytes remain — the socket is full, a send failed, or replies
++;          are queued on the pend list.
++; @remarks When to use: only once the buffer is past OUT_HIGH_WATER (called
++;          by reply_fast). Sending early gives up the one-burst-per-pass
++;          property of the two-phase loop (ADR 0009) for this connection, which
++;          is the right trade there: the peer has at least 64 KiB to read, so
++;          it is awake either way, and the alternative is copying every
++;          further reply of the read into a private buffer.
++;          Nothing else of the worker's flush is done here — no pump, no epoll
++;          interest change, no close: phase 2 still runs conn_flush for this
++;          connection and finds either an empty buffer or the unsent rest
++;          (out_off advanced), exactly the states it already handles. A send
++;          error is left for that flush to meet again and act on.
++;          Footgun: one refused send sets H2F_OUT_FULL, and every later call
++;          returns 1 without a syscall until kv_h2n_read clears it — callers
++;          must not expect a retry within the same read.
++;          Replies waiting on the pend list keep their turn: with any queued,
++;          nothing is sent here and the caller buffers as before.
++;          Raw syscall: clobbers rax, rcx, rdx, rsi, rdi, r8-r11.
++; =============================================================================
++out_try_drain:
++    cmp     qword [rdi + Conn.h2 + H2.pend_head], 0
++    jne     .busy
++    test    qword [rdi + Conn.h2 + H2.flags], H2F_OUT_FULL
++    jnz     .busy
++    push    rbx                         ; no calls below, only syscalls: alignment is moot
++    mov     rbx, rdi
++.send:
++    mov     rdx, [rbx + Conn.out_len]
++    mov     rax, [rbx + Conn.out_off]
++    sub     rdx, rax
++    jz      .empty
++    mov     rdi, [rbx + Conn.fd]
++    mov     rsi, [rbx + Conn.out_buf]
++    add     rsi, rax
++    mov     r10d, MSG_NOSIGNAL
++    xor     r8d, r8d
++    xor     r9d, r9d
++    mov     eax, SYS_sendto
++    syscall
++    cmp     rax, -EINTR
++    je      .send
++    test    rax, rax
++    jle     .full                       ; EAGAIN, or an error the worker's flush will see
++    add     [rbx + Conn.out_off], rax
++    ; Output the peer accepts is activity (as in conn_flush): the idle timer
++    ; must not cut a connection that is only receiving.
++    mov     rcx, [rbx + Conn.worker]
++    mov     rcx, [rcx + Worker.now]
++    mov     [rbx + Conn.last_active], rcx
++    jmp     .send                       ; a short send: retry until done or EAGAIN
++.empty:
++    xor     eax, eax
++    mov     [rbx + Conn.out_len], rax
++    mov     [rbx + Conn.out_off], rax
++    pop     rbx
++    ret
++.full:
++    or      qword [rbx + Conn.h2 + H2.flags], H2F_OUT_FULL
++    pop     rbx
++.busy:
++    mov     eax, 1
++    ret
++
+ ; =============================================================================
+ ; put_hdr — write a 9-byte frame header. Internal, leaf.
+ ; @param  rdi  destination   @param esi  payload length (< 2^24)
