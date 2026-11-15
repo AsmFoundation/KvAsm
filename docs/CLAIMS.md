@@ -248,7 +248,7 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
     (N1).
   - **The removal of nghttp2:** [ADR 0008](adr/0008-remove-nghttp2-from-the-server.md).
   - **The `h2spec` phase of `make itest`,** run on every build.
-  - **Interoperability:** the .NET suite has 378 tests. Its integration
+  - **Interoperability:** the .NET suite has 380 tests. Its integration
     tests call the real image through the standard `Grpc.Net.Client`.
   - **What glibc provides:** the `extern` lines of `server/src/*.asm`
     (allocation, `memcpy`, threads, signals, `getenv`, clocks).

@@ -64,7 +64,9 @@ The first public release, under the Apache License 2.0.
   - `LICENSE` (Apache-2.0), `NOTICE` and `THIRD_PARTY_NOTICES.md`;
   - `CONTRIBUTING.md`, `SECURITY.md` and `CODE_OF_CONDUCT.md`;
   - `docs/CLAIMS.md`, every public claim with its evidence;
-  - CI and release workflows;
+  - CI and release workflows. The NuGet package is published through
+    nuget.org trusted publishing (GitHub OIDC), so no API key is stored
+    anywhere;
   - NuGet package metadata with Source Link and symbols.
 - The runtime image now carries its license texts under
   `/usr/share/doc/kvnode/`. That includes the exact glibc and libgcc
@@ -85,6 +87,12 @@ The first public release, under the Apache License 2.0.
 - Version 0.2.0 everywhere: the startup log line, the client package and
   the local image tag `kvnode:0.2.0`. Results recorded before this release
   keep the version they measured.
+- KvNode.Client documents what `ReadAttempts` recovers from: connections
+  that break after they were established. A server that refuses
+  connections fails a read fast, because gRPC's reconnect backoff (1 s at
+  first) outlasts the ~150 ms the attempts take. The fault-injection test
+  that assumed otherwise passed only on Windows. Linux CI exposed it, and
+  it was split into a deterministic retry test and a no-hang test.
 
 ### Fixed
 

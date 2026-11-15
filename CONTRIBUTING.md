@@ -65,7 +65,7 @@ review.
      needs a soak: `make itest FUZZ_ITERATIONS=100000 FUZZ_SEED=<n>`.
    - Name the seed in the pull request.
 4. **The HPACK differential test** (`test_hpack`) against nghttp2's decoder.
-5. **The .NET suite** with `KVNODE_REQUIRE_DOCKER=1`, all 378 tests or
+5. **The .NET suite** with `KVNODE_REQUIRE_DOCKER=1`, all 380 tests or
    more.
 6. **No warnings anywhere.** NASM runs with `-w+error`, C with `-Werror`,
    and .NET with `TreatWarningsAsErrors`.

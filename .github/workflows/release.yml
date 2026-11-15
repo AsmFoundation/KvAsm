@@ -8,7 +8,7 @@
 #                linux/amd64 only (the server is x86-64 assembly), with OCI
 #                labels, an SBOM and max-mode provenance attestations;
 #   4. nuget     KvNode.Client <version> (+ .snupkg symbols) to nuget.org,
-#                with the NUGET_API_KEY repository secret;
+#                through nuget.org trusted publishing (no stored API key);
 #   5. release   a GitHub release whose notes are the CHANGELOG section,
 #                with the packages attached.
 # image and nuget run only after every test passed; the GitHub release is
@@ -16,8 +16,16 @@
 # Actions page: the NuGet push skips a version that is already there, and the
 # image push overwrites the tags with the same, reproducibly built content.
 #
-# Needs from the repository: the NUGET_API_KEY secret (nuget.org API key
-# scoped to push KvNode.Client). GHCR uses the built-in GITHUB_TOKEN.
+# Needs from the repository, all set up on 2026-11-15:
+#   - the nuget.org trusted publishing policy "KvNode" (owner elibelash,
+#     packages KvNode.*, repository Nucs/KvNode, workflow release.yml,
+#     environment nuget). nuget.org trades this job's GitHub OIDC token for a
+#     one-hour API key, so no long-lived key exists anywhere;
+#   - the GitHub environment "nuget", restricted to tags v*.*.*, so a branch
+#     push or a pull request can never obtain such a token;
+#   - the repository variable NUGET_USER: the nuget.org profile name, not an
+#     e-mail address.
+# GHCR uses the built-in GITHUB_TOKEN.
 # =============================================================================
 name: Release
 
@@ -139,6 +147,14 @@ jobs:
     needs: [versions, test]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # The trusted publishing policy matches the OIDC token's repository,
+    # workflow file AND environment: without `environment: nuget` here
+    # nuget.org refuses the exchange. The environment only admits tags
+    # v*.*.*, which is what keeps every other run away from the token.
+    environment: nuget
+    permissions:
+      contents: read
+      id-token: write   # lets NuGet/login request the job's OIDC token
     env:
       DOTNET_NOLOGO: "1"
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
@@ -167,18 +183,35 @@ jobs:
           path: ${{ runner.temp }}/packages
           if-no-files-found: error
 
-      # A missing secret fails here, before anything is half-published; the
-      # .snupkg next to the package is pushed to the symbol server by the
-      # same command.
-      - name: Push to nuget.org
+      # Fail with a clear message instead of an opaque token-exchange error
+      # when the variable is missing (a fork, or a renamed repository).
+      - name: Check the nuget.org user
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_USER: ${{ vars.NUGET_USER }}
         run: |
-          set -euo pipefail
-          if [ -z "${NUGET_API_KEY:-}" ]; then
-            echo "::error::the NUGET_API_KEY repository secret is not set"
+          if [ -z "${NUGET_USER:-}" ]; then
+            echo "::error::set the repository variable NUGET_USER to the nuget.org profile name (gh variable set NUGET_USER)"
             exit 1
           fi
+
+      # Trusted publishing: GitHub's OIDC token for this job (repository,
+      # workflow, environment, ref) becomes a nuget.org API key that expires
+      # within an hour and can push only what the policy allows (KvNode.*).
+      - name: Log in to nuget.org (trusted publishing)
+        id: login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: ${{ vars.NUGET_USER }}
+
+      # A refused login or push fails this job, so the GitHub release job
+      # never runs (the image job runs in parallel and may have pushed
+      # already; re-running this job completes the release). The .snupkg
+      # next to the package goes to the symbol server with the same command.
+      - name: Push to nuget.org
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: |
+          set -euo pipefail
           dotnet nuget push "$RUNNER_TEMP/packages/*.nupkg" \
             --api-key "$NUGET_API_KEY" \
             --source https://api.nuget.org/v3/index.json \

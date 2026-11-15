@@ -45,6 +45,18 @@ public sealed record KvNodeClientOptions
     /// Put, Delete and Upload are never retried: a retry after a lost reply
     /// would report created/deleted = false for an operation that did succeed.
     /// </summary>
+    /// <remarks>
+    /// The attempts recover from a connection that breaks after it was
+    /// established: the retry opens a new one at once. They do not ride out a
+    /// server that refuses connections. A failed connection attempt puts the
+    /// channel into gRPC's reconnect backoff (1 s at first, growing), and
+    /// during it every attempt fails fast with <c>UNAVAILABLE</c>; all attempts
+    /// fit in about 150 ms. That fast failure is deliberate, so callers learn
+    /// at once that the server is unreachable. Retry at the application level
+    /// if a restart must be waited out. A reset that arrives while the
+    /// connection is still being established counts as a failed attempt;
+    /// whether a peer's immediate reset lands there is up to the OS.
+    /// </remarks>
     public int ReadAttempts { get; init; } = 3;
 
     /// <summary>

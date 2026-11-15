@@ -169,21 +169,79 @@ public sealed class FaultInjectionTests(KvNodeServer server)
     }
 
     /// <summary>
-    /// A connection refused before any byte (reset at accept) is retried for
-    /// a Download — it is read-only and nothing was received yet.
+    /// A connection that breaks before the first reply (reset as soon as the
+    /// client starts talking) is retried for a Download — it is read-only and
+    /// nothing was received yet — on a new connection, with the exact bytes.
     /// </summary>
     /// <returns>A task that completes when the test finishes.</returns>
+    /// <remarks>
+    /// The reset comes after the connection was established, which is the
+    /// failure <see cref="KvNodeClientOptions.ReadAttempts"/> covers on every
+    /// OS. (Until 2026-11-15 this test reset at accept instead; that only
+    /// passed on Windows, where the reset surfaces after the connect — see
+    /// <see cref="ConnectionResetAtAcceptNeverHangsOrCorruptsADownload"/>.)
+    /// </remarks>
     [Fact]
-    public async Task RefusedConnectionIsRetriedForDownloads()
+    public async Task ConnectionResetBeforeTheFirstReplyIsRetriedForDownloads()
     {
         using KvNodeClient direct = new(server.RequireAddress());
         byte[] key = Key("retry");
         byte[] value = StreamingTests.RandomBytes(100_000, 8);
         await direct.UploadAsync(key, value, Ct);
-        await using var proxy = new FaultProxy(server.RequireAddress()) { Faults = new Faults { RejectConnections = 1 } };
+        await using var proxy = new FaultProxy(server.RequireAddress()) { Faults = new Faults { ResetConnectionsOnFirstByte = 1 } };
         using KvNodeClient client = new(proxy.Address);
         Assert.True((await client.DownloadAsync(key, cancellationToken: Ct)).AsSpan().SequenceEqual(value));
         Assert.True(proxy.Connections >= 2, $"expected a second connection, saw {proxy.Connections}");
+        Assert.True(await direct.DeleteAsync(key, Ct));
+    }
+
+    /// <summary>
+    /// A connection reset at accept, before any byte moved, never hangs a
+    /// Download and never yields wrong bytes: the result is the exact value
+    /// or a prompt <c>UNAVAILABLE</c>.
+    /// </summary>
+    /// <returns>A task that completes when the test finishes.</returns>
+    /// <remarks>
+    /// <para>
+    /// Both outcomes are correct, and which one happens depends on the OS.
+    /// Linux usually reports such a reset to the pending connect itself, so
+    /// gRPC counts a failed connection attempt and holds the channel in its
+    /// reconnect backoff (1 s at first). The retries of
+    /// <see cref="KvNodeClientOptions.ReadAttempts"/>, all within ~150 ms,
+    /// then fail fast with <c>UNAVAILABLE</c>, as gRPC specifies for calls
+    /// that are not wait-for-ready.
+    /// </para>
+    /// <para>
+    /// Windows reports the reset only after the connect completed: the call
+    /// fails as on a broken connection and the retry succeeds. Either way the
+    /// call ends well before its deadline, which is what this test pins down.
+    /// The deterministic retry path is
+    /// <see cref="ConnectionResetBeforeTheFirstReplyIsRetriedForDownloads"/>.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ConnectionResetAtAcceptNeverHangsOrCorruptsADownload()
+    {
+        using KvNodeClient direct = new(server.RequireAddress());
+        byte[] key = Key("refused");
+        byte[] value = StreamingTests.RandomBytes(100_000, 9);
+        await direct.UploadAsync(key, value, Ct);
+        await using var proxy = new FaultProxy(server.RequireAddress()) { Faults = new Faults { RejectConnections = 1 } };
+        using KvNodeClient client = new(proxy.Address);
+        var clock = Stopwatch.StartNew();
+        try
+        {
+            byte[]? got = await client.DownloadAsync(key, cancellationToken: Ct);
+            Assert.True(got.AsSpan().SequenceEqual(value), "a retried download must return the exact value");
+        }
+        catch (RpcException error)
+        {
+            Assert.Equal(StatusCode.Unavailable, error.StatusCode);
+        }
+
+        // Fast either way: a fail-fast UNAVAILABLE or one quick retry, never
+        // the 10-minute transfer deadline or the 30 s idle timeout.
+        Assert.InRange(clock.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(10));
         Assert.True(await direct.DeleteAsync(key, Ct));
     }
 

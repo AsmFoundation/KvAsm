@@ -32,7 +32,30 @@ internal sealed record Faults
     public int ThrottleDownBytesPerSecond { get; init; }
 
     /// <summary>Reset this many newly accepted connections at once, before any byte moves.</summary>
+    /// <remarks>
+    /// Where the client sees this reset depends on the OS: Linux usually
+    /// reports it to the pending connect itself (<c>ECONNRESET</c> from the
+    /// connect, so gRPC treats it as a failed connection attempt and applies
+    /// its reconnect backoff), Windows only to the first read or write after
+    /// the connect completed. Use <see cref="ResetConnectionsOnFirstByte"/> for
+    /// a fault every platform sees after the connection was established.
+    /// </remarks>
     public int RejectConnections { get; init; }
+
+    /// <summary>
+    /// Reset this many newly accepted connections when their first byte
+    /// arrives (TCP RST): the connection was established, the client started
+    /// talking, and nothing reached the server.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="RejectConnections"/>, the client cannot see this
+    /// reset before its connect completed, on any OS: the proxy resets only
+    /// after the client sent something, which it does only once connected.
+    /// That makes it the deterministic model of "a connection that breaks
+    /// before the first reply". Counted after <see cref="RejectConnections"/>:
+    /// a connection is rejected at accept first, while rejects remain.
+    /// </remarks>
+    public int ResetConnectionsOnFirstByte { get; init; }
 }
 
 /// <summary>
@@ -59,6 +82,7 @@ internal sealed class FaultProxy : IAsyncDisposable
     private readonly Task _accepting;
     private int _connections;
     private int _rejectsLeft;
+    private int _firstByteResetsLeft;
     private Faults _faults = new();
 
     /// <summary>Starts listening on an ephemeral loopback port.</summary>
@@ -83,6 +107,7 @@ internal sealed class FaultProxy : IAsyncDisposable
         {
             _faults = value;
             Volatile.Write(ref _rejectsLeft, value.RejectConnections);
+            Volatile.Write(ref _firstByteResetsLeft, value.ResetConnectionsOnFirstByte);
         }
     }
 
@@ -135,8 +160,42 @@ internal sealed class FaultProxy : IAsyncDisposable
                 continue;
             }
 
+            if (Interlocked.Decrement(ref _firstByteResetsLeft) >= 0)
+            {
+                // Fire and forget, like ServeAsync: the accept loop must not
+                // wait for this client to speak.
+                _ = ResetOnFirstByteAsync(client);
+                continue;
+            }
+
             _ = ServeAsync(client, _faults);
         }
+    }
+
+    /// <summary>
+    /// Waits until the client sends its first byte, then resets the
+    /// connection without ever connecting upstream.
+    /// </summary>
+    /// <param name="client">The accepted client socket.</param>
+    /// <returns>A task that ends once the connection is reset.</returns>
+    /// <remarks>
+    /// The byte is consumed and dropped, so the server never sees this
+    /// connection. EOF, an error or the proxy stopping resets the socket too:
+    /// whatever happens, this connection never carries traffic.
+    /// </remarks>
+    private async Task ResetOnFirstByteAsync(Socket client)
+    {
+        byte[] first = new byte[1];
+        try
+        {
+            await client.ReceiveAsync(first, SocketFlags.None, _stop.Token);
+        }
+        catch (Exception e) when (e is SocketException or OperationCanceledException or ObjectDisposedException)
+        {
+            // Gone or stopping already; the reset below still releases the socket.
+        }
+
+        Reset(client);
     }
 
     /// <summary>Connects upstream and runs both directions with the faults of this connection.</summary>

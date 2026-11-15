@@ -70,7 +70,10 @@ uint mine = Crc32C.Compute(bytes);                                  // == up.Crc
 - **Retries:** Download is retried on `UNAVAILABLE` until its first chunk
   arrives; Upload, like Put, never. A transfer broken mid-way is not
   resumed automatically — the value may have changed; resume with `offset`
-  only when you know it did not.
+  only when you know it did not. Retries recover from a connection that
+  breaks after it was established. A server that refuses connections fails
+  the call fast instead, because gRPC's reconnect backoff (1 s at first)
+  outlasts the ~150 ms the attempts take (`ReadAttempts`).
 - **Stalls:** a transfer that makes no progress for `TransferIdleTimeout`
   (30 s) fails with `DEADLINE_EXCEEDED`, however long it has run; the
   whole transfer is bounded by `TransferTimeout` (10 minutes).
