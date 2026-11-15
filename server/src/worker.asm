@@ -615,18 +615,15 @@ worker_main:
     mov     [rbx + Worker.next_tick], rax
 
 .loop:
-    mov     rdi, r12
-    mov     esi, r13d
-    call    kv_qsbr_quiescent wrt ..plt ; no record pointers are held here
-    mov     rdi, [rbx + Worker.epfd]
-    mov     rsi, [rbx + Worker.events]
-    mov     edx, MAX_EVENTS
-    xor     r10d, r10d                  ; poll: do not block yet
-    mov     eax, SYS_epoll_wait
-    syscall
-    test    rax, rax
-    jnz     .have_events
-    ; Nothing ready: go offline so reclamation never waits on an idle worker.
+    ; One epoll_wait per pass, entered offline: no record pointers are held
+    ; here, so the worker leaves the readers' set for the wait (reclamation
+    ; never waits on a sleeping worker) and rejoins it after — an offline
+    ; announcement is also a quiescent state, so nothing else is needed.
+    ; Why not poll first (timeout 0) and block only when nothing is ready, as
+    ; this loop used to: the poll saved the rejoin's XCHG (~20 cycles) on a
+    ; busy pass, but cost a whole extra syscall before every sleep — once per
+    ; wakeup whenever the worker is not saturated, e.g. one of the four
+    ; syscalls an unpipelined request needs.
     mov     rdi, r12
     mov     esi, r13d
     call    kv_qsbr_offline wrt ..plt

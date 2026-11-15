@@ -122,6 +122,12 @@ extern kv_grpc_gen_fill
 %define H2F_GOAWAY_SENT     2           ; no new streams; close when the last one ends
 %define H2F_GOAWAY_RECV     4           ; the peer is leaving: same
 %define H2F_TSU             8           ; next header block starts with a size update to 0
+; An early drain (out_try_drain) found the socket full during this read: no
+; further attempt until the next read, so a slow reader costs one refused
+; sendto per read instead of one per response. Cleared by kv_h2n_read.
+%define H2F_OUT_FULL        16
+
+%define MSG_NOSIGNAL        0x4000      ; sendto: a vanished peer must not SIGPIPE us
 
 ; Response encoder (our HPACK dynamic table as the peer's decoder sees it).
 %define H2E_FRESH           0           ; empty
@@ -407,6 +413,9 @@ kv_h2n_read:
     sub     rsp, 16                     ; 5 pushes + 16: aligned for calls
     mov     r14, rdi                    ; Worker*
     mov     rbx, rsi                    ; Conn*
+    ; A new read: the previous pass's flush has run since the last refused
+    ; early drain, so the socket may take output again (out_try_drain).
+    and     qword [rbx + Conn.h2 + H2.flags], ~H2F_OUT_FULL
     mov     r12, [r14 + Worker.read_buf]
     mov     r13, [rbx + Conn.h2 + H2.carry_len]
     test    r13, r13
@@ -2583,10 +2592,26 @@ kv_h2n_reply_stream:
 ; @param  rcx  head length   @param r8  body   @param r9  body length
 ; @returns eax = 0 (answered, stream closed), 1 (does not fit now: nothing
 ;          written), or -1 (out of memory).
-; @remarks "Fits" = output buffer below OUT_HIGH_WATER, and the message fits
-;          the connection window, the stream window and one frame. The
-;          output reservation is generous (headers <= 30, trailers <= 25
-;          bytes) and trimmed to what was written.
+; @remarks "Fits" = the message fits the connection window and the stream
+;          window, and the queued output plus this reply stays within
+;          OUT_HIGH_WATER — or the queue can be emptied into the socket right
+;          now (out_try_drain). The output reservation is generous (headers
+;          <= 30, trailers <= 25 bytes) and trimmed to what was written.
+;          A message larger than the peer's frame size (a 16 KiB value plus
+;          its 11 bytes of gRPC and protobuf framing already is) is split
+;          over several DATA frames, still copied once, straight from the
+;          caller's body, whatever its length (only for a small head). The
+;          queued output is sent each time it reaches the high-water mark,
+;          so the buffer stays bounded; if the socket refuses part-way, only
+;          the rest of the body is copied to a buffer and queued (.rest).
+;          Footgun: a long reply holds the worker for as long as copying it
+;          to the socket takes (~0.2 ms per MiB): values of tens of MiB
+;          belong to Download, which yields every FLUSH_BUDGET bytes.
+;          Why both: without them every such GET took the buffered path — a
+;          malloc of the message, a copy into it, the pend list, a second
+;          copy into the output buffer and a free — and so did every reply
+;          after the first 64 KiB of a read's output (measured: 16 KiB values
+;          cost 2 copies and 0.69 heap growths per GET, callgrind).
 ; =============================================================================
 reply_fast:
     push    rbx
@@ -2595,7 +2620,8 @@ reply_fast:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 24                     ; [0] message length, [8] start, [16] cursor
+    sub     rsp, 40                     ; [0] message length, [8] start, [16] cursor,
+                                        ; [24] first-frame payload; 6 pushes + 40: aligned
     mov     rbx, rdi
     mov     rbp, rsi
     mov     r12, rdx
@@ -2604,14 +2630,106 @@ reply_fast:
     mov     r15, r9
     lea     rax, [r13 + r15]
     mov     [rsp], rax
-    cmp     qword [rbx + Conn.out_len], OUT_HIGH_WATER
-    jae     .later
+    ; Would this reply take the queued output past the high-water mark? Then
+    ; hand what is queued to the socket first, rather than buffer the reply a
+    ; second time — so the buffer never holds more than the mark plus one
+    ; reply's framing (plus one frame for a reply longer than the mark, which
+    ; .multi sends as it goes), as before. An empty buffer has nothing to
+    ; send first and takes any reply the checks below allow.
+    mov     rcx, [rbx + Conn.out_len]
+    test    rcx, rcx
+    jz      .room
+    add     rcx, rax
+    cmp     rcx, OUT_HIGH_WATER
+    jbe     .room
+    mov     rdi, rbx
+    call    out_try_drain               ; a raw syscall: clobbers rax, rcx, r11
+    test    eax, eax
+    jnz     .later                      ; socket full (or replies already queued)
+    mov     rax, [rsp]
+.room:
     cmp     rax, [rbx + Conn.h2 + H2.send_window]
     jg      .later
     cmp     rax, [rbp + Stream.send_window]
     jg      .later
     cmp     rax, [rbx + Conn.h2 + H2.peer_frame]
-    ja      .later
+    ja      .multi
+    ; ---- steady state: the whole response from one template ----
+    ; Once a connection's first response is out, both response fields are in
+    ; the peer's dynamic table (H2E_BOTH), so every later response is the same
+    ; 30 bytes around the message:
+    ;   HEADERS  00 00 02 | 01 | 04 | id | 88 BF      (:status 200, [63] content-type)
+    ;   DATA     len      | 00 | 00 | id | message
+    ;   HEADERS  00 00 01 | 01 | 05 | id | BE         ([62] grpc-status: 0)
+    ; Written here with constant stores instead of through put_response_headers,
+    ; put_tsu, put_hdr (three times), put_trailers and out_reserve: the same
+    ; bytes for under half the instructions (callgrind, a GET: 187 -> 82 for
+    ; the framing, 1,446 -> 1,341 in all; in-process timing: 355 -> 333 core
+    ; cycles per GET, 211 -> 178 per health check).
+    ; Anything unusual keeps the general path below: another encoder state, a
+    ; pending table size update, a head the two overlapping moves cannot copy,
+    ; or a buffer that must grow.
+    cmp     qword [rbx + Conn.h2 + H2.enc], H2E_BOTH
+    jne     .general
+    test    qword [rbx + Conn.h2 + H2.flags], H2F_TSU
+    jnz     .general
+    lea     rcx, [r13 - 4]
+    cmp     rcx, 12
+    ja      .general                    ; head not 4..16 bytes
+    mov     rdi, [rbx + Conn.out_len]
+    lea     rdx, [rdi + rax + 2 * FRAME_HDR + 12] ; 11 + 9 + message + 10
+    cmp     rdx, [rbx + Conn.out_cap]
+    ja      .general                    ; no room: out_reserve grows the buffer
+    mov     [rbx + Conn.out_len], rdx
+    add     rdi, [rbx + Conn.out_buf]   ; rdi = first byte of the response
+    mov     ecx, [rbp + Stream.id]
+    bswap   ecx                         ; stream id as the wire has it
+    mov     dword [rdi], 0x01020000     ; length 2, type HEADERS
+    mov     byte [rdi + 4], FF_END_HEADERS
+    mov     [rdi + 5], ecx
+    mov     word [rdi + 9], 0xBF88
+    mov     edx, eax
+    shl     edx, 8
+    bswap   edx                         ; message length big-endian, then type DATA (0)
+    mov     [rdi + 11], edx
+    mov     byte [rdi + 15], 0          ; no flags: the trailers end the stream
+    mov     [rdi + 16], ecx
+    lea     rdx, [rdi + rax + 2 * FRAME_HDR + 2] ; the trailers follow the message
+    mov     dword [rdx], 0x01010000     ; length 1, type HEADERS
+    mov     byte [rdx + 4], FF_END_HEADERS | FF_END_STREAM
+    mov     [rdx + 5], ecx
+    mov     byte [rdx + 9], 0xBE
+    sub     [rbx + Conn.h2 + H2.send_window], rax
+    sub     [rbp + Stream.send_window], rax
+    add     rdi, 2 * FRAME_HDR + 2      ; the message goes here
+    ; The head with two overlapping moves (both loads inside [head, head+len),
+    ; both stores inside the bytes just reserved), as in the general path.
+    cmp     r13, 8
+    jb      .t_head_small
+    mov     rax, [r12]
+    mov     rcx, [r12 + r13 - 8]
+    mov     [rdi], rax
+    mov     [rdi + r13 - 8], rcx
+    jmp     .t_body
+.t_head_small:
+    mov     eax, [r12]
+    mov     ecx, [r12 + r13 - 4]
+    mov     [rdi], eax
+    mov     [rdi + r13 - 4], ecx
+.t_body:
+    test    r15, r15
+    jz      .t_done
+    add     rdi, r13
+    mov     rsi, r14
+    mov     rdx, r15
+    call    memcpy wrt ..plt
+.t_done:
+    mov     rdi, rbx
+    mov     rsi, rbp
+    call    response_done               ; 0, or -1 (out of memory for an RST)
+    jmp     .out
+.general:
+    mov     rax, [rsp]
     lea     rsi, [rax + 3 * FRAME_HDR + 64]
     mov     rdi, rbx
     call    out_reserve
@@ -2682,13 +2800,150 @@ reply_fast:
     mov     rsi, rbp
     call    response_done               ; 0, or -1 (out of memory for an RST)
     jmp     .out
+
+    ; ---- the message needs more than one DATA frame (rax = its length) ----
+    ; Every frame gets its own reservation: the output buffer may be handed
+    ; to the socket between two frames (and may move when it grows), so no
+    ; pointer into it is kept across a reservation or a drain. The windows
+    ; were checked for the whole message above; they are charged frame by
+    ; frame, so a reply that ends in .rest has paid exactly what it framed.
+.multi:
+    cmp     r13, 64
+    ja      .later                      ; the head must fit the first frame beside body bytes
+    mov     rdi, rbx
+    mov     esi, FRAME_HDR + 32
+    call    out_reserve
+    test    rax, rax
+    jz      .nomem
+    mov     [rsp + 8], rax
+    mov     rdi, rbx
+    mov     rsi, rax
+    mov     edx, [rbp + Stream.id]
+    call    put_response_headers
+    add     rax, [rsp + 8]
+    sub     rax, [rbx + Conn.out_buf]
+    mov     [rbx + Conn.out_len], rax   ; trim the reservation
+    ; First DATA frame: a full one (the message is longer than a frame), with
+    ; the head and the first peer_frame - head bytes of the body.
+    mov     rsi, [rbx + Conn.h2 + H2.peer_frame]
+    mov     [rsp + 24], rsi
+    add     rsi, FRAME_HDR
+    mov     rdi, rbx
+    call    out_reserve
+    test    rax, rax
+    jz      .nomem                      ; HEADERS are out: -1 ends the connection
+    mov     [rsp + 16], rax
+    mov     rdi, rax
+    mov     esi, [rsp + 24]
+    mov     edx, FT_DATA
+    xor     ecx, ecx
+    mov     r8d, [rbp + Stream.id]
+    call    put_hdr                     ; leaf: clobbers rax, rdx, r8 only
+    mov     rdi, [rsp + 16]
+    add     rdi, FRAME_HDR
+    mov     rsi, r12
+    mov     rdx, r13
+    call    memcpy wrt ..plt
+    mov     rdi, [rsp + 16]
+    lea     rdi, [rdi + FRAME_HDR + r13]
+    mov     rsi, r14
+    mov     rdx, [rsp + 24]
+    sub     rdx, r13                    ; body bytes that complete the first frame
+    add     r14, rdx                    ; body cursor and bytes left, for the next frames
+    sub     r15, rdx                    ; > 0: the message exceeds one frame
+    call    memcpy wrt ..plt
+    mov     rax, [rsp + 24]
+    sub     [rbx + Conn.h2 + H2.send_window], rax
+    sub     [rbp + Stream.send_window], rax
+.multi_next:
+    ; r14 = body cursor, r15 = body bytes left (> 0). At the high-water mark
+    ; the queue goes to the socket before more is framed: the buffer never
+    ; holds more than the mark plus one frame, as on the buffered path.
+    cmp     qword [rbx + Conn.out_len], OUT_HIGH_WATER
+    jb      .multi_frame
+    mov     rdi, rbx
+    call    out_try_drain
+    test    eax, eax
+    jnz     .rest                       ; the socket is full: buffer what is left
+.multi_frame:
+    mov     r12, [rbx + Conn.h2 + H2.peer_frame]
+    cmp     r12, r15
+    cmova   r12, r15                    ; this frame's payload: a full frame, or the rest
+    lea     rsi, [r12 + FRAME_HDR]
+    mov     rdi, rbx
+    call    out_reserve
+    test    rax, rax
+    jz      .nomem
+    mov     [rsp + 16], rax
+    mov     rdi, rax
+    mov     esi, r12d
+    mov     edx, FT_DATA
+    xor     ecx, ecx
+    mov     r8d, [rbp + Stream.id]
+    call    put_hdr
+    mov     rdi, [rsp + 16]
+    add     rdi, FRAME_HDR
+    mov     rsi, r14
+    mov     rdx, r12
+    call    memcpy wrt ..plt
+    sub     [rbx + Conn.h2 + H2.send_window], r12
+    sub     [rbp + Stream.send_window], r12
+    add     r14, r12
+    sub     r15, r12
+    jnz     .multi_next
+    ; The whole message is framed: the trailers end the stream.
+    mov     rdi, rbx
+    mov     esi, FRAME_HDR + 32
+    call    out_reserve
+    test    rax, rax
+    jz      .nomem
+    mov     [rsp + 16], rax
+    mov     rdi, rbx
+    mov     rsi, rax
+    mov     edx, [rbp + Stream.id]
+    call    put_trailers
+    add     rax, [rsp + 16]
+    sub     rax, [rbx + Conn.out_buf]
+    mov     [rbx + Conn.out_len], rax   ; trim the reservation
+    mov     rdi, rbx
+    mov     rsi, rbp
+    call    response_done               ; 0, or -1 (out of memory for an RST)
+    jmp     .out
+.rest:
+    ; The socket refused the queue part-way through the message. What is
+    ; left of the body (r14, r15 bytes) must outlive this call — the record
+    ; is only valid while the worker is online — so the stream gets its own
+    ; copy and continues as a buffered response whose HEADERS are out:
+    ; emit_progress frames it as room and windows allow and ends it with the
+    ; trailers.
+    mov     rdi, r15
+    mov     rsi, [rbx + Conn.worker]
+    lea     rsi, [rsi + Worker.pool]
+    call    kv_pool_malloc wrt ..plt
+    test    rax, rax
+    jz      .nomem
+    mov     [rbp + Stream.resp_buf], rax
+    mov     [rbp + Stream.resp_len], r15
+    mov     qword [rbp + Stream.resp_off], 0
+    or      qword [rbp + Stream.h2flags], SN_RESP_HEADERS
+    mov     rdi, rax
+    mov     rsi, r14
+    mov     rdx, r15
+    call    memcpy wrt ..plt
+    mov     rdi, rbx
+    mov     rsi, rbp
+    call    emit_progress               ; 0 complete, 1 queued, -1 out of memory
+    test    eax, eax
+    js      .out
+    xor     eax, eax                    ; answered or queued: the reply is under way
+    jmp     .out
 .later:
     mov     eax, 1
     jmp     .out
 .nomem:
     mov     eax, -1
 .out:
-    add     rsp, 24
+    add     rsp, 40
     pop     r15
     pop     r14
     pop     r13
@@ -3247,6 +3502,77 @@ out_reserve:
     pop     r13
     pop     r12
     pop     rbx
+    ret
+
+; =============================================================================
+; out_try_drain — send the queued output now, before the worker's flush.
+; Internal.
+; @param  rdi  Conn*
+; @returns eax = 0 when the output buffer is empty afterwards (out_len and
+;          out_off reset: the caller may frame into it from the start), or 1
+;          when bytes remain — the socket is full, a send failed, or replies
+;          are queued on the pend list.
+; @remarks When to use: only when the next reply would take the buffer past
+;          OUT_HIGH_WATER (called by reply_fast). Sending early gives up the
+;          one-burst-per-pass property of the two-phase loop (ADR 0009) for
+;          this connection, which is the right trade there: the peer gets
+;          tens of KiB to read, so it is awake either way, and the
+;          alternative is copying every further reply of the read into a
+;          private buffer.
+;          Nothing else of the worker's flush is done here — no pump, no epoll
+;          interest change, no close: phase 2 still runs conn_flush for this
+;          connection and finds either an empty buffer or the unsent rest
+;          (out_off advanced), exactly the states it already handles. A send
+;          error is left for that flush to meet again and act on.
+;          Footgun: one refused send sets H2F_OUT_FULL, and every later call
+;          returns 1 without a syscall until kv_h2n_read clears it — callers
+;          must not expect a retry within the same read.
+;          Replies waiting on the pend list keep their turn: with any queued,
+;          nothing is sent here and the caller buffers as before.
+;          Raw syscall: clobbers rax, rcx, rdx, rsi, rdi, r8-r11.
+; =============================================================================
+out_try_drain:
+    cmp     qword [rdi + Conn.h2 + H2.pend_head], 0
+    jne     .busy
+    test    qword [rdi + Conn.h2 + H2.flags], H2F_OUT_FULL
+    jnz     .busy
+    push    rbx                         ; no calls below, only syscalls: alignment is moot
+    mov     rbx, rdi
+.send:
+    mov     rdx, [rbx + Conn.out_len]
+    mov     rax, [rbx + Conn.out_off]
+    sub     rdx, rax
+    jz      .empty
+    mov     rdi, [rbx + Conn.fd]
+    mov     rsi, [rbx + Conn.out_buf]
+    add     rsi, rax
+    mov     r10d, MSG_NOSIGNAL
+    xor     r8d, r8d
+    xor     r9d, r9d
+    mov     eax, SYS_sendto
+    syscall
+    cmp     rax, -EINTR
+    je      .send
+    test    rax, rax
+    jle     .full                       ; EAGAIN, or an error the worker's flush will see
+    add     [rbx + Conn.out_off], rax
+    ; Output the peer accepts is activity (as in conn_flush): the idle timer
+    ; must not cut a connection that is only receiving.
+    mov     rcx, [rbx + Conn.worker]
+    mov     rcx, [rcx + Worker.now]
+    mov     [rbx + Conn.last_active], rcx
+    jmp     .send                       ; a short send: retry until done or EAGAIN
+.empty:
+    xor     eax, eax
+    mov     [rbx + Conn.out_len], rax
+    mov     [rbx + Conn.out_off], rax
+    pop     rbx
+    ret
+.full:
+    or      qword [rbx + Conn.h2 + H2.flags], H2F_OUT_FULL
+    pop     rbx
+.busy:
+    mov     eax, 1
     ret
 
 ; =============================================================================

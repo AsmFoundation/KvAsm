@@ -1034,6 +1034,165 @@ static void test_large_value(Client *cl) {
   free(val);
 }
 
+#define BURST 40
+static void sleep_ms(int ms);
+
+/**
+ * Submits n Gets of one key back to back on one connection, none awaited.
+ * @param c      connection
+ * @param calls  n call records (reset here); must stay alive until they close
+ * @param req    the Get request message, shared by all n calls (read-only)
+ * @param n      number of calls
+ * @returns the number of calls submitted (n, or fewer if nghttp2 refused one)
+ * @remarks The requests are tiny, so one write carries them all and the
+ *          server usually finds the whole burst in one read — which is what
+ *          makes that read's replies outgrow one output buffer.
+ */
+static int burst_submit(Client *c, Call *calls, const Msg *req, int n) {
+  for (int i = 0; i < n; i++) {
+    memset(&calls[i], 0, sizeof calls[i]);   /* no stalls, no frame shaping */
+    if (call_submit(c, &calls[i], "POST", PATH_GET, GRPC_CT, NULL, req->p, req->len) != 0)
+      return i;
+  }
+  return n;
+}
+
+/**
+ * Counts the calls of a finished burst that returned exactly the value.
+ * @param calls  the n call records of burst_submit (their bodies are freed here)
+ * @param n      number of calls
+ * @param v      expected value bytes
+ * @param vl     expected value length
+ * @returns how many calls ended OK with a found value identical to v
+ */
+static int burst_exact(Call *calls, int n, const uint8_t *v, size_t vl) {
+  int exact = 0;
+  for (int i = 0; i < n; i++) {
+    Reply r = parse_reply(&calls[i]);
+    if (call_ok("burst Get", &calls[i]) && r.ok && r.flag && r.value_len == vl &&
+        memcmp(r.value, v, vl) == 0)
+      exact++;
+    call_free(&calls[i]);
+  }
+  return exact;
+}
+
+/**
+ * Bursts of Gets whose replies do not fit one DATA frame, or one output
+ * buffer: every reply must still arrive whole and byte-exact, whichever way
+ * the server framed it.
+ *
+ * The server frames a reply straight from the store record when it can
+ * (h2n.asm reply_fast): in one DATA frame, or split over several when the
+ * message is longer than a frame; and whenever the queued output reaches
+ * 64 KiB it is sent before more is framed, also in the middle of a long
+ * message. When it cannot — a window is too small, the socket is full — the
+ * reply, or what is left of it, is buffered and sent as windows and room
+ * allow. Each part below drives one of those paths:
+ *   (a) fast reader, wide windows: values whose messages land on every
+ *       frame-count boundary — 16,374 bytes is the last value in one full
+ *       frame, 16,375 the first in two, 32,757 fills exactly two, 49,141
+ *       exactly three, 65,525 makes a 65,536-byte message (one output
+ *       buffer) and 65,526 one byte more, 262,133 fills exactly sixteen
+ *       frames — up to the server's largest value; 40 Gets in flight for
+ *       the small sizes and 8 for the large, so one read's replies are 0.6
+ *       to 8 MB and the early send runs many times, between replies and
+ *       inside them;
+ *   (b) a reader that stops reading (a small TCP window, a WAN-sized MSS:
+ *       the server's send buffer then holds ~46 KB): with 16 KiB values the
+ *       early send is refused between two replies and the rest of the burst
+ *       is buffered; with 300,000-byte values it is refused in the middle of
+ *       the first reply, whose remainder alone is buffered. Everything
+ *       arrives once the reader drains its socket slowly; another
+ *       connection is served meanwhile;
+ *   (c) default 65,535-byte HTTP/2 windows on the main connection: the
+ *       connection window closes after four replies, so the same burst mixes
+ *       replies framed at once with replies that waited for WINDOW_UPDATE.
+ * @param cl  the main connection (65,535-byte windows)
+ */
+static void test_get_bursts(Client *cl) {
+  static const size_t kSizes[] = {16373, 16374, 16375, 16384, 32757, 32758, 49141, 65525,
+                                  65526, 100000, 262133, 262134, 300000, 1048576};
+  enum { NSIZES = (int)(sizeof kSizes / sizeof kSizes[0]), BIG = 100000 };
+  static Call calls[BURST];
+  size_t cap = g_max_value < 1048576 ? g_max_value : 1048576;
+  uint8_t *val = malloc(cap);
+  char k[64];
+  uint8_t *v;
+  size_t vl;
+
+  /* (a) every boundary, read at full speed over 16 MiB windows */
+  Client w;
+  if (client_open(&w, g_host, g_port, 16u << 20) != 0) {
+    CHECK(0);
+    free(val);
+    return;
+  }
+  for (int i = 0; i < NSIZES; i++) {
+    size_t n = kSizes[i];
+    if (n > g_max_value) continue;            /* a server configured below these sizes */
+    int burst = n > BIG ? 8 : BURST;          /* 8 x 1 MiB is burst enough */
+    size_t kl = mkkey(k, sizeof k, "burst", (uint64_t)n);
+    uint64_t seed = 0xB0057 + n;
+    rng_fill(&seed, val, n);
+    CHECK(op_put(cl, k, kl, val, n) == 1);
+    Msg req = msg_kv(k, kl, NULL, 0);
+    CHECK(burst_submit(&w, calls, &req, burst) == burst);
+    CHECK(run_until_idle(&w, CALL_TIMEOUT_MS) == 0);
+    int exact = burst_exact(calls, burst, val, n);
+    if (exact != burst) fprintf(stderr, "  burst of %zu-byte values: %d/%d exact\n", n, exact, burst);
+    CHECK(exact == burst);
+    free(req.p);
+    if (n != 16384 && n != 300000) CHECK(op_delete(cl, k, kl) == 1);   /* those two serve (b), (c) */
+  }
+  CHECK(op_get(&w, "burst-absent", 12, &v, &vl) == 0);   /* the connection survived it all */
+  client_close(&w);
+
+  /* (b) the reader freezes, then drains slowly. recv_max = 1 lets pump()
+   * send the burst while taking at most one byte per call off the socket. */
+  static const struct { size_t n; int burst; } kFrozen[] = {{16384, BURST}, {300000, 8}};
+  for (int f = 0; f < 2; f++) {
+    size_t n = kFrozen[f].n;
+    int burst = kFrozen[f].burst;
+    if (n > g_max_value) continue;
+    size_t kl = mkkey(k, sizeof k, "burst", (uint64_t)n);
+    uint64_t seed = 0xB0057 + n;
+    rng_fill(&seed, val, n);
+    Msg req = msg_kv(k, kl, NULL, 0);
+    Client s;
+    const SockOpts frozen = {.rcvbuf = 4096, .mss = 1200};
+    if (client_open_ex(&s, g_host, g_port, 16u << 20, 0, &frozen) == 0) {
+      s.recv_max = 1;
+      CHECK(burst_submit(&s, calls, &req, burst) == burst);
+      for (int i = 0; i < 20; i++) CHECK(pump(&s, 5) == 0);   /* the requests leave */
+      sleep_ms(200);                           /* the server fills the socket and stalls */
+      CHECK(op_get(cl, "burst-absent", 12, &v, &vl) == 0);   /* other connections are served */
+      s.recv_max = 4096;
+      CHECK(run_until_idle(&s, CALL_TIMEOUT_MS) == 0);
+      int exact = burst_exact(calls, burst, val, n);
+      if (exact != burst)
+        fprintf(stderr, "  burst of %zu-byte values to a frozen reader: %d/%d exact\n", n, exact, burst);
+      CHECK(exact == burst);
+      s.recv_max = 0;
+      CHECK(op_get(&s, k, kl, &v, &vl) == 1 && vl == n && memcmp(v, val, n) == 0);
+      free(v);                                 /* and the stalled connection recovered */
+      client_close(&s);
+    } else {
+      CHECK(0);
+    }
+
+    /* (c) the main connection's default windows: replies of 16 KiB (8 of
+     * them) or 300,000 bytes (2) against a 65,535-byte connection window */
+    int few = n > BIG ? 2 : 8;
+    CHECK(burst_submit(cl, calls, &req, few) == few);
+    CHECK(run_until_idle(cl, CALL_TIMEOUT_MS) == 0);
+    CHECK(burst_exact(calls, few, val, n) == few);
+    free(req.p);
+    CHECK(op_delete(cl, k, kl) == 1);
+  }
+  free(val);
+}
+
 /**
  * Every HTTP- and gRPC-level error path, each asserting the exact status and
  * message, and that the connection stays usable afterwards.
@@ -4416,6 +4575,7 @@ int main(int argc, char **argv) {
   if (!streaming_only) {
     RUN_ON_MAIN(test_crud(&cl));
     RUN_ON_MAIN(test_large_value(&cl));
+    RUN_ON_MAIN(test_get_bursts(&cl));
     RUN_ON_MAIN(test_errors(&cl));
     RUN_ON_MAIN(test_health(&cl));
     RUN_ON_MAIN(test_pipelined(&cl));

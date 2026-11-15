@@ -164,4 +164,128 @@ kv_siphash128:
 .done:
     ret
 
+global kv_siphash64
+
+; =============================================================================
+; kv_siphash64 — SipHash-2-4 with the standard 64-bit output, returned twice.
+;
+; @param  rdi  const uint8_t *msg (may be NULL when len == 0)
+; @param  rsi  size_t len
+; @param  rdx  const uint64_t key[2] (k0, k1; little-endian key bytes)
+; @param  rcx  uint64_t out[2] — receives (h, h); may be NULL
+; @returns rax = rdx = h, the 64-bit SipHash-2-4 of the message (also stored
+;          to both words of out when non-NULL).
+; @remarks When to use: as the store's placement hash in place of
+;          kv_siphash128. The table needs two things from a key's hash — a
+;          bucket index (low bits) and a one-byte tag (top byte) — and disjoint
+;          bits of one 64-bit pseudo-random word serve both, so the second
+;          64-bit word of the 128-bit variant is never needed: this saves its
+;          four extra finalization rounds (56 instructions; 24 core cycles of
+;          72-88 per 16-byte key, measured). Same function, same key, same
+;          HashDoS argument as SipHash-2-4-128.
+;          Tradeoff: callers that want two INDEPENDENT 64-bit words (the
+;          private caches index by h2, hcache.asm) get the same word twice —
+;          still correct there, because every candidate is confirmed by an
+;          exact key compare, but their two indices then come from one word.
+;          It returns the word in both result registers so every caller of
+;          kv_store_hash keeps working unchanged with (h1, h2) = (h, h).
+;          Never reads outside [msg, msg+len) (same tail handling as
+;          kv_siphash128). Clobbers rdi and r8-r11; rsi and rcx are preserved.
+; =============================================================================
+kv_siphash64:
+    mov     r8, 0x736f6d6570736575      ; v0 = k0 ^ "somepseu"
+    mov     r9, 0x646f72616e646f6d      ; v1 = k1 ^ "dorandom"
+    mov     r10, 0x6c7967656e657261     ; v2 = k0 ^ "lygenera"
+    mov     r11, 0x7465646279746573     ; v3 = k1 ^ "tedbytes"
+    mov     rax, [rdx]                  ; k0
+    xor     r8, rax
+    xor     r10, rax
+    mov     rax, [rdx + 8]              ; k1
+    xor     r9, rax
+    xor     r11, rax                    ; (no 0xee: that is the 128-bit variant's separator)
+
+    push    rcx                         ; out pointer, restored at the end
+    mov     rcx, rsi
+    shr     rcx, 3                      ; number of full 8-byte words
+    jz      .tail
+.block:
+    mov     rax, [rdi]
+    xor     r11, rax
+    SIPROUND
+    SIPROUND
+    xor     r8, rax
+    add     rdi, 8
+    dec     rcx
+    jnz     .block
+
+.tail:
+    ; b = (len << 56) | remaining (len % 8) bytes, little-endian.
+    mov     rdx, rsi
+    and     edx, 7                      ; left = len % 8
+    xor     eax, eax
+    test    edx, edx
+    jz      .final
+    cmp     rsi, 8
+    jb      .short_msg
+    ; len >= 8: the last 8 bytes end at msg+len; the wanted `left` bytes are
+    ; the top `left` bytes of that word. rdi already points at the tail.
+    mov     rax, [rdi + rdx - 8]
+    mov     ecx, 8
+    sub     ecx, edx
+    shl     ecx, 3                      ; shift = 64 - 8*left (1..7 bytes kept)
+    shr     rax, cl
+    jmp     .final
+.short_msg:
+    ; len < 8 (so left == len): gather 4/2/1-byte pieces without overreading.
+    xor     ecx, ecx                    ; byte offset
+    test    dl, 4
+    jz      .t2
+    mov     eax, [rdi]
+    mov     ecx, 4
+.t2:
+    test    dl, 2
+    jz      .t1
+    push    rdx
+    movzx   edx, word [rdi + rcx]
+    shl     ecx, 3
+    shl     rdx, cl
+    shr     ecx, 3
+    or      rax, rdx
+    pop     rdx
+    add     ecx, 2
+.t1:
+    test    dl, 1
+    jz      .final
+    movzx   edx, byte [rdi + rcx]
+    shl     ecx, 3
+    shl     rdx, cl
+    or      rax, rdx
+.final:
+    mov     rdx, rsi
+    shl     rdx, 56
+    or      rax, rdx                    ; b
+    xor     r11, rax
+    SIPROUND
+    SIPROUND
+    xor     r8, rax
+
+    xor     r10, 0xff                   ; finalization (64-bit variant)
+    SIPROUND
+    SIPROUND
+    SIPROUND
+    SIPROUND
+    mov     rax, r8
+    xor     rax, r9
+    xor     rax, r10
+    xor     rax, r11                    ; h
+    mov     rdx, rax                    ; the same word as "h2": the tag is its top byte
+
+    pop     rcx
+    test    rcx, rcx
+    jz      .done
+    mov     [rcx], rax
+    mov     [rcx + 8], rdx
+.done:
+    ret
+
 section .note.GNU-stack noalloc noexec nowrite progbits

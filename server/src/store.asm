@@ -82,7 +82,7 @@ extern calloc
 extern free
 extern memcpy
 extern memset
-extern kv_siphash128
+extern kv_siphash64
 extern kv_cuckoo_get
 extern kv_cuckoo_upsert
 extern kv_cuckoo_remove
@@ -438,11 +438,14 @@ kv_store_destroy:
     ret
 
 ; =============================================================================
-; kv_store_hash — the store's keyed hash of a key (SipHash-2-4-128).
+; kv_store_hash — the store's keyed hash of a key (SipHash-2-4, 64 bits).
 ;
 ; @param  rdi  Table*   @param rsi  key   @param rdx  len
 ; @param  rcx  uint64_t out[2] (may be NULL)
-; @returns rax = h1, rdx = h2 (also written to out when non-NULL).
+; @returns rax = h1, rdx = h2 (also written to out when non-NULL), with
+;          h2 == h1: the bucket index comes from the word's low bits and the
+;          tag from its top byte (kv_siphash64 explains why one word is
+;          enough and what it saves).
 ; @remarks Callers hash once and pass (h1, h2) to get/put/delete, so the
 ;          per-process secret seed never leaves the Table.
 ; =============================================================================
@@ -451,7 +454,7 @@ kv_store_hash:
     mov     rdi, rsi
     mov     rsi, rdx
     mov     rdx, r8
-    jmp     kv_siphash128 wrt ..plt
+    jmp     kv_siphash64 wrt ..plt
 
 ; =============================================================================
 ; kv_store_get — lock-free lookup.

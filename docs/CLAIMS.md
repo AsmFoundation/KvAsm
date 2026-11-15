@@ -114,6 +114,14 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
       work in the VM, and a median 10.3 CPUs were busy outside it.
   - **16 KiB values:** 0.50× Garnet and 0.48× Memcached. This is a known
     regression (CHANGELOG, Known issues).
+    - **The line describes 0.2.0.** The cause is fixed since (unreleased;
+      [ADR 0007](adr/0007-native-http2-engine.md), amendment): replies
+      longer than one HTTP/2 frame were buffered and copied twice.
+    - Against the version before the fix, one worker:
+      1.84× the GETs per second at 0.54× the server CPU per GET (paired
+      A/B, 3 of 3 quads; the host was shared with another benchmark)
+      ([results](../benchmarks/results/2026-11-15-asm-audit/README.md)).
+    - The line stays until the comparison with the other stores is re-run.
   - **Tail latency at fixed load (E4):** Valkey's p99 is lower.
   - **16 requests in flight (E7):** Memcached is ahead (0.90×).
   - **8 cores:** not measured. The benchmark client saturates first

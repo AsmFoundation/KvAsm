@@ -1,6 +1,8 @@
 # ADR 0009: Flush output once per event batch (a two-phase event loop)
 
-- **Status:** accepted
+- **Status:** accepted; amended once (see [Amendments](#amendments)):
+  an early send for large batches and one `epoll_wait` per pass,
+  2026-11-15
 - **Date:** 2026-09-27
 - **Amends:** [ADR 0003](0003-concurrency-model.md) (the worker loop)
 
@@ -147,3 +149,47 @@ then all sending, which keeps each phase's code and data warm.
 - **RPS/RFS on loopback** would move the peer's receive processing to other
   CPUs through the same kind of IPI. It is also host configuration, not a
   server design choice.
+
+## Amendments
+
+### An early send for large batches, and one `epoll_wait` per pass (2026-11-15)
+
+**1. One exception to "nothing is sent until the whole batch has been
+read".** When a connection's queued replies plus the next one would pass
+the 64 KiB high-water mark, the queue is sent at once
+([ADR 0007](0007-native-http2-engine.md), amendment of the same date).
+
+- Why it does not undo this decision: the gain here came from a client
+  thread being woken once per batch instead of once per connection. A
+  connection that has more than 64 KiB to deliver wakes its reader
+  whenever that data arrives, and the reader stays busy reading it. What
+  the early send avoids is copying every further reply of the read into a
+  private buffer.
+- Small-reply batches never reach the mark (16 replies of 139 bytes are
+  2.2 KiB), so the workloads measured above are untouched: the in-process
+  request path and its wire bytes are identical for them.
+- The early send does none of the flush's other work — no pump, no epoll
+  interest change, no close. Phase 2 still runs for the connection and
+  finds an empty buffer or the unsent rest.
+
+**2. The loop enters its one `epoll_wait` with the real timeout.** It used
+to poll first (timeout 0) and block only when nothing was ready, going
+QSBR-offline only around the blocking call.
+
+- The poll saved the rejoin's `XCHG` on a busy pass and cost a whole
+  syscall before every sleep. Measured: 95.0 ns per empty `epoll_wait`
+  against 8.4 ns for the offline/online pair
+  (`benchmarks/results/2026-11-15-asm-audit/syscount.out`).
+- Now every pass announces offline, waits (1 s, or 100 ms while
+  draining), and comes back online. An offline announcement is also a
+  quiescent state, so `kv_qsbr_quiescent` is no longer called by the loop,
+  and reclamation never waits on a worker that is inside `epoll_wait`.
+- Counted under an open-loop, unpipelined load (`strace -c`): `epoll_wait`
+  calls per request 1.46 → 0.85, all syscalls 3.58 → 2.97.
+- Timed where the worker never sleeps, so only the added `XCHG` could
+  show: server CPU per GET 1.008× with blocking clients at saturation
+  (3 of 6 blocks) and 0.995× with one request in flight under
+  busy-polling clients (5 of 8) — no difference either way.
+- **Not shown:** an end-to-end gain when the worker does sleep. On the
+  test VM an unpipelined request pays about 20 µs of cross-vCPU wakeup,
+  which hides 90 ns. The claim is the counted syscall.

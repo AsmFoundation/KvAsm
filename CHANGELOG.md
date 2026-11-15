@@ -44,9 +44,57 @@ so every line can be checked against the code and the measurements.
   nothing either way.
 - **Per-worker memory** grows by up to 256 KiB of cached records, plus a
   1,472-byte QSBR slot (it was 64 bytes; docs/OPERATIONS.md).
+- **One 64-bit hash word places a key** (ADR 0004, amendment). The table's
+  bucket index and tag now come from disjoint bits of one SipHash-2-4 word
+  instead of the two words of SipHash-2-4-128: the same keyed function and
+  key, four finalization rounds fewer on every Get, Put, Delete, Upload
+  and Download. 66.0 / 50.0 core cycles per 16-byte key against
+  86.6 / 70.6, and 7.7% off a GET's user-space path. Keys are compared
+  exactly as before; the snapshot checksum is unchanged.
+- **A unary response is written from one template** once both response
+  fields are in the peer's HPACK table (ADR 0007, amendment): 187 → 82
+  framing instructions per GET, 6.2% off a GET's user-space path and 16.1%
+  off a health check's, the same bytes on the wire.
+- **The event loop makes one `epoll_wait` per pass** (ADR 0009,
+  amendment). It no longer polls before it sleeps: 95 ns per sleep became
+  8.4 ns, and an unpipelined request needs 2.97 syscalls instead of 3.58
+  (counted). Not timed end to end.
+- **All four changes of this audit together:** a GET runs 1,292
+  user-space instructions (1,454 before), a health check 763 (866); in
+  process the request path of a GET is 14.2% shorter (120.3 → 103.3 ns).
+
+### Fixed
+
+- **Gets of values that do not fit one HTTP/2 frame were buffered and
+  copied twice** — the cause of the 16 KiB regression listed under 0.2.0's
+  known issues (ADR 0007, amendment). A 16,384-byte value makes a gRPC
+  message 11 bytes over the default frame, so every such Get took a
+  `malloc`, two copies of the value and a `free` (1.9 page faults per
+  request); and any reply after the first 64 KiB of a read's output was
+  buffered the same way.
+  - A message of any length is now framed in place over several DATA
+    frames, and the queued output is sent whenever it reaches the 64 KiB
+    mark — before a reply that would pass it, and in the middle of a
+    longer one. Only what a full socket refuses is buffered. The output
+    buffer's bound is unchanged.
+  - One worker, against the version before (paired A/B, 3 of 3 quads
+    each; the host was shared with another benchmark):
+    - 16,384-byte values: 1.84× the GETs per second at 0.54× the server
+      CPU per GET;
+    - 100,000-byte values: 1.62× at 0.62×;
+    - 1,048,576-byte values: 1.58× at 0.63×.
+  - Not yet compared with the other stores again.
 
 ### Added
 
+- `kv_siphash64` (the placement hash) and its vectors in `test_siphash`.
+- `itest_grpc`: `test_get_bursts`, bursts of Gets at every frame-count
+  boundary up to the largest value, against a reader that stops reading
+  (between two replies, and in the middle of one), and against the
+  default windows.
+- `benchmarks/results/2026-11-15-asm-audit`: the audit behind these
+  changes, with its instruments — per-source-line instruction counts
+  (`cgannot.py`) and an in-process request-path harness (`bench_h2.c`).
 - `kv_store_write_begin`, `kv_store_put_locked`, `kv_store_delete_locked`,
   `kv_store_write_end`, `kv_store_reclaim_local` and
   `kv_store_rec_alloc_local`: the store's batch API (`server/tests/kvnode_abi.h`).

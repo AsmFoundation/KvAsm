@@ -216,7 +216,14 @@ every server in all ten paired blocks):
       on a loaded host and is only indicative
       ([W1](benchmarks/results/2026-11-15-writes-w1/README.md)).
   - 16 KiB values: 481k GET/s, half of Garnet's and Memcached's, and 30%
-    below the old nghttp2 build (a regression, not yet explained).
+    below the old nghttp2 build.
+    - The cause is known and fixed since (unreleased): a reply longer
+      than one HTTP/2 frame was buffered and copied twice
+      ([ADR 0007](docs/adr/0007-native-http2-engine.md), amendment).
+    - Against the version before the fix, one worker:
+      1.84× the GETs per second at 0.54× the server CPU per GET (paired
+      A/B, 3 of 3 quads; the host was shared with another benchmark).
+    - The comparison with the other stores predates it.
 - **At 8 cores the benchmark client is the limit:** kvbench's gRPC client
   tops out near 9.3M requests/s, so KvNode's 8-core numbers measure the
   client.

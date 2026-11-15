@@ -56,7 +56,8 @@ flowchart LR
    [Streaming calls](#streaming-calls-adr-0010)).
 4. **Execute.** At END_STREAM the worker validates the 5-byte gRPC framing,
    decodes the protobuf (zero-copy, `proto.asm`), checks limits and hashes
-   the key (SipHash-2-4-128, secret key).
+   the key (SipHash-2-4 under the secret key; one 64-bit word gives the
+   bucket index and the tag, ADR 0004).
    - Health checks execute right there.
    - **Gets, Puts and Deletes are deferred:** their two candidate buckets are
      prefetched immediately, and the stream joins the connection's batch. A
@@ -85,14 +86,17 @@ flowchart LR
      precomputed header blocks: after a connection's first response,
      HEADERS carry 2 bytes and the trailers 1 byte. A GET hit is copied
      from the store record into its DATA frame, with no response buffer and
-     no allocation.
+     no allocation — split over several DATA frames when the message is
+     longer than a frame, whatever its length (ADR 0007, amendment).
    - **Nothing is sent until the whole epoll batch has been read**
      (ADR 0009). The worker processes every ready connection first, then
      flushes them all back to back, one `sendto` each. A client thread with
      several connections is woken once per batch instead of once per
      connection. Measured on one core: +26% GET/s with 8 connections per
      client thread, +12% with 4, +4% with 1, and lower p50 and p99 in every
-     case.
+     case. One exception: a connection whose queued replies would pass
+     64 KiB sends them at once, so the rest of that read's replies can
+     still be framed in place instead of buffered.
 
 The loop is event-driven and never spins. A connection is a state machine
 resumed by epoll readiness (what C# async/await compiles to, without heap
@@ -280,7 +284,7 @@ flowchart LR
 | `server/src/store.asm` | table lifecycle, Put/Delete and their batched forms, write-once records for Upload, Download pins, memory accounting, QSBR with per-worker slots (limbo, record cache) |
 | `server/src/cuckoo.asm` | lock-free lookup (SWAR or SSE2 tag scan), insert with BFS displacement, remove, prefetch stages |
 | `server/src/hcache.asm` | optional per-worker private L1/L2 record cache, generation-validated |
-| `server/src/siphash.asm`, `util.asm` | SipHash-2-4-128; exact key compare and SWAR tag match |
+| `server/src/siphash.asm`, `util.asm` | SipHash-2-4: the 64-bit placement hash and the 128-bit snapshot checksum; exact key compare and SWAR tag match |
 | `server/src/wlock.asm` | futex writer mutex |
 | `server/src/snapshot.asm` | snapshot verification and loading |
 | `server/src/log.asm` | one-`write` structured log lines |

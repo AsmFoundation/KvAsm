@@ -7,7 +7,9 @@
   nghttp2 engine as selectable, the engine-neutral `session` parameter, or
   the n-phases (`make itest` phases 1-7 now all run this engine; the h2spec
   baseline is `h2spec-known-failures.txt`, empty). The engine itself, its
-  verification and the measurements are unchanged.
+  verification and the measurements are unchanged. Amended again on
+  2026-11-15 (see [Amendments](#amendments)): replies of any length are
+  framed in place, and the steady-state response comes from a template.
 - **Date:** 2026-09-26
 - **Amends:** [ADR 0002](0002-http2-library-nghttp2.md) (nghttp2 becomes one of two engines)
 
@@ -283,3 +285,90 @@ where seccomp allows it.
 - **Precomputed responses on top of nghttp2** (`nghttp2_submit_*` with
   cached nv arrays): the encoder and the outbound queue still run for
   every response. Only replacing the engine removes them.
+
+## Amendments
+
+### Replies longer than a frame, an early send, and the response template (2026-11-15)
+
+Three changes to how `reply_fast` frames a unary response. Evidence:
+`benchmarks/results/2026-11-15-asm-audit`.
+
+**1. A message longer than one frame is still framed in place.** The text
+above says a GET hit is written in a single pass when its message "fits the
+windows and one frame". The one-frame condition turned out to exclude a
+common size: a 16,384-byte value makes a 16,395-byte gRPC message, 11 bytes
+over the default frame, so every such GET was buffered — a `malloc` of the
+message, a copy into it, the pend list, a second copy into the output
+buffer and a `free`. Measured on 0.2.0: `reply_slow` ran once per request,
+the value was copied twice, and glibc trimmed and regrew its heap around
+the 16 KiB blocks (1.9 minor page faults per GET).
+
+- A message of any length is now split over as many DATA frames as the
+  peer's frame size requires and copied once, straight from the store
+  record, as long as both flow-control windows admit it whole.
+- A message whose head (the gRPC prefix and protobuf field headers) is not
+  small keeps the buffered path. No caller produces one.
+
+**2. Queued output is sent before a reply that would pass the high-water
+mark.** The second condition was "the output buffer is below 64 KiB". With
+16 requests of 16,000 bytes in flight a read produces 262 KiB of replies,
+so every reply after the first four was buffered the same way.
+
+- When the queued output plus the next reply would exceed `OUT_HIGH_WATER`,
+  `out_try_drain` hands the queue to the socket at once and the reply is
+  framed into the emptied buffer.
+- A reply longer than the mark is sent as it is framed: each time the
+  queue reaches the mark, between two of its DATA frames, it goes to the
+  socket.
+- If the socket takes less than everything, the reply is buffered as
+  before — or, when that happens in the middle of a long reply, only what
+  is left of its body is copied and queued. No further attempt is made
+  during that read: a slow reader costs one refused `sendto` per read, not
+  one per reply.
+- Replies already waiting on the pend list keep their turn: with any
+  queued, nothing is sent early.
+- **The bound on the output buffer is unchanged:** the mark plus one
+  frame. Memory per connection is as documented in `docs/OPERATIONS.md`.
+- **A long reply holds its worker** for as long as copying it to the
+  socket takes, about 0.2 ms per MiB: before, the worker spent a similar
+  time copying the value into a buffer. Values of tens of MiB belong to
+  Download, which yields every 256 KiB.
+- This is an exception to ADR 0009 ("nothing is sent until the whole batch
+  has been read"); that record's amendment explains why it costs nothing
+  there.
+
+**3. The steady-state response comes from one template.** After a
+connection's first response both response fields are in the peer's table,
+and every unary response is the same 30 bytes around the message:
+`HEADERS(88 BF)`, a DATA header, `HEADERS(BE)`. They are written with
+constant stores instead of through `put_response_headers`, `put_tsu`,
+`put_hdr` (three times), `put_trailers` and `out_reserve`. Any other
+encoder state, a pending table size update, or a buffer that must grow
+takes the general path.
+
+**Measured:**
+
+- One worker with its clients saturating it, paired A/B against the
+  version before (quads of A B B A, 3 of 3 quads each; the host was
+  shared with another benchmark):
+  - 16,384-byte values: 1.84× the GETs per second at 0.54× the server
+    CPU per GET (5.7–6.8 µs against 10.8–12.4 µs);
+  - 100,000-byte values: 1.62× at 0.62×;
+  - 1,048,576-byte values: 1.58× at 0.63× (about 250 µs per GET against
+    395 µs).
+  - On a quieter host, the step before "sent as it is framed" measured
+    2.02× at 0.50× with 16,384-byte values (3 of 3 quads).
+- Instructions per request (callgrind): a GET of a 16,384-byte value
+  35,061 → 17,924; response framing of a small GET 187 → 82.
+- The request path in process (no kernel): the template takes 6.2% off a
+  GET and 16.1% off a health check. The bytes on the wire are identical
+  (equal digests of 32,000 responses).
+
+**Verified:** the whole suite, h2spec 146/146 and the fuzzer; and
+`test_get_bursts` (`itest_grpc.c`): bursts of Gets at every frame-count
+boundary (16,374 / 16,375, 32,757, 49,141, 65,525 / 65,526, 262,133 /
+262,134 bytes) up to the largest value, read at full speed; the same
+bursts against a reader that stops reading and then drains slowly, with
+16 KiB values (refused between two replies) and 300,000-byte values
+(refused in the middle of one); and against the default 65,535-byte
+windows.

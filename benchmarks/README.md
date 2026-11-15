@@ -93,7 +93,10 @@ block against every server, p = 0.002):
   - writes: 2.23M SET/s, 0.87× Redis, 0.90× Dragonfly and 0.60× Garnet;
   - 16 KiB values: 481k, 0.50× Garnet and 0.48× Memcached. Here KvNode is
     **30% below the old nghttp2 build**, while the other servers lost
-    5–8%: a regression to bisect.
+    5–8%. The cause was found on 2026-11-15 — a reply longer than one
+    frame left the fast path — and fixed after 0.2.0
+    ([results](results/2026-11-15-asm-audit/README.md)); this suite has
+    not measured the fix yet.
 - **Against the nghttp2 build** (2026-09-26, with the other servers
   unchanged):
   - 3.0× at 4 cores (S1: 2.93M → 8.84M);
