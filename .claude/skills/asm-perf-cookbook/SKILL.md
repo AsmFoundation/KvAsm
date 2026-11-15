@@ -232,6 +232,15 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   (a zero idiom) and avoid 8/16-bit partial-register merges.
 - **Varint fast paths:** handle the one-byte case (< 128) inline and fall
   back to a loop.
+  - *Go one step further — a fast path for the canonical message:* every
+    protobuf writer encodes `{1: key[, 2: value]}` the same way, so the
+    decoder can match that whole shape (tag, one-byte length, key, tag,
+    a 1–3-byte length, value, end) before entering the generic field
+    loop.
+  - *KvNode:* ✅ `kv_pb_decode_kv` (`dc59368`): a Get's decode 72 → 20
+    instructions. Everything else falls to the field loop unchanged, and
+    `test_proto` decodes every canonical shape, cut at every byte, with
+    both decoders at a guard page.
 - **bsf/bsr with a zero check** instead of `tzcnt`/`lzcnt` (BMI1/LZCNT are
   not baseline x86-64).
 
@@ -373,6 +382,21 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     instead of `kv_pool_calloc`'s glibc `memset` saved nothing, measured
     exactly with callgrind: 1,424 vs 1,428 instructions per GET. glibc's
     AVX2 memset is already cheap for 184 bytes.
+- **Inline the pool's common case at a hot call site**
+  - *What:* when one object type is allocated on every request, pop its
+    block from the size-class free list inline (the class is a constant
+    at assembly time), zero it with aligned SSE2 stores, and fall back to
+    the allocator for an empty list. The same for its home slot in an
+    open-addressing map, and for freeing an object that owns nothing
+    else (one tail call).
+  - *Why now, when inlining only the memset saved nothing (above):* the
+    cost was never the zeroing but the calls around it — `calloc`,
+    `malloc` with its size-class `bsr`, `memset`, the map insert's frame.
+  - *KvNode:* ✅ `stream_open`, `stream_close`, `stream_free` (`dc59368`).
+    With the protobuf fast path and the located buckets: a GET
+    88.3 → 76.1 ns in process (−13.8%), 1,134 → 973 instructions.
+    `%error` guards keep the assembly-time class and the 16-byte zeroing
+    step honest if the struct grows.
 - **No buffer for a reply that fits on the stack**
   - *What:* build a tiny message on the stack and let the framer copy it,
     instead of allocating a buffer the stream frees later.
@@ -431,9 +455,13 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     95 ns per empty `epoll_wait` against 8.4 ns for the offline/online
     pair; `strace -c` under an open-loop unpipelined load: `epoll_wait`
     calls 1.46 → 0.85 per request, all syscalls 3.58 → 2.97.
-  - *KvNode:* 🔜 `patches/0002` (full suite passes). Not timed end to end:
-    in this VM an unpipelined request pays ~20 µs of cross-vCPU wakeup,
-    which hides 90 ns. Needs a quiet-host A/B, saturated and not.
+  - *KvNode:* ✅ `8111e66` (ADR 0009, amendment). Where the worker never
+    sleeps only the added `xchg` could show, and it does not: 1.008×
+    server CPU per GET at saturation (3/6 blocks), 0.995× unpipelined
+    under busy-polling clients (5/8). Not shown: the end-to-end gain when
+    the worker does sleep — in this VM an unpipelined request pays
+    ~20 µs of cross-vCPU wakeup, which hides 90 ns. The claim is the
+    counted syscall.
 - **Gather instead of copy**
   - *What:* `writev`/`sendmsg` over the library's frame buffers instead of
     `memcpy` into one buffer.
@@ -538,14 +566,13 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   grpc-status into the peer's table, then every response is `88 BF`
   (HEADERS) + `BE` (trailers); a GET hit's value is copied from the store
   record straight into its DATA frame.
-  - 🔜 *The whole response from one template:* in that steady state a
-    unary response is the same 30 bytes around the message, so
-    `reply_fast` can write them with constant stores instead of calling
+  - ✅ *The whole response from one template* (`8111e66`): in that steady
+    state a unary response is the same 30 bytes around the message, so
+    `reply_fast` writes them with constant stores instead of calling
     `put_response_headers`, `put_tsu`, `put_hdr` (×3), `put_trailers` and
-    `out_reserve`. Measured (`2026-11-15-asm-audit`, `patches/0003`,
-    full suite passes, wire bytes identical): framing 187 → 82
-    instructions per GET; in process −6.2% of a GET's user-space path,
-    −16.1% of a health check's.
+    `out_reserve`. Framing 187 → 82 instructions per GET; in process
+    −6.2% of a GET's user-space path, −16.1% of a health check's; wire
+    bytes identical. Any other encoder state takes the general path.
 - **A reply must not leave the fast path because of its size**
   - *What:* frame a message that needs several DATA frames in place, one
     copy from the record; and when the output buffer is past its
@@ -561,11 +588,57 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     16,000-byte values lost the fast path after the first 64 KiB of each
     read's output. This matches the 16 KiB regression of the 2026-09-27
     suite.
-  - *KvNode:* 🔜 `patches/0001` (full suite passes; needs a slow-reader
-    end-to-end test). 16 KiB values, one worker, concurrent A/B 6/6:
-    **1.82× GET/s, 0.541× server CPU per request**, page faults 1.9 → 0.
-    Stops at 64 KiB messages: 65,525-byte values cost 14.8 µs, 65,526
-    bytes 25.7 µs — larger ones need the same treatment in chunks.
+  - *KvNode:* ✅ `8111e66` (ADR 0007, amendment), for replies of ANY
+    length: the queue is handed to the socket before a reply that would
+    pass the mark, and a reply longer than the mark is sent as it is
+    framed; only what a full socket refuses is buffered, and one refusal
+    stops further attempts until the next read. The buffer's bound is
+    unchanged.
+    - One worker, paired A/B (quads of A B B A, 3/3 each, loaded host):
+      **16,384-byte values 1.84× GET/s at 0.54× server CPU per GET**;
+      100,000 bytes 1.62× at 0.62×; 1,048,576 bytes 1.58× at 0.63×. On a
+      quieter host the 16 KiB step measured 2.02× at 0.50×.
+    - Page faults 1.9 → 0 per request; instructions per 16 KiB GET
+      35,061 → 17,924.
+    - `test_get_bursts` (itest): every frame-count boundary, a reader
+      that stops between two replies and in the middle of one, default
+      windows.
+  - *Lesson:* the first version drained only at the mark and let the
+    buffer peak near twice the documented bound. Draining when the queue
+    *plus the next reply* would pass it keeps the bound — check the
+    bound you document against the worst interleaving, not the average.
+- **Handle a request's frames together**
+  - *What:* a unary call is HEADERS then one DATA frame. When the DATA
+    frame is next in the buffer, handle it right after the HEADERS frame
+    with the stream still in hand, instead of going round the frame loop
+    (a second header parse, sequencing checks, a map lookup).
+  - *How to keep it safe:* list the conditions under which the general
+    handler would do exactly the short path's steps (whole frame, same
+    stream, flags exactly END_STREAM, body non-empty and borrowable, no
+    content-length, not a streaming call), take those steps in the same
+    order, and leave every other frame untouched for the loop. One
+    behaviour, two routes.
+  - *KvNode:* ✅ `913c234` (ADR 0007, second amendment). The frame loop
+    184 → 138 instructions per request, two map lookups and
+    `request_end` gone; in process a GET −9.9% (76.1 → 68.6 ns), a
+    health check −15.2%.
+  - *Catch — know your clients' frame order:* it applies only when the
+    DATA frame is behind its own HEADERS. nghttp2 sends the HEADERS of
+    all requests submitted before one send first, then their DATA — what
+    kvbench does at 16 in flight — so **the standard benchmark does not
+    show it** (level: 973 → 951 instructions from the two side changes).
+    Measure both layouts (`BENCH_LAYOUT=pairs|burst` in `bench_h2.c`)
+    before quoting a number.
+  - 🔜 a shorter path for a DATA frame that is NOT behind its HEADERS:
+    about 40 of its 110 instructions, counted from the listing.
+- **Skip a lookup the protocol already answered:** an HTTP/2 stream id
+  above every id the connection has opened cannot be in the stream map.
+  *KvNode:* ✅ `header_block` compares with `last_id` first (`913c234`):
+  one `map_find` less per request.
+- **Check a cache before building a frame:** when a function's common
+  case is a cache hit that needs no callee-saved state, test for it with
+  the arguments still in their registers and `ret` from there. *KvNode:*
+  ✅ `decode_fields` (`913c234`): 45 → 29 instructions on a hit.
 - **Own the HTTP/2 hot path**
   - *What:* a gRPC-subset HTTP/2 engine removes nghttp2's generic
     machinery (stream hash map, per-header rcbufs and callbacks, priority
@@ -621,17 +694,35 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     against reference vectors first):* SipHash-2-4-128 86.6 / 70.6;
     SipHash-2-4-64 66.0 / 50.0; SipHash-1-3-128 60.3 / 44.5;
     SipHash-1-3-64 43.2 / 28.2; AES-128 as a PRF (AES-NI) 43.8 / 7.6.
-  - 🔜 *One 64-bit word is enough:* the table needs a bucket index (low
-    bits) and a tag (top byte); disjoint bits of one SipHash-2-4-64 word
-    serve both, with the same key and the same HashDoS argument. In the
-    real request path: −7.7% of a GET's user-space time (`patches/0004`,
-    full suite passes, vectors added to `test_siphash`).
-  - 🔜 *AES-NI as the keyed hash:* one AES-128 encryption of the padded
-    key under a secret length mask (CMAC-shaped; chained for keys over 16
-    bytes). In the real request path: **−19.3%** of a GET's user-space
-    time. Needs CPUID dispatch with SipHash as the fallback and a key
-    block per table (the measurement variant has neither); amends
-    ADR 0004, so the owner decides.
+  - ✅ *One 64-bit word is enough* (`8111e66`, ADR 0004 first amendment):
+    the table needs a bucket index (low bits) and a tag (top byte);
+    disjoint bits of one SipHash-2-4-64 word serve both, with the same
+    key and the same HashDoS argument. −7.7% of a GET's user-space time.
+    It is now the fallback hash.
+  - ✅ *AES-NI as the keyed hash* (`1c3f20b`, ADR 0004 second amendment;
+    the default where the CPU has AES-NI, `KVNODE_HASH=auto|siphash|aes`):
+    one AES-128 encryption of the padded key under a secret length mask
+    (CMAC-shaped; chained for keys over 16 bytes; 17 masks, one per final
+    length). CPUID dispatch, a 448-byte key block per table, SipHash-2-4
+    as the fallback.
+    - In process a GET 103.3 → 88.3 ns (−14.5%); 1,292 → 1,134
+      instructions; end to end 0.95× server CPU per GET (busy-polling
+      clients).
+    - **Prove the other operations unaffected** when a change touches
+      something they all share: 100% SET 0.989×, 50/50 0.984×, Upload
+      0.992×, Download 1.001× the server CPU per request
+      (`final-ops.out`).
+    - `test_aeshash` checks the assembly against an AES-128 written from
+      FIPS-197 in C, for every key length 0–300 at a guard page.
+- **Derive an address once and carry it:** when one request visits the
+  same hash-table key several times (prefetch, second prefetch, lookup),
+  return the bucket addresses from the first visit and keep them with
+  the request. Valid only while the table cannot move.
+  *KvNode:* ✅ `kv_store_locate` / `_prefetch_records_at` / `_get_at`
+  (`dc59368`): two of three derivations (a multiply and ~17 instructions
+  each) gone. The `_at` functions trust their addresses — the footgun is
+  documented at each, and `test_store` checks them against the plain
+  lookups under both tag scans.
 
 ## 9. Code layout and the front end
 
@@ -797,11 +888,48 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     showed as 0.984× server CPU per request end to end (control 0.993×)
     in the client-bound shape, where the path is ~11% of a request's CPU.
     Say so instead of claiming the in-process number as throughput.
-  - *Still open (measured, not prototyped):* stream open/close (241
-    instructions per unary call), frame parsing of a cached header block
-    (282), the generic protobuf varint loop (72 per GET, 132 per SET),
-    bucket addresses derived three times per GET, the carry copy of
-    uploads (extra copying equal to 13–14% of the bytes).
+  - *Applied the same day* (`8111e66`, `1c3f20b`, `dc59368`, `913c234`;
+    the README's "What was applied"): in process a GET 120.3 → 68.6 ns
+    (−43%) with DATA behind its HEADERS and 119.7 → 75.9 ns (−37%) in
+    nghttp2-style bursts; instructions per GET 1,454 → 951, per SET
+    1,760 → 1,218; end to end 0.85× server CPU per GET with busy-polling
+    clients, 0.91× per SET, 0.54× for 16 KiB values.
+  - *Still open:* the carry copy of uploads (extra copying equal to
+    13–14% of the bytes); a short path for a DATA frame that is not
+    behind its HEADERS; all of it on a quiet host, with several workers
+    and against the other stores.
+
+- **Lessons of applying it (2026-11-15):**
+  - *Write the test from the specification, prove it on the old code,
+    then mutate the new code.* `fuzz_h2`'s request matrix has 506
+    conversations whose expected answers come from RFC 9113, not from
+    the engine. It passed on the engine without the fused path first
+    (so the test is right), then on the engine with it (so the change
+    is invisible), and then thirteen deliberate breaks of the new path
+    were each rebuilt and run against it (`mutate.sh`): a test that
+    never failed proves little.
+  - *A mutation harness can lie.* Its first run reported five mutations
+    as "missed" that had never been built: `cp -r` and `sed -i` landed in
+    the same clock tick (file timestamps are coarse), so `make` found
+    nothing to do and the unmutated server was tested. Delete the object
+    before building, and require the mutant's binary to differ from the
+    original.
+  - *An unkillable mutant can be a real guard:* one check (the next
+    frame's header has arrived whole) cannot be observed from outside,
+    because the next check makes the same decision. It prevents an
+    out-of-bounds read, not a wrong answer. Keep it and write down why,
+    or the next reader will "simplify" it away.
+  - *A background wait can read the previous run's log:* `server 2> log
+    &` followed by `grep listening log` can match the last server's line
+    before the new one has truncated the file. Remove the log first.
+  - *Know how the benchmark client orders frames* before designing a
+    parser fast path (see §8, "Handle a request's frames together").
+    The instruction count of the benchmark run said the new path never
+    ran; only then was the client's frame order looked at.
+  - *Land what was tested:* developed in a private copy while another
+    session measured in the shared tree; each commit's files were
+    checked blob for blob against the tree whose suite had passed, and
+    only those paths were staged.
 
 ## Beyond this cookbook
 

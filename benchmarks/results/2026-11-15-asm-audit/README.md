@@ -2,9 +2,15 @@
 
 A pass over every hot path of the server at `6a31d0a` (v0.2.0) to find
 work that can be removed, with each candidate measured and the strongest
-ones prototyped. **Nothing here is merged.** Four prototypes pass the
-whole test suite and are in [`patches/`](patches/); the rest are measured
-candidates.
+ones prototyped.
+
+**Status: applied the same day**, in four commits on top of the
+write-batching commit `5735d7a` — findings 1 to 9 of the table below.
+[What was applied](#what-was-applied-2026-11-15) has the commits, the
+final measurements and the tests. The sections after it are the audit as
+it was written before anything was merged, and are kept as the record of
+why each change was made: where they say "candidate" or "not merged",
+read them in that light.
 
 - **Revision:** `6a31d0a`, built from a clean `git archive` in a private
   directory of the dev container. The main working tree was not touched
@@ -14,6 +20,165 @@ candidates.
   Windows VMs. Sequential end-to-end runs of identical binaries differed
   by up to ±40%, so the audit rests on instruments that do not depend on
   the host being quiet (next section).
+
+## What was applied (2026-11-15)
+
+| Commit | What | Findings |
+|---|---|---|
+| `8111e66` | replies of any length framed in place and sent as they are framed; the response template; one `epoll_wait` per pass; 64-bit SipHash placement | 1, 2 (64-bit), 3, 4, 9 |
+| `1c3f20b` | AES-128 through AES-NI as the default key hash (`KVNODE_HASH`), SipHash-2-4 the fallback | 2 (AES) |
+| `dc59368` | protobuf fast path; streams opened and closed inline; a key's buckets located once | 5, 7, 8 |
+| `913c234` | a unary request's DATA frame handled right behind its HEADERS; `fuzz_h2`'s request matrix | 6 |
+
+Not applied: finding 10 (the Upload carry copy — not chosen) and finding
+11 (the write path: another session's ADR 0011, already in `5735d7a`).
+
+Every commit's server tree is the tree whose full suite passed (unit
+tests, all itest phases, h2spec 146/146, the fuzzer).
+
+### The request path in process
+
+`final-inproc.out`, `final-inproc-burst.out`: `bench_h2`, one thread, no
+kernel, 1,024 keys in cache, 16 requests per read, the minimum of 15
+interleaved rounds per build. Every build printed the same output digest:
+the bytes on the wire did not change.
+
+| ns per request | before (`5735d7a`) | `8111e66` | `1c3f20b` | `dc59368` | `913c234` | total |
+|---|---|---|---|---|---|---|
+| GET, DATA behind its HEADERS | 120.3 | 103.3 | 88.3 | 76.1 | **68.6** | **−43%** |
+| GET, burst (all HEADERS, then all DATA) | 119.7 | 103.7 | 91.3 | 76.2 | 75.9 | −37% |
+| health check, DATA behind its HEADERS | 70.1 | 59.5 | 59.2 | 50.8 | **43.1** | **−39%** |
+| health check, burst | 75.3 | 64.1 | 63.6 | 56.2 | 56.2 | −25% |
+
+**The two layouts** are how clients fill a read. A call sent on its own,
+or by a client that writes each call's frames back to back, puts the DATA
+frame right behind its HEADERS: the last commit's look-ahead applies.
+nghttp2 sends the HEADERS frames of all requests submitted before one
+send first and their DATA frames after — which is what kvbench does at 16
+in flight — so no DATA frame is behind its own HEADERS and the look-ahead
+never applies (`BENCH_LAYOUT=burst` reproduces it). **The standard
+benchmark suite therefore does not show the last commit.**
+
+### Instructions per request
+
+`instructions-final.txt` (callgrind, a real client; per-function tables).
+
+| | before | `8111e66` | `1c3f20b` | `dc59368` | `913c234` |
+|---|---|---|---|---|---|
+| GET, 16 in flight (bursts) | 1,454 | 1,292 | 1,134 | 973 | 951 |
+| GET, 1 in flight (frames adjacent) | | | | 1,239 | 1,146 |
+| SET | 1,760 | 1,596 | 1,438 | | 1,218 |
+| health check | 866 | 763 | | | 649 |
+| GET of a 16,384-byte value | 35,061 | 17,924 | | | 17,578 |
+
+With one request in flight the frame loop went from 184 to 138
+instructions per request in the last commit, both stream-map lookups (22)
+and `request_end` (5) disappeared, `decode_fields` 45 → 29,
+`header_block` 59 → 55.
+
+### End to end
+
+One worker, `abseq.sh`: the two builds alternate in one slot in quads of
+A B B A, server CPU per request from schedstat. The host was shared with
+another session's benchmark suite during the final runs (`final-e2e-*`),
+which shows in the quads' spread; `final-ab.out` and `final-ops.out` were
+taken earlier the same afternoon, between two of that session's suites.
+
+| Workload | A → B | Server CPU per request | Requests per second | File |
+|---|---|---|---|---|
+| GET, 16,384-byte values | before → `8111e66` | **0.54×** (3/3 quads, 0.46–0.60) | **1.84×** (1.65–2.20) | `final-e2e-large.out` |
+| GET, 100,000-byte values | before → `8111e66` | **0.62×** (3/3, 0.59–0.64) | **1.62×** | `final-e2e-large.out` |
+| GET, 1,048,576-byte values | before → `8111e66` | **0.63×** (3/3, 0.62–0.64) | **1.58×** | `final-e2e-large.out` |
+| GET, 100 bytes, busy-polling clients | before → `913c234` | **0.85×** (4/4, 0.81–0.88) | **1.16×** | `final-e2e-small.out` |
+| 100% SET | before → `913c234` | 0.91× (3/3, 0.87–0.94) | 1.11× | `final-e2e-small.out` |
+| 50/50 | before → `913c234` | 0.94× (3/3, 0.92–0.95) | 1.06× | `final-e2e-small.out` |
+| GET, 100 bytes, blocking clients | before → `913c234` | 0.98× (2/3, 0.94–1.04) | 1.02× | `final-e2e-small.out` |
+
+- **Blocking clients:** half of the worker's time there is waking its
+  co-located clients, so what the user-space path saves is inside the
+  spread. The busy-polling row shows the server's own cost.
+- **16,384-byte values on the quieter host:** the step before "sent as it
+  is framed" measured 2.02× at 0.50× (3/3 quads, `final-ab.out`); the
+  first prototype, concurrent A/B, 2.14× at 0.47× (6/6, `quiet-ab.out`).
+- **The four audit patches alone, small values:** 1.006× CPU per GET
+  (2/4 quads, `final-ab.out`): below this host's noise.
+- **Not measured:** more than one worker, and the comparison with the
+  other stores. The suite has to be re-run on a quiet host for both.
+
+### The AES hash against every other operation
+
+The owner's condition for AES as the default was that no other operation
+is affected. `final-ops.out`: the AES build against the 64-bit SipHash
+build, server CPU per request, 3 quads each.
+
+| Operation | AES / SipHash-64 | Range |
+|---|---|---|
+| 100% SET | 0.989× | 0.973–1.004 |
+| 50% GET / 50% SET | 0.984× | 0.970–0.994 |
+| Upload, 65,536-byte values | 0.992× | 0.972–1.006 |
+| Download, 65,536-byte values | 1.001× | 0.961–1.039 |
+| GET, blocking clients | 0.966× | 0.943–0.986 |
+| GET, busy-polling clients (`final-ab.out`, 4 quads) | 0.953× | 0.857–1.165 |
+
+None is slower beyond its own spread.
+
+### Tests that came with the changes
+
+- `itest_grpc` `test_get_bursts`: Gets at every frame-count boundary up to
+  the largest value, against a reader that stops and then drains slowly
+  (refused between two replies, and in the middle of one), and against
+  the default windows.
+- `test_siphash` (the 64-bit vectors), `test_aeshash` (the assembly
+  against an AES-128 written from FIPS-197 in C; the store under each
+  hash), `test_proto` (the fast path's shapes at a guard page),
+  `test_store` `test_located`.
+- **`fuzz_h2`'s request matrix** — 506 conversations with exact expected
+  answers at the frame boundaries of a unary request — and
+  `fuzz_h2 --limits` (itest phase 7b). Both were first shown to pass on
+  the engine *without* the fused path.
+- **Mutation check** (`mutate.sh` → `mutate.out`): thirteen deliberate
+  breaks of the fused path, each rebuilt and run against the matrix.
+  - Twelve are caught, each by the case written for it.
+  - The thirteenth removes the check that the next frame's header has
+    arrived whole. The payload check refuses the same frames, so no
+    black-box test can see it; what it prevents is a read of up to 8
+    bytes beyond the received data. It stays.
+  - **The script's first run was wrong.** It reported five mutations as
+    missed that had never been built: the copied object file and the
+    edited source carried the same timestamp, and `make` found nothing
+    to do. It now deletes the object first and requires the binary to
+    differ from the original.
+
+### Still open
+
+- **A DATA frame that is not behind its HEADERS** (nghttp2-style bursts)
+  still takes the whole frame loop: about 110 instructions per request.
+  A shorter path would need the stream lookup and the sequencing checks
+  the look-ahead gets for free; counted from the listing it would save
+  about 40.
+- **Finding 10**, the Upload carry copy.
+- **A quiet host:** every end-to-end number above is a paired ratio on a
+  loaded machine. The suite, several workers and the other stores are
+  not re-measured.
+
+### Files added with the applied work
+
+Inside the files the builds carry their working names: `head2` is
+`5735d7a`; `landA`, `big`, `landC` and `fuse` are the server trees of
+`8111e66`, `1c3f20b`, `dc59368` and `913c234`. `all2` and `aes`, in the
+earlier runs, are two intermediate builds: the four audit patches with
+replies up to 64 KiB, and that with the AES hash.
+
+| File | What |
+|---|---|
+| `final-inproc.out`, `final-inproc-burst.out` | the in-process tables above |
+| `instructions-final.txt` | callgrind per-function tables of every stage |
+| `final-e2e-large.out`, `final-e2e-small.out`, `final_e2e.sh` | the end-to-end quads of the final trees |
+| `final-ab.out`, `final-ops.out`, `quiet-ab.out` | the quieter-host runs: the patches, the AES hash, every other operation |
+| `abseq.sh` | two builds alternating in one slot (A B B A), for hosts where no two vCPU sets are equivalent |
+| `mutate.sh`, `mutate.out` | the mutation check of the fused path |
+| `calib.asm` | the cycle calibration `build_bench.sh` links |
+| `bench_h2.c`, `build_bench.sh`, `abbench.sh`, `abpair.sh` | updated: `BENCH_HASH`, `BENCH_LAYOUT`, a variant's own `aeshash.o`, vCPU sets from the environment |
 
 ## Instruments
 

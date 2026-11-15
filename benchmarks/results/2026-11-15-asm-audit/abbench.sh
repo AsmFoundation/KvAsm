@@ -21,7 +21,9 @@ declare -A all
 for v in "$@"; do all[$v]=""; done
 for r in $(seq 1 "$ROUNDS"); do
   for v in "$@"; do
-    ns=$(taskset -c "$CPU" /pc/probe/bench_h2-"$v" "$MODE" 1024 40 1000 | sed -E 's/^[a-z]+: ([0-9.]+) ns.*/\1/')
+    # The first line carries the figure (a second one names the layout);
+    # BENCH_LAYOUT and BENCH_HASH reach bench_h2 through the environment.
+    ns=$(taskset -c "$CPU" /pc/probe/bench_h2-"$v" "$MODE" 1024 40 1000 | head -1 | sed -E 's/^[a-z]+: ([0-9.]+) ns.*/\1/')
     all[$v]+="$ns "
   done
 done

@@ -1,0 +1,36 @@
+## Other operations with the AES hash: A = all2 (SipHash-2-4-64), B = aes. abseq.sh as above, blocking clients.
+
+# 100% SET, 100-byte values, 1M keys
+quad 1: A 1,138,946 req/s    908 ns/req (runs 893, 924; busy 1.03) | B 1,168,116 req/s    884 ns/req (runs 893, 875; busy 1.03) | B/A CPU 0.973 req/s 1.026 errors+bad 0
+quad 2: A 1,134,578 req/s    910 ns/req (runs 898, 921; busy 1.03) | B 1,131,104 req/s    913 ns/req (runs 927, 900; busy 1.03) | B/A CPU 1.004 req/s 0.997 errors+bad 0
+quad 3: A 1,135,101 req/s    911 ns/req (runs 920, 902; busy 1.03) | B 1,144,372 req/s    902 ns/req (runs 894, 911; busy 1.03) | B/A CPU 0.990 req/s 1.008 errors+bad 0
+B/A server CPU per request: geometric mean 0.989 over 3 quads; B cheaper in 2/3; range 0.973-1.004
+B/A requests per second:    geometric mean 1.010; B faster in 2/3; range 0.997-1.026
+
+# 50% GET / 50% SET
+quad 1: A 1,071,373 req/s    965 ns/req (runs 951, 979; busy 1.04) | B 1,083,936 req/s    953 ns/req (runs 941, 965; busy 1.03) | B/A CPU 0.988 req/s 1.012 errors+bad 0
+quad 2: A 1,051,361 req/s    984 ns/req (runs 1001, 967; busy 1.03) | B 1,082,214 req/s    955 ns/req (runs 953, 957; busy 1.03) | B/A CPU 0.970 req/s 1.029 errors+bad 0
+quad 3: A 1,068,780 req/s    968 ns/req (runs 977, 958; busy 1.03) | B 1,074,890 req/s    962 ns/req (runs 972, 952; busy 1.03) | B/A CPU 0.994 req/s 1.006 errors+bad 0
+B/A server CPU per request: geometric mean 0.984 over 3 quads; B cheaper in 3/3; range 0.970-0.994
+B/A requests per second:    geometric mean 1.016; B faster in 3/3; range 1.006-1.029
+
+# Upload, 65,536-byte values
+quad 1: A    79,622 req/s  12977 ns/req (runs 12797, 13158; busy 1.03) | B    81,926 req/s  12612 ns/req (runs 12424, 12799; busy 1.03) | B/A CPU 0.972 req/s 1.029 errors+bad 0
+quad 2: A    80,778 req/s  12792 ns/req (runs 12906, 12679; busy 1.03) | B    80,717 req/s  12794 ns/req (runs 12813, 12776; busy 1.03) | B/A CPU 1.000 req/s 0.999 errors+bad 0
+quad 3: A    81,322 req/s  12714 ns/req (runs 12517, 12912; busy 1.03) | B    80,812 req/s  12787 ns/req (runs 12842, 12733; busy 1.04) | B/A CPU 1.006 req/s 0.994 errors+bad 0
+B/A server CPU per request: geometric mean 0.992 over 3 quads; B cheaper in 1/3; range 0.972-1.006
+B/A requests per second:    geometric mean 1.007; B faster in 1/3; range 0.994-1.029
+
+# Download, 65,536-byte values
+quad 1: A    60,425 req/s  17102 ns/req (runs 17318, 16886; busy 1.03) | B    60,207 req/s  17170 ns/req (runs 17447, 16893; busy 1.03) | B/A CPU 1.004 req/s 0.996 errors+bad 0
+quad 2: A    56,884 req/s  18186 ns/req (runs 18704, 17668; busy 1.03) | B    59,188 req/s  17479 ns/req (runs 17241, 17717; busy 1.03) | B/A CPU 0.961 req/s 1.040 errors+bad 0
+quad 3: A    60,666 req/s  17054 ns/req (runs 17100, 17009; busy 1.03) | B    58,456 req/s  17711 ns/req (runs 17207, 18215; busy 1.03) | B/A CPU 1.039 req/s 0.964 errors+bad 0
+B/A server CPU per request: geometric mean 1.001 over 3 quads; B cheaper in 1/3; range 0.961-1.039
+B/A requests per second:    geometric mean 1.000; B faster in 1/3; range 0.964-1.040
+
+# GET, 100-byte values, blocking clients
+quad 1: A 1,241,236 req/s    833 ns/req (runs 836, 830; busy 1.03) | B 1,259,306 req/s    822 ns/req (runs 821, 822; busy 1.03) | B/A CPU 0.986 req/s 1.015 errors+bad 0
+quad 2: A 1,207,302 req/s    858 ns/req (runs 838, 877; busy 1.03) | B 1,243,876 req/s    832 ns/req (runs 842, 823; busy 1.04) | B/A CPU 0.970 req/s 1.030 errors+bad 0
+quad 3: A 1,188,294 req/s    870 ns/req (runs 891, 849; busy 1.03) | B 1,262,039 req/s    821 ns/req (runs 833, 809; busy 1.04) | B/A CPU 0.943 req/s 1.062 errors+bad 0
+B/A server CPU per request: geometric mean 0.966 over 3 quads; B cheaper in 3/3; range 0.943-0.986
+B/A requests per second:    geometric mean 1.035; B faster in 3/3; range 1.015-1.062

@@ -1,0 +1,25 @@
+## abseq.sh: one slot (server vCPU 8; kvbench 6 threads x 24 connections x 16 in flight on vCPUs 9-14), quads of A B B A,
+## server CPU per request from schedstat. Another session's benchmark suite ran in the same VM (vCPUs 0-7, 16-31).
+## head2 = 5735d7a; landA = + the four audit patches with replies of any length; fuse = the final tree.
+
+# 16,384-byte values (2 frames per reply), 2,000 keys: A = head2, B = landA
+quad 1: A    83,961 req/s  12421 ns/req (runs 12140, 12702; busy 1.04) | B   184,945 req/s   5678 ns/req (runs 5186, 6169; busy 1.04) | B/A CPU 0.457 req/s 2.203 errors+bad 0
+quad 2: A    92,796 req/s  11301 ns/req (runs 10373, 12230; busy 1.04) | B   153,344 req/s   6808 ns/req (runs 6534, 7082; busy 1.04) | B/A CPU 0.602 req/s 1.652 errors+bad 0
+quad 3: A    96,978 req/s  10766 ns/req (runs 11160, 10373; busy 1.04) | B   167,008 req/s   6252 ns/req (runs 6467, 6037; busy 1.04) | B/A CPU 0.581 req/s 1.722 errors+bad 0
+B/A server CPU per request: geometric mean 0.543 over 3 quads; B cheaper in 3/3; range 0.457-0.602
+B/A requests per second:    geometric mean 1.844; B faster in 3/3; range 1.652-2.203
+
+# 100,000-byte values (7 frames, past the 64 KiB mark), 400 keys: A = head2, B = landA
+quad 1: A    23,688 req/s  44076 ns/req (runs 45544, 42607; busy 1.04) | B    36,732 req/s  28406 ns/req (runs 28209, 28604; busy 1.04) | B/A CPU 0.644 req/s 1.551 errors+bad 0
+quad 2: A    22,238 req/s  47585 ns/req (runs 53179, 41992; busy 1.04) | B    35,644 req/s  29615 ns/req (runs 32964, 26265; busy 1.04) | B/A CPU 0.622 req/s 1.603 errors+bad 0
+quad 3: A    24,364 req/s  43403 ns/req (runs 48405, 38401; busy 1.05) | B    41,542 req/s  25407 ns/req (runs 28108, 22705; busy 1.05) | B/A CPU 0.585 req/s 1.705 errors+bad 0
+B/A server CPU per request: geometric mean 0.617 over 3 quads; B cheaper in 3/3; range 0.585-0.644
+B/A requests per second:    geometric mean 1.618; B faster in 3/3; range 1.551-1.705
+
+# 1,048,576-byte values (the largest unary value), 48 keys, 4 in flight per connection: A = head2, B = landA
+quad 1: A     2,694 req/s 386987 ns/req (runs 385163, 388811; busy 1.04) | B     4,264 req/s 244489 ns/req (runs 244575, 244403; busy 1.04) | B/A CPU 0.632 req/s 1.583 errors+bad 0
+quad 2: A     2,560 req/s 408301 ns/req (runs 427428, 389174; busy 1.04) | B     4,110 req/s 253805 ns/req (runs 254686, 252924; busy 1.04) | B/A CPU 0.622 req/s 1.605 errors+bad 0
+quad 3: A     2,652 req/s 394057 ns/req (runs 410855, 377260; busy 1.04) | B     4,152 req/s 251421 ns/req (runs 242754, 260089; busy 1.04) | B/A CPU 0.638 req/s 1.565 errors+bad 0
+B/A server CPU per request: geometric mean 0.630 over 3 quads; B cheaper in 3/3; range 0.622-0.638
+B/A requests per second:    geometric mean 1.584; B faster in 3/3; range 1.565-1.605
+DONE

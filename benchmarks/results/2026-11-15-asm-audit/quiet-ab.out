@@ -1,0 +1,65 @@
+## abpair.sh, quieter host (VM idle, ~7 of 32 host CPUs busy outside it): servers on vCPUs 2 and 6, kvbench 8 threads x 32 connections x 16 in flight on vCPUs 16-23 / 24-31
+
+# control: HEAD against itself, 100-byte values, blocking clients
+block 0 (A in slot 0): A   559,413 req/s   1523 ns/req busy 0.85 | B   556,215 req/s   1514 ns/req busy 0.84 | B/A CPU 0.994 req/s 0.994 errors 0 bad 0
+block 1 (A in slot 1): A   735,929 req/s   1394 ns/req busy 1.03 | B   522,255 req/s   1312 ns/req busy 0.68 | B/A CPU 0.941 req/s 0.710 errors 0 bad 0
+block 2 (A in slot 0): A   739,455 req/s   1261 ns/req busy 0.93 | B   720,135 req/s   1319 ns/req busy 0.95 | B/A CPU 1.046 req/s 0.974 errors 0 bad 0
+block 3 (A in slot 1): A   729,116 req/s   1368 ns/req busy 1.00 | B   787,136 req/s   1254 ns/req busy 0.99 | B/A CPU 0.917 req/s 1.080 errors 0 bad 0
+B/A server CPU per request: geometric mean 0.973 over 4 blocks; B cheaper in 3/4; range 0.917-1.046
+B/A requests per second:    geometric mean 0.928; B faster in 1/4; range 0.710-1.080
+
+# A = HEAD, B = all four patches, 100-byte values, 1M keys, blocking clients
+block 0 (A in slot 0): A   725,241 req/s   1384 ns/req busy 1.00 | B   710,852 req/s   1413 ns/req busy 1.00 | B/A CPU 1.021 req/s 0.980 errors 0 bad 0
+block 1 (A in slot 1): A   783,001 req/s   1313 ns/req busy 1.03 | B   837,359 req/s   1226 ns/req busy 1.03 | B/A CPU 0.934 req/s 1.069 errors 0 bad 0
+block 2 (A in slot 0): A   665,234 req/s   1509 ns/req busy 1.00 | B   628,870 req/s   1587 ns/req busy 1.00 | B/A CPU 1.051 req/s 0.945 errors 0 bad 0
+block 3 (A in slot 1): A   540,598 req/s   1825 ns/req busy 0.99 | B   682,020 req/s   1322 ns/req busy 0.90 | B/A CPU 0.724 req/s 1.262 errors 0 bad 0
+block 4 (A in slot 0): A   579,103 req/s   1654 ns/req busy 0.96 | B   517,619 req/s   1884 ns/req busy 0.97 | B/A CPU 1.139 req/s 0.894 errors 0 bad 0
+block 5 (A in slot 1): A   748,489 req/s   1371 ns/req busy 1.03 | B   804,900 req/s   1278 ns/req busy 1.03 | B/A CPU 0.932 req/s 1.075 errors 0 bad 0
+block 6 (A in slot 0): A   760,205 req/s   1348 ns/req busy 1.02 | B   732,939 req/s   1396 ns/req busy 1.02 | B/A CPU 1.036 req/s 0.964 errors 0 bad 0
+block 7 (A in slot 1): A   654,970 req/s   1528 ns/req busy 1.00 | B   724,940 req/s   1369 ns/req busy 0.99 | B/A CPU 0.896 req/s 1.107 errors 0 bad 0
+B/A server CPU per request: geometric mean 0.959 over 8 blocks; B cheaper in 4/8; range 0.724-1.139
+B/A requests per second:    geometric mean 1.031; B faster in 4/8; range 0.894-1.262
+
+# A = HEAD, B = all four patches, 100-byte values, 1M keys, busy-polling clients (server pays no client wakeups)
+block 0 (A in slot 0): A 1,147,491 req/s    877 ns/req busy 1.01 | B   324,366 req/s   2518 ns/req busy 0.82 | B/A CPU 2.870 req/s 0.283 errors 0 bad 0
+block 1 (A in slot 1): A   421,197 req/s   2077 ns/req busy 0.87 | B   942,105 req/s   1048 ns/req busy 0.99 | B/A CPU 0.505 req/s 2.237 errors 0 bad 0
+block 2 (A in slot 0): A 1,275,605 req/s    801 ns/req busy 1.02 | B   952,395 req/s    953 ns/req busy 0.91 | B/A CPU 1.190 req/s 0.747 errors 0 bad 0
+block 3 (A in slot 1): A   821,742 req/s   1132 ns/req busy 0.93 | B 1,132,579 req/s    887 ns/req busy 1.01 | B/A CPU 0.784 req/s 1.378 errors 0 bad 0
+block 4 (A in slot 0): A 1,154,937 req/s    882 ns/req busy 1.02 | B   695,590 req/s   1280 ns/req busy 0.89 | B/A CPU 1.450 req/s 0.602 errors 0 bad 0
+block 5 (A in slot 1): A   387,308 req/s   2350 ns/req busy 0.91 | B   913,762 req/s   1089 ns/req busy 1.00 | B/A CPU 0.463 req/s 2.359 errors 0 bad 0
+block 6 (A in slot 0): A   936,818 req/s   1074 ns/req busy 1.01 | B   445,051 req/s   1942 ns/req busy 0.86 | B/A CPU 1.808 req/s 0.475 errors 0 bad 0
+block 7 (A in slot 1): A   655,097 req/s   1399 ns/req busy 0.92 | B   988,627 req/s   1005 ns/req busy 0.99 | B/A CPU 0.719 req/s 1.509 errors 0 bad 0
+B/A server CPU per request: geometric mean 1.021 over 8 blocks; B cheaper in 4/8; range 0.463-2.870
+B/A requests per second:    geometric mean 0.950; B faster in 4/8; range 0.283-2.359
+
+# A = HEAD, B = patch 0002 alone, blocking clients (saturated)
+block 0 (A in slot 0): A   798,822 req/s   1285 ns/req busy 1.03 | B   750,811 req/s   1366 ns/req busy 1.03 | B/A CPU 1.063 req/s 0.940 errors 0 bad 0
+block 1 (A in slot 1): A   708,142 req/s   1412 ns/req busy 1.00 | B   723,978 req/s   1380 ns/req busy 1.00 | B/A CPU 0.977 req/s 1.022 errors 0 bad 0
+block 2 (A in slot 0): A   637,293 req/s   1553 ns/req busy 0.99 | B   606,669 req/s   1650 ns/req busy 1.00 | B/A CPU 1.062 req/s 0.952 errors 0 bad 0
+block 3 (A in slot 1): A   636,518 req/s   1573 ns/req busy 1.00 | B   660,193 req/s   1485 ns/req busy 0.98 | B/A CPU 0.944 req/s 1.037 errors 0 bad 0
+block 4 (A in slot 0): A   641,493 req/s   1512 ns/req busy 0.97 | B   613,764 req/s   1600 ns/req busy 0.98 | B/A CPU 1.058 req/s 0.957 errors 0 bad 0
+block 5 (A in slot 1): A   754,014 req/s   1358 ns/req busy 1.02 | B   790,077 req/s   1297 ns/req busy 1.02 | B/A CPU 0.955 req/s 1.048 errors 0 bad 0
+B/A server CPU per request: geometric mean 1.008 over 6 blocks; B cheaper in 3/6; range 0.944-1.063
+B/A requests per second:    geometric mean 0.992; B faster in 3/6; range 0.940-1.048
+
+# A = HEAD, B = patch 0002 alone, 1 request in flight per connection (unpipelined), busy-polling clients
+block 0 (A in slot 0): A   172,416 req/s   5781 ns/req busy 1.00 | B   176,762 req/s   5679 ns/req busy 1.00 | B/A CPU 0.982 req/s 1.025 errors 0 bad 0
+block 1 (A in slot 1): A   186,856 req/s   5401 ns/req busy 1.01 | B   186,903 req/s   5389 ns/req busy 1.01 | B/A CPU 0.998 req/s 1.000 errors 0 bad 0
+block 2 (A in slot 0): A   225,923 req/s   4458 ns/req busy 1.01 | B   227,209 req/s   4443 ns/req busy 1.01 | B/A CPU 0.997 req/s 1.006 errors 0 bad 0
+block 3 (A in slot 1): A   233,488 req/s   4353 ns/req busy 1.02 | B   233,009 req/s   4364 ns/req busy 1.02 | B/A CPU 1.002 req/s 0.998 errors 0 bad 0
+block 4 (A in slot 0): A   242,104 req/s   4218 ns/req busy 1.02 | B   247,722 req/s   4123 ns/req busy 1.02 | B/A CPU 0.978 req/s 1.023 errors 0 bad 0
+block 5 (A in slot 1): A   237,575 req/s   4292 ns/req busy 1.02 | B   237,719 req/s   4294 ns/req busy 1.02 | B/A CPU 1.001 req/s 1.001 errors 0 bad 0
+block 6 (A in slot 0): A   223,914 req/s   4475 ns/req busy 1.00 | B   227,079 req/s   4425 ns/req busy 1.00 | B/A CPU 0.989 req/s 1.014 errors 0 bad 0
+block 7 (A in slot 1): A   192,270 req/s   5085 ns/req busy 0.98 | B   190,496 req/s   5153 ns/req busy 0.98 | B/A CPU 1.013 req/s 0.991 errors 0 bad 0
+B/A server CPU per request: geometric mean 0.995 over 8 blocks; B cheaper in 5/8; range 0.978-1.013
+B/A requests per second:    geometric mean 1.007; B faster in 5/8; range 0.991-1.025
+
+# A = HEAD, B = all four patches, 16,384-byte values
+block 0 (A in slot 0): A    71,925 req/s  14337 ns/req busy 1.03 | B   162,587 req/s   6342 ns/req busy 1.03 | B/A CPU 0.442 req/s 2.261 errors 0 bad 0
+block 1 (A in slot 1): A    82,362 req/s  12527 ns/req busy 1.03 | B   150,733 req/s   6844 ns/req busy 1.03 | B/A CPU 0.546 req/s 1.830 errors 0 bad 0
+block 2 (A in slot 0): A    69,965 req/s  14741 ns/req busy 1.03 | B   156,278 req/s   6598 ns/req busy 1.03 | B/A CPU 0.448 req/s 2.234 errors 0 bad 0
+block 3 (A in slot 1): A    70,389 req/s  14644 ns/req busy 1.03 | B   163,828 req/s   6291 ns/req busy 1.03 | B/A CPU 0.430 req/s 2.327 errors 0 bad 0
+block 4 (A in slot 0): A    77,430 req/s  13305 ns/req busy 1.03 | B   176,278 req/s   5842 ns/req busy 1.03 | B/A CPU 0.439 req/s 2.277 errors 0 bad 0
+block 5 (A in slot 1): A    76,203 req/s  13540 ns/req busy 1.03 | B   150,354 req/s   6862 ns/req busy 1.03 | B/A CPU 0.507 req/s 1.973 errors 0 bad 0
+B/A server CPU per request: geometric mean 0.467 over 6 blocks; B cheaper in 6/6; range 0.430-0.546
+B/A requests per second:    geometric mean 2.142; B faster in 6/6; range 1.830-2.327

@@ -1,0 +1,33 @@
+## Final tree measurements, base 5735d7a (write batching). head2 = 5735d7a; all2 = + the four audit patches; aes = all2 + the AES key hash.
+## abseq.sh: one slot (server vCPU 2, kvbench 8 threads x 32 connections x 16 in flight on vCPUs 16-23), quads of A B B A, server CPU per request (schedstat).
+
+# 16,384-byte values: A = head2, B = all2
+quad 1: A    85,490 req/s  11931 ns/req (runs 12479, 11383; busy 1.00) | B   177,014 req/s   5806 ns/req (runs 5776, 5836; busy 1.02) | B/A CPU 0.487 req/s 2.071 errors+bad 0
+quad 2: A    88,402 req/s  11694 ns/req (runs 11550, 11838; busy 1.03) | B   175,903 req/s   5877 ns/req (runs 5934, 5821; busy 1.03) | B/A CPU 0.503 req/s 1.990 errors+bad 0
+quad 3: A    90,190 req/s  11496 ns/req (runs 10857, 12135; busy 1.03) | B   179,414 req/s   5761 ns/req (runs 5603, 5918; busy 1.03) | B/A CPU 0.501 req/s 1.989 errors+bad 0
+B/A server CPU per request: geometric mean 0.497 over 3 quads; B cheaper in 3/3; range 0.487-0.503
+B/A requests per second:    geometric mean 2.016; B faster in 3/3; range 1.989-2.071
+
+# 100-byte values, busy-polling clients, 1M keys: A = head2, B = all2
+quad 1: A 2,262,648 req/s    457 ns/req (runs 445, 469; busy 1.03) | B 2,117,482 req/s    487 ns/req (runs 489, 486; busy 1.03) | B/A CPU 1.067 req/s 0.936 errors+bad 0
+quad 2: A 2,060,322 req/s    502 ns/req (runs 509, 495; busy 1.03) | B 1,954,732 req/s    529 ns/req (runs 550, 507; busy 1.03) | B/A CPU 1.054 req/s 0.949 errors+bad 0
+quad 3: A 2,163,627 req/s    478 ns/req (runs 485, 472; busy 1.04) | B 2,277,530 req/s    454 ns/req (runs 453, 455; busy 1.03) | B/A CPU 0.949 req/s 1.053 errors+bad 0
+quad 4: A 2,080,326 req/s    498 ns/req (runs 534, 462; busy 1.03) | B 2,164,604 req/s    478 ns/req (runs 476, 479; busy 1.03) | B/A CPU 0.959 req/s 1.041 errors+bad 0
+B/A server CPU per request: geometric mean 1.006 over 4 quads; B cheaper in 2/4; range 0.949-1.067
+B/A requests per second:    geometric mean 0.993; B faster in 2/4; range 0.936-1.053
+
+# 100-byte values, busy-polling clients, 1M keys: A = all2, B = aes
+quad 1: A 1,980,243 req/s    527 ns/req (runs 469, 586; busy 1.03) | B 2,283,297 req/s    452 ns/req (runs 453, 451; busy 1.03) | B/A CPU 0.857 req/s 1.153 errors+bad 0
+quad 2: A 2,122,582 req/s    487 ns/req (runs 513, 462; busy 1.03) | B 1,851,810 req/s    568 ns/req (runs 657, 479; busy 1.02) | B/A CPU 1.165 req/s 0.872 errors+bad 0
+quad 3: A 2,109,438 req/s    491 ns/req (runs 500, 482; busy 1.03) | B 2,234,174 req/s    463 ns/req (runs 444, 482; busy 1.03) | B/A CPU 0.943 req/s 1.059 errors+bad 0
+quad 4: A 2,125,188 req/s    486 ns/req (runs 506, 467; busy 1.03) | B 2,430,380 req/s    426 ns/req (runs 413, 438; busy 1.03) | B/A CPU 0.875 req/s 1.144 errors+bad 0
+B/A server CPU per request: geometric mean 0.953 over 4 quads; B cheaper in 3/4; range 0.857-1.165
+B/A requests per second:    geometric mean 1.051; B faster in 3/4; range 0.872-1.153
+
+# 100-byte values, busy-polling clients, 1M keys: A = head2, B = aes
+quad 1: A 2,210,694 req/s    468 ns/req (runs 482, 454; busy 1.03) | B 2,356,448 req/s    438 ns/req (runs 439, 437; busy 1.03) | B/A CPU 0.936 req/s 1.066 errors+bad 0
+quad 2: A 2,262,366 req/s    456 ns/req (runs 465, 447; busy 1.03) | B 2,390,758 req/s    432 ns/req (runs 433, 431; busy 1.03) | B/A CPU 0.948 req/s 1.057 errors+bad 0
+quad 3: A 2,151,972 req/s    482 ns/req (runs 457, 507; busy 1.03) | B 2,445,476 req/s    423 ns/req (runs 417, 428; busy 1.03) | B/A CPU 0.877 req/s 1.136 errors+bad 0
+quad 4: A 2,226,708 req/s    464 ns/req (runs 453, 475; busy 1.03) | B 2,461,950 req/s    420 ns/req (runs 416, 424; busy 1.03) | B/A CPU 0.905 req/s 1.106 errors+bad 0
+B/A server CPU per request: geometric mean 0.916 over 4 quads; B cheaper in 4/4; range 0.877-0.948
+B/A requests per second:    geometric mean 1.091; B faster in 4/4; range 1.057-1.136

@@ -51,7 +51,12 @@ int kv_h2n_open(void *conn);
 int h2_process(void *conn, const uint8_t *buf, size_t len); /* h2n.asm, globalized */
 int kv_grpc_run_batch(void *conn);
 int conn_window_refill(void *conn);                         /* h2n.asm, globalized */
-uint64_t calib_add(uint64_t n);                             /* hashes.asm: 1 cycle per iteration */
+uint64_t calib_add(uint64_t n);                             /* calib.asm: 1 cycle per iteration */
+/* store.asm, only in variants that can choose the key hash: weak, so the
+ * harness links against older variants too (the pointers are then NULL). */
+int kv_set_hash_mode(int mode) __attribute__((weak));
+int kv_hash_best_mode(void) __attribute__((weak));
+int kv_hash_mode_get(void) __attribute__((weak));
 
 /* FNV-1a over every output byte produced through feed() (setup and warm-up):
  * two variants fed the same input must print the same digest, or one of them
@@ -124,6 +129,17 @@ int main(int argc, char **argv) {
   /* ---- the pieces main.asm and worker.asm set up for a real connection ---- */
   void *cfg = calloc(1, bench_abi[BA_CONFIG_SIZE] + 64);
   if (kv_config_load(cfg) != 0) { fprintf(stderr, "config\n"); return 1; }
+  /* The key hash, as main.asm chooses it: the best the CPU runs, unless
+   * BENCH_HASH=siphash|aes forces one (an A/B inside one binary, so both
+   * sides have the same code layout). Before the store exists: the mode must
+   * be final before the first key is hashed. */
+  if (kv_set_hash_mode) {
+    const char *want = getenv("BENCH_HASH");
+    int mode = kv_hash_best_mode();
+    if (want && strcmp(want, "siphash") == 0) mode = 0;
+    if (want && strcmp(want, "aes") == 0) mode = 1;
+    if (kv_set_hash_mode(mode) < 0) { fprintf(stderr, "hash mode %d refused\n", mode); return 1; }
+  }
   uint8_t seed[16];
   for (int i = 0; i < 16; i++) seed[i] = (uint8_t)(0x5a ^ (i * 37));
   KvTable *t = kv_store_create(nkeys * 2 + 1024, 4, seed, 0);
@@ -206,14 +222,28 @@ int main(int argc, char **argv) {
   enum { RING = 64 };
   size_t blen = 2 + 2 + plen + 3;            /* 83 86 04 len path C0 BF BE */
   size_t req_bytes = 9 + blen + 9 + mlen;
+  /* Where request j's two frames sit in a batch. BENCH_LAYOUT=pairs (the
+   * default): each request's DATA frame right behind its HEADERS — how gRPC
+   * clients that write a call's frames back to back fill a read (and the
+   * shape h2n.asm's fused request path takes). BENCH_LAYOUT=burst: all the
+   * HEADERS frames of the batch, then all its DATA frames — what nghttp2
+   * sends when several requests are submitted before one send (kvbench at
+   * depth 16), where no DATA frame is behind its own HEADERS. */
+  const char *layout = getenv("BENCH_LAYOUT");
+  int burst = layout && strcmp(layout, "burst") == 0;
+  #define HDR_OFF(j)  (burst ? (size_t)(j) * (9 + blen) : (size_t)(j) * req_bytes)
+  #define DATA_OFF(j) (burst ? (size_t)BATCH * (9 + blen) + (size_t)(j) * (9 + mlen) \
+                             : (size_t)(j) * req_bytes + 9 + blen)
   uint8_t *ring = malloc((size_t)RING * BATCH * req_bytes);
   for (int r = 0; r < RING; r++)
     for (int j = 0; j < BATCH; j++) {
-      uint8_t *q = ring + ((size_t)r * BATCH + j) * req_bytes;
+      uint8_t *base = ring + (size_t)r * BATCH * req_bytes;
+      uint8_t *q = base + HDR_OFF(j);
       q = frame_hdr(q, (uint32_t)blen, 1, 0x4, 0);
       *q++ = 0x83; *q++ = 0x86; *q++ = 0x04; *q++ = (uint8_t)plen;
       memcpy(q, path, plen); q += plen;
       *q++ = 0xC0; *q++ = 0xBF; *q++ = 0xBE;
+      q = base + DATA_OFF(j);
       q = frame_hdr(q, (uint32_t)mlen, 0, 0x1, 0);
       memcpy(q, msg, mlen);
       if (!ping) make_key(q + 7, (unsigned)((r * BATCH + j) * 7919u) % nkeys);
@@ -225,8 +255,8 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 2000; i++) {
     uint8_t *buf = ring + (size_t)(i % RING) * BATCH * req_bytes;
     for (int j = 0; j < BATCH; j++, sid += 2) {
-      set_sid(buf + j * req_bytes, sid);
-      set_sid(buf + j * req_bytes + 9 + blen, sid);
+      set_sid(buf + HDR_OFF(j), sid);
+      set_sid(buf + DATA_OFF(j), sid);
     }
     uint64_t n = feed(conn, buf, BATCH * req_bytes);
     if (i == 1000) expect = n;
@@ -242,8 +272,8 @@ int main(int argc, char **argv) {
     for (int i = 0; i < batches; i++) {
       uint8_t *buf = ring + (size_t)(i % RING) * BATCH * req_bytes;
       for (int j = 0; j < BATCH; j++, s += 2) {
-        set_sid(buf + j * req_bytes, s);
-        set_sid(buf + j * req_bytes + 9 + blen, s);
+        set_sid(buf + HDR_OFF(j), s);
+        set_sid(buf + DATA_OFF(j), s);
       }
     }
     double d = (now_ns() - t0) / ((double)batches * BATCH);
@@ -267,8 +297,8 @@ int main(int argc, char **argv) {
     for (int i = 0; i < batches; i++) {
       uint8_t *buf = ring + (size_t)(i % RING) * BATCH * req_bytes;
       for (int j = 0; j < BATCH; j++, sid += 2) {
-        set_sid(buf + j * req_bytes, sid);
-        set_sid(buf + j * req_bytes + 9 + blen, sid);
+        set_sid(buf + HDR_OFF(j), sid);
+        set_sid(buf + DATA_OFF(j), sid);
       }
       if (h2_process(conn, buf, BATCH * req_bytes) < 0 || kv_grpc_run_batch(conn) < 0 ||
           conn_window_refill(conn) < 0) { fprintf(stderr, "engine failed\n"); return 1; }
@@ -301,10 +331,12 @@ int main(int argc, char **argv) {
     if (d < cyc) cyc = d;
   }
   printf("%s: %.2f ns/request min = %.0f cycles (cycle %.4f ns), %.2f median, %.2f p90; sid patch %.2f ns; "
-         "%lu bytes out per batch; output digest %016lx; %lu requests, server counted %lu\n",
+         "%lu bytes out per batch; output digest %016lx; %lu requests, server counted %lu; hash %s\n",
          mode, ns[0], ns[0] / cyc, cyc, ns[trials / 2], ns[trials * 9 / 10], patch_ns,
          (unsigned long)expect, (unsigned long)out_digest, (unsigned long)sent + 1,
-         (unsigned long)F(w, BA_W_REQUESTS));
+         (unsigned long)F(w, BA_W_REQUESTS),
+         !kv_hash_mode_get ? "siphash (fixed)" : kv_hash_mode_get() ? "aes" : "siphash");
+  printf("layout: %s\n", burst ? "burst (all HEADERS, then all DATA)" : "pairs (DATA behind its HEADERS)");
   (void)best_ticks;
   (void)first_out;
   return 0;

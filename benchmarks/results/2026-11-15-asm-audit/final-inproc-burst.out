@@ -1,0 +1,17 @@
+## The same in-process harness with the batch laid out as nghttp2 sends a burst: the 16 HEADERS frames of a read first,
+## then its 16 DATA frames (BENCH_LAYOUT=burst). No DATA frame is behind its own HEADERS, so the fused request path
+## never applies; what remains of the last step is the lookup skipped for a new stream id and the cache hit before the frame.
+
+# GET, burst layout
+head2  min  119.74 ns/request   median  120.43   rounds within 2% of min: 15/15
+landA  min  103.65 ns/request   median  104.44   rounds within 2% of min: 14/15
+big    min   91.27 ns/request   median   92.01   rounds within 2% of min: 15/15
+landC  min   76.18 ns/request   median   76.85   rounds within 2% of min: 15/15
+fuse   min   75.90 ns/request   median   76.58   rounds within 2% of min: 13/15
+
+# health check, burst layout
+head2  min   75.29 ns/request   median   75.86   rounds within 2% of min: 14/15
+landA  min   64.14 ns/request   median   64.41   rounds within 2% of min: 15/15
+big    min   63.59 ns/request   median   63.87   rounds within 2% of min: 15/15
+landC  min   56.18 ns/request   median   56.54   rounds within 2% of min: 14/15
+fuse   min   56.24 ns/request   median   56.38   rounds within 2% of min: 15/15
