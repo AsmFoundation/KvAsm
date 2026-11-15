@@ -12,6 +12,12 @@ unpaired across sessions, so the host must be as quiet as it was then.
 --e4-rates gives E4 explicit offered loads, e.g. that earlier session's, which
 a subset could not derive (E4 normally takes 25/50/75% of the slowest
 system's E1 median, and the slowest system may not be in the subset).
+--control-image adds a second KvNode, system "kvnode-control" running that
+image, to every experiment that has kvnode, in the same blocks: run the image
+an earlier session measured, and each cell's kvnode ÷ kvnode-control ratio is
+paired within this session while the control's own numbers show how far the
+host moved since then (2026-11-15: the 2026-09-27 image itself ran 1.5x
+slower per GET than it did that day).
 
 Each run: start a fresh server container on vCPUs 0..N-1, run kvbench in the
 server's network namespace (loopback) on vCPUs 16-31, preload every key,
@@ -52,6 +58,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
 SERVER = "kvb-srv"
 KVBENCH_IMAGE = "kvnode-kvbench:dev"
+CONTROL = "kvnode-control"
+"""System name of --control-image's KvNode (a variant; never in suite.ALL)."""
 SEED = 20260926
 
 
@@ -715,6 +723,8 @@ def main() -> int:
                     "(default: all); e.g. kvnode to re-measure KvNode alone")
     ap.add_argument("--e4-rates", help="comma-separated E4 offered loads in ops/s, instead of "
                     "25/50/75%% of the slowest system's E1 median (e.g. an earlier session's)")
+    ap.add_argument("--control-image", help="also run this KvNode image as system 'kvnode-control' "
+                    "wherever kvnode runs, in the same blocks (e.g. the image an earlier session measured)")
     args = ap.parse_args()
 
     experiments = suite.PROFILES[args.profile]
@@ -738,6 +748,17 @@ def main() -> int:
             ap.error("--e4-rates takes comma-separated numbers (ops/s)")
         if any(r <= 0 for r in e4_override):
             ap.error("--e4-rates must be positive")
+    if args.control_image:
+        # Identical to the kvnode system in every setting but the image, so a
+        # cell's kvnode ÷ kvnode-control ratio isolates the build. Registered
+        # before environment() records every system's image identity, and
+        # with kvnode's E8 tools, which plan() looks up by system name.
+        suite.SYSTEMS[CONTROL] = replace(suite.SYSTEMS["kvnode"], name=CONTROL,
+                                         title=f"KvNode control ({args.control_image})",
+                                         image=args.control_image)
+        VALIDATION_TOOLS[CONTROL] = VALIDATION_TOOLS["kvnode"]
+        experiments = [replace(e, systems=e.systems + (CONTROL,)) if "kvnode" in e.systems else e
+                       for e in experiments]
     stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H%M")
     out = pathlib.Path(args.out) if args.out else HERE / "results" / f"{stamp}-{args.profile}"
     out.mkdir(parents=True, exist_ok=True)
@@ -767,7 +788,8 @@ def main() -> int:
         env["host_logical_cpus"] = HOST.logical_cpus if HOST.enabled else None
         # A subset session must say so: its report has no rivals to pair with,
         # and its E4 loads may come from another session.
-        env["selection"] = {"only": args.only, "systems": args.systems, "e4_rates": e4_override}
+        env["selection"] = {"only": args.only, "systems": args.systems, "e4_rates": e4_override,
+                            "control_image": args.control_image}
         (out / "environment.json").write_text(json.dumps(env, indent=2), encoding="utf-8")
         print(f"  cpu clock factor {env['cpu_clock']['factor']:.4f}", flush=True)
 

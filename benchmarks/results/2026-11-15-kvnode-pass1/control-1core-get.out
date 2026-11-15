@@ -1,0 +1,13 @@
+round 0 kvnode@0.1.0      0.944 M ops/s     1054 ns/op  client 0.13  outside load 4.5
+round 0 kvnode@0.2.0      0.918 M ops/s     1083 ns/op  client 0.13  outside load 5.3
+round 0 kvnode@adr0011    0.993 M ops/s     1003 ns/op  client 0.13  outside load 4.4
+round 1 kvnode@0.2.0      0.901 M ops/s     1106 ns/op  client 0.12  outside load 4.2
+round 1 kvnode@adr0011    0.911 M ops/s     1092 ns/op  client 0.12  outside load 4.8
+round 1 kvnode@0.1.0      0.934 M ops/s     1072 ns/op  client 0.14  outside load 5.8
+round 2 kvnode@adr0011    0.871 M ops/s     1149 ns/op  client 0.13  outside load 10.2
+round 2 kvnode@0.1.0      0.904 M ops/s     1107 ns/op  client 0.13  outside load 4.8
+round 2 kvnode@0.2.0      0.948 M ops/s     1056 ns/op  client 0.13  outside load 3.9
+
+kvnode@0.1.0     median  0.934 M ops/s,   1072 ns/op
+kvnode@0.2.0     median  0.918 M ops/s,   1083 ns/op; ops ÷ kvnode@0.1.0 per round 0.973, 0.965, 1.049
+kvnode@adr0011   median  0.911 M ops/s,   1092 ns/op; ops ÷ kvnode@0.1.0 per round 1.052, 0.976, 0.964
