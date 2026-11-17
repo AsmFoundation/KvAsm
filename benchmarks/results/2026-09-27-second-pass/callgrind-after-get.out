@@ -2,7 +2,7 @@
 version: 1
 creator: callgrind-3.24.0
 pid: 1
-cmd:  /src/server/build/kvnode-F
+cmd:  /src/server/build/kvasm-F
 part: 1
 
 
@@ -18,7 +18,7 @@ events: Ir
 summary: 833114295
 
 
-ob=(1) /src/server/build/kvnode-F
+ob=(1) /src/server/build/kvasm-F
 fl=(15) /src/server/src//src/proto.asm
 fn=(1886) 0x000000000000ad70
 55 584480

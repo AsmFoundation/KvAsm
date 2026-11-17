@@ -1,8 +1,8 @@
-# Case-study paper: KvNode, built by an LLM coding agent
+# Case-study paper: KvAsm, built by an LLM coding agent
 
 **Measured, Not Argued: An LLM Coding Agent Builds an x86-64 Assembly Key-Value Server That Outperforms Redis on Reads.**
 
-The paper is a case study of how Claude Code (Claude Opus 5.5) built KvNode in x86-64 assembly:
+The paper is a case study of how Claude Code (Claude Opus 5.5) built KvAsm in x86-64 assembly:
 
 - the server's design, including its own HTTP/2, HPACK, gRPC, Protocol Buffers and CRC-32C implementations;
 - the agent's measured-design method and its verification stack for assembly;
@@ -21,7 +21,7 @@ the assembly is unchanged since `6871e31` apart from its version string.
 
 | File | What it is |
 |---|---|
-| [`KvNode-agentic-assembly-paper.docx`](KvNode-agentic-assembly-paper.docx) | the paper (24 pages in Word, A4) |
+| [`KvAsm-agentic-assembly-paper.docx`](KvAsm-agentic-assembly-paper.docx) | the paper (24 pages in Word, A4) |
 | [`paper.md`](paper.md) | its source text, in the small Markdown dialect described in `build_paper.py` |
 | [`build_paper.py`](build_paper.py) | renders the figures and writes the `.docx`; checks numbering, citations and key numbers first |
 | [`figures/`](figures) | the seven figures as PNG, regenerated on every build |
@@ -60,6 +60,6 @@ Regenerate the data (only needed after new commits or sessions):
 
 ```sh
 python docs/paper/tools/loc_history.py > docs/paper/data/loc_history.json
-python docs/paper/tools/session_stats.py ~/.claude/projects/K--source-KvNode --exclude <paper-session-id> > docs/paper/data/session_stats.json
-(cd <build dir> && python <repo>/docs/paper/tools/elf_sizes.py obj/*.o kvnode) > docs/paper/data/elf_sizes.json
+python docs/paper/tools/session_stats.py ~/.claude/projects/K--source-KvAsm --exclude <paper-session-id> > docs/paper/data/session_stats.json
+(cd <build dir> && python <repo>/docs/paper/tools/elf_sizes.py obj/*.o kvasm) > docs/paper/data/elf_sizes.json
 ```

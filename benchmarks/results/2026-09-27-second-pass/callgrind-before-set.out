@@ -2,7 +2,7 @@
 version: 1
 creator: callgrind-3.24.0
 pid: 1
-cmd:  /src/server/build/kvnode-B
+cmd:  /src/server/build/kvasm-B
 part: 1
 
 
@@ -18,7 +18,7 @@ events: Ir
 summary: 766264206
 
 
-ob=(1) /src/server/build/kvnode-B
+ob=(1) /src/server/build/kvasm-B
 fl=(1) ???
 fn=(938) sigwaitinfo
 0 762

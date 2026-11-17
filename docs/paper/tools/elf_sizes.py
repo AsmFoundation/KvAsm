@@ -1,6 +1,6 @@
 """Section sizes of ELF64 objects and executables, without binutils.
 
-The paper quotes how much machine code KvNode's assembly actually is, apart from the
+The paper quotes how much machine code KvAsm's assembly actually is, apart from the
 statically linked glibc that dominates the 1.1 MB binary. Git Bash on Windows has no
 ``size``/``readelf``, and the Linux dev container may be busy with other sessions'
 benchmarks, so this reads the section header table directly.
@@ -31,7 +31,7 @@ def sections(path: str) -> list[dict]:
 
     Raises:
         ValueError: If the file is not ELF64 little-endian (the only format the
-            KvNode toolchain emits); parsing anything else would misread offsets.
+            KvAsm toolchain emits); parsing anything else would misread offsets.
         OSError: If the file cannot be read.
     """
     with open(path, "rb") as fh:

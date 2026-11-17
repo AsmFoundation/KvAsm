@@ -58,21 +58,21 @@ struc Config
     .snapshot:          resq 1          ; char* path or 0
     .max_request:       resq 1          ; derived: largest acceptable gRPC message
     ; appended fields (C tests read Config only through kv_config_abi offsets)
-    .scan_mode:         resq 1          ; KVNODE_SCAN: 0 = swar, 1 = sse2 (kv_set_scan_mode)
-    .cache_l1_bits:     resq 1          ; KVNODE_CACHE_L1_BITS: 0 = no private L1
-    .cache_l2_bits:     resq 1          ; KVNODE_CACHE_L2_BITS: 0 = no private L2
-    .max_upload:        resq 1          ; KVNODE_MAX_UPLOAD_BYTES: largest value Upload stores
-    .crc_mode:          resq 1          ; KVNODE_CRC32C: a CRC_CFG_* word index
-    .hash_mode:         resq 1          ; KVNODE_HASH: a HASH_CFG_* word index
+    .scan_mode:         resq 1          ; KVASM_SCAN: 0 = swar, 1 = sse2 (kv_set_scan_mode)
+    .cache_l1_bits:     resq 1          ; KVASM_CACHE_L1_BITS: 0 = no private L1
+    .cache_l2_bits:     resq 1          ; KVASM_CACHE_L2_BITS: 0 = no private L2
+    .max_upload:        resq 1          ; KVASM_MAX_UPLOAD_BYTES: largest value Upload stores
+    .crc_mode:          resq 1          ; KVASM_CRC32C: a CRC_CFG_* word index
+    .hash_mode:         resq 1          ; KVASM_HASH: a HASH_CFG_* word index
 endstruc
 
-; KVNODE_HASH words (config.asm) — the index stored in Config.hash_mode.
+; KVASM_HASH words (config.asm) — the index stored in Config.hash_mode.
 ; main.asm maps them to store.asm's KV_HASH_* modes.
 %define HASH_CFG_AUTO       0
 %define HASH_CFG_SIPHASH    1
 %define HASH_CFG_AES        2
 
-; KVNODE_CRC32C words (config.asm) — the index stored in Config.crc_mode.
+; KVASM_CRC32C words (config.asm) — the index stored in Config.crc_mode.
 ; New words go at the end: the indices are what main.asm maps to modes.
 %define CRC_CFG_AUTO        0
 %define CRC_CFG_SSE42       1
@@ -192,7 +192,7 @@ endstruc
 ; reading at the TCP level — its receive window stays 0, so not even the
 ; GOAWAY can leave — and housekeeping destroys the connection outright.
 ; Without this, such a peer would hold its streams forever: a Download's
-; pinned record (up to KVNODE_MAX_UPLOAD_BYTES of memory), an Upload's
+; pinned record (up to KVASM_MAX_UPLOAD_BYTES of memory), an Upload's
 ; reservation, a unary response's buffer.
 %define CONN_IDLE_CLOSING   8
 struc Conn

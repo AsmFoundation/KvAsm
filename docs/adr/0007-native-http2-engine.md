@@ -3,7 +3,7 @@
 - **Status:** accepted; amended by
   [ADR 0008](0008-remove-nghttp2-from-the-server.md). nghttp2 is no longer
   "kept as the alternative": the server links no HTTP/2 library, and
-  `KVNODE_H2_ENGINE` is gone. So is everything below that names the
+  `KVASM_H2_ENGINE` is gone. So is everything below that names the
   nghttp2 engine as selectable, the engine-neutral `session` parameter, or
   the n-phases (`make itest` phases 1-7 now all run this engine; the h2spec
   baseline is `h2spec-known-failures.txt`, empty). The engine itself, its
@@ -16,18 +16,18 @@
 ## Context
 
 The request: "exceed performance on 1 core — this is why we are on
-assembly." On one core KvNode served 813k GET/s against Redis's 1.45M and
+assembly." On one core KvAsm served 813k GET/s against Redis's 1.45M and
 Valkey's 1.44M (E1, `benchmarks/results/2026-09-26-standard-monitored`).
 
 The profile says where the time goes. With `perf` (cpu-clock) and the
-`/proc` user/kernel split, KvNode with 1 worker under E1's load spends
+`/proc` user/kernel split, KvAsm with 1 worker under E1's load spends
 1,427 ns of server time per request:
 
 | Part | ns per request |
 |---|---|
 | kernel (read, sendto, epoll, loopback TCP) | ~485 |
 | **nghttp2** | **~672** |
-| KvNode assembly (parse, store, respond; incl. ~75-115 ns of prefetch stalls) | ~222 |
+| KvAsm assembly (parse, store, respond; incl. ~75-115 ns of prefetch stalls) | ~222 |
 | libc (memcpy, malloc remnants) | ~47 |
 
 Redis, profiled the same way: 720 ns per request, about half user and half
@@ -53,8 +53,8 @@ variable switches back.
 ## Decision
 
 Add `server/src/h2n.asm`, a server-side HTTP/2 engine built for exactly
-what KvNode serves. Select the engine per process with
-`KVNODE_H2_ENGINE=nghttp2|native`. Both engines share everything above the
+what KvAsm serves. Select the engine per process with
+`KVASM_H2_ENGINE=nghttp2|native`. Both engines share everything above the
 transport in `grpc.asm`:
 
 - request-body buffering and its budgets (`kv_grpc_stream_append`);
@@ -184,7 +184,7 @@ framed as flow control allows:
 - **An independent client:** the .NET client's suite (Grpc.Net.Client,
   whose HTTP/2 stack shares nothing with nghttp2) passes 190/190 on net8.0
   and net10.0 against the image with the native engine as default
-  (`KVNODE_REQUIRE_DOCKER=1`, so nothing can skip).
+  (`KVASM_REQUIRE_DOCKER=1`, so nothing can skip).
 - **A soak:** 20,000 fuzz connections (seed 7) left the server alive, with
   resident memory 988 → 1,080 KiB, and the full suite passing afterwards.
 - The Docker build runs all of it except the .NET suite. No image exists
@@ -192,8 +192,8 @@ framed as flow control allows:
 
 ## Measurements
 
-The benchmark suite gained three experiments. KvNode appears as two
-systems of the same image, `kvnode-native` and `kvnode-nghttp2`, with the
+The benchmark suite gained three experiments. KvAsm appears as two
+systems of the same image, `kvasm-native` and `kvasm-nghttp2`, with the
 engine named explicitly:
 
 - **N1:** 1 core, E1's workload, against Redis and Valkey;
@@ -256,12 +256,12 @@ where seccomp allows it.
 
 ## Consequences
 
-- KvNode owns its HTTP/2 now: protocol bugs are its bugs. The mitigations
+- KvAsm owns its HTTP/2 now: protocol bugs are its bugs. The mitigations
   are the verification above, running in every build. nghttp2 remains one
-  variable away (`KVNODE_H2_ENGINE=nghttp2`) as a fallback and as a
+  variable away (`KVASM_H2_ENGINE=nghttp2`) as a fallback and as a
   conformance and performance reference.
 - Scope stays deliberately narrow:
-  - server side only, h2c only (TLS is terminated in front of KvNode, as
+  - server side only, h2c only (TLS is terminated in front of KvAsm, as
     before);
   - no server push and no priority scheduling (both deprecated by
     RFC 9113);
@@ -448,6 +448,9 @@ changes 2 and 3.
   idle stream; an oversized DATA frame; an Upload in one DATA frame; and
   36 MB of full-size DATA frames, which must make the server top the
   connection window up.
+  - Since 0.3.0 the matrix has 500 conversations: the gRPC route is two
+    bytes shorter, so each of the three Gets has two byte offsets fewer
+    (485 in all). The cases are the same.
 - **The request-size limit** needs a server whose largest request fits
   one frame: `fuzz_h2 --limits` (itest phase 7b) sends Puts on either
   side of it and requires grpc-status 0, 3 and 8.

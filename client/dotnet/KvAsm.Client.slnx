@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/KvAsm.Client/KvAsm.Client.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/KvAsm.Client.Tests/KvAsm.Client.Tests.csproj" />
+  </Folder>
+  <Folder Name="/bench/">
+    <Project Path="bench/KvAsm.Client.Bench/KvAsm.Client.Bench.csproj" />
+  </Folder>
+</Solution>

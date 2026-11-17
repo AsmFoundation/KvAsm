@@ -1,7 +1,7 @@
 # Endpoints probe: what the storage design makes cheap, and SIMD work on values (10M keys)
 
 - **Date:** 2026-10-01, revision 783cf4a (store code as committed).
-- **Why:** the ask was to revisit how KvNode hashes and stores, where SIMD
+- **Why:** the ask was to revisit how KvAsm hashes and stores, where SIMD
   can be used, and then find more endpoints.
   - The re-read of `siphash.asm`, `cuckoo.asm`, `store.asm` and `grpc.asm`
     showed that a GET is memory-bound: two dependent misses, a bucket line
@@ -21,7 +21,7 @@
   | File | What |
   |---|---|
   | `endpoints_probe.c` | the probe: every structure, its reference check, its timing |
-  | `run.sh` | assembles the store **and the server's CRC-32C** (`crc32c.asm`) in `kvnode-dev`, builds and runs |
+  | `run.sh` | assembles the store **and the server's CRC-32C** (`crc32c.asm`) in `kvasm-dev`, builds and runs |
   | `output.txt` | the certified 10M-key run |
 
 ## How to run
@@ -29,9 +29,9 @@
 ```bash
 # full run, 10M keys, pinned to CPU 4, 5 repetitions (~40 s, ~3 GB)
 MSYS_NO_PATHCONV=1 docker exec -e REV="$(git rev-parse --short HEAD)" \
-  kvnode-dev bash /src/benchmarks/results/2026-10-01-endpoints-probe/run.sh 4 5
+  kvasm-dev bash /src/benchmarks/results/2026-10-01-endpoints-probe/run.sh 4 5
 # smoke test: 1M keys, one repetition, every check, meaningless timings
-MSYS_NO_PATHCONV=1 docker exec -e QUICK=1 kvnode-dev \
+MSYS_NO_PATHCONV=1 docker exec -e QUICK=1 kvasm-dev \
   bash /src/benchmarks/results/2026-10-01-endpoints-probe/run.sh
 ```
 
@@ -105,7 +105,7 @@ control showed host load moving D and I.
   smoke and certified runs (CPU frequency, host load). Every SIMD/scalar
   pair alternates within a run, so the ratios are paired.
 - **Certification:** the same wrapper as the services probe.
-  - Idle checks: kvnode-dev processes from `/proc/*/stat` only, VM CPU from
+  - Idle checks: kvasm-dev processes from `/proc/*/stat` only, VM CPU from
     `/proc/stat` deltas, host CPU.
   - `docker events` for the window.
   - Window: 2026-10-01T20:16:17Z .. 20:16:49Z, foreign 0, VM CPU 0.0%, host

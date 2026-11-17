@@ -1,4 +1,4 @@
-# h2spec v2.6.0 cases that fail against kvnode (src/h2n.asm, KvNode's own
+# h2spec v2.6.0 cases that fail against kvasm (src/h2n.asm, KvAsm's own
 # HTTP/2 engine). Format: "<package> | <case>", exactly as in h2spec's JUnit
 # output.
 #
@@ -8,6 +8,6 @@
 # Intentionally empty: the engine passes all 146 cases, including the eight
 # that nghttp2 >= 1.65 no longer enforces (closed-stream tracking, PRIORITY
 # validation, stream-level window overflow) — the eight this file listed
-# while kvnode linked nghttp2 1.70.0 (docs/adr/0002, superseded by 0008).
+# while kvasm linked nghttp2 1.70.0 (docs/adr/0002, superseded by 0008).
 # Any line added here is a regression to explain in
 # docs/adr/0007-native-http2-engine.md.

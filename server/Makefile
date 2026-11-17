@@ -1,8 +1,8 @@
 # =============================================================================
-# server/Makefile — KvNode server, native tests and benchmarks.
+# server/Makefile — KvAsm server, native tests and benchmarks.
 #
 # Targets:
-#   all      the kvnode server binary (build/kvnode)
+#   all      the kvasm server binary (build/kvasm)
 #   test     build and run every native test; any failure exits non-zero
 #   itest    run the real server end to end (tests/integration/run.sh):
 #            gRPC protocol and limits, concurrency, streaming Upload/Download
@@ -66,7 +66,7 @@ CORE_OBJ  := $(CORE_ASM:src/%.asm=$(BUILD)/obj/%.o)
 # HTTP/2 engine (h2n.asm, ADR 0007/0008), the event loop, config and main.
 SERVER_ASM := src/config.asm src/grpc.asm src/h2n.asm src/worker.asm src/main.asm
 SERVER_OBJ := $(SERVER_ASM:src/%.asm=$(BUILD)/obj/%.o)
-SERVER_BIN := $(BUILD)/kvnode
+SERVER_BIN := $(BUILD)/kvasm
 
 # test_abi runs first: every other test trusts the C mirror of the layouts.
 TESTS     := test_abi test_siphash test_util test_proto \
@@ -136,10 +136,10 @@ bench-store: $(BENCH_STORE_BIN)
 bench-write: $(BENCH_WRITE_BIN)
 	$(BENCH_WRITE_BIN)
 
-$(BENCH_STORE_BIN): bench/bench_store.c $(CORE_OBJ) tests/test_common.h tests/kvnode_abi.h | $(BUILD)/bench
+$(BENCH_STORE_BIN): bench/bench_store.c $(CORE_OBJ) tests/test_common.h tests/kvasm_abi.h | $(BUILD)/bench
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(CORE_OBJ) $(LDLIBS) -lm
 
-$(BENCH_WRITE_BIN): bench/bench_write.c $(CORE_OBJ) tests/test_common.h tests/kvnode_abi.h | $(BUILD)/bench
+$(BENCH_WRITE_BIN): bench/bench_write.c $(CORE_OBJ) tests/test_common.h tests/kvasm_abi.h | $(BUILD)/bench
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(CORE_OBJ) $(LDLIBS) -lm
 
 $(BUILD)/obj/%.o: src/%.asm $(INCLUDES) | $(BUILD)/obj
@@ -148,17 +148,17 @@ $(BUILD)/obj/%.o: src/%.asm $(INCLUDES) | $(BUILD)/obj
 $(BUILD)/bench/%.o: bench/ds/%.asm $(INCLUDES) | $(BUILD)/bench
 	$(NASM) $(NASMFLAGS) -o $@ $<
 
-$(BENCH_BIN): bench/bench_ds.c $(CORE_OBJ) $(BENCH_OBJ) tests/test_common.h tests/kvnode_abi.h | $(BUILD)/bench
+$(BENCH_BIN): bench/bench_ds.c $(CORE_OBJ) $(BENCH_OBJ) tests/test_common.h tests/kvasm_abi.h | $(BUILD)/bench
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(CORE_OBJ) $(BENCH_OBJ) $(LDLIBS)
 
 # test_hpack links nghttp2 purely as an oracle: its deflater produces the
 # random blocks and its inflater cross-checks the RFC vectors, so the native
 # decoder is compared with an independent implementation, not with itself.
-$(BUILD)/tests/test_hpack: tests/test_hpack.c $(CORE_OBJ) tests/test_common.h tests/kvnode_abi.h | $(BUILD)/tests
+$(BUILD)/tests/test_hpack: tests/test_hpack.c $(CORE_OBJ) tests/test_common.h tests/kvasm_abi.h | $(BUILD)/tests
 	$(CC) $(CFLAGS) $(LDFLAGS) -I $(NGHTTP2_PREFIX)/include -o $@ $< $(CORE_OBJ) \
 	    $(NGHTTP2_PREFIX)/lib/libnghttp2.a $(LDLIBS)
 
-$(BUILD)/tests/%: tests/%.c $(CORE_OBJ) tests/test_common.h tests/kvnode_abi.h | $(BUILD)/tests
+$(BUILD)/tests/%: tests/%.c $(CORE_OBJ) tests/test_common.h tests/kvasm_abi.h | $(BUILD)/tests
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(CORE_OBJ) $(LDLIBS)
 
 # The client links only libnghttp2: it must not share code with the server
@@ -174,7 +174,7 @@ $(FUZZ_BIN): tests/integration/fuzz_h2.c $(CORE_OBJ) tests/test_common.h | $(BUI
 
 # mksnap reuses the server's SipHash on purpose: its checksum must be the one
 # the loader verifies (the C# writer is checked against the same vectors).
-$(MKSNAP_BIN): tests/integration/mksnap.c $(BUILD)/obj/siphash.o $(ITEST_DEPS) tests/kvnode_abi.h | $(BUILD)/tests
+$(MKSNAP_BIN): tests/integration/mksnap.c $(BUILD)/obj/siphash.o $(ITEST_DEPS) tests/kvasm_abi.h | $(BUILD)/tests
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(BUILD)/obj/siphash.o $(LDLIBS)
 
 $(BUILD)/obj $(BUILD)/tests $(BUILD)/bench:

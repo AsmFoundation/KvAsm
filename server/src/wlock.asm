@@ -13,7 +13,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 
 %define SPIN_LIMIT  128                 ; ~128 PAUSEs before sleeping
 

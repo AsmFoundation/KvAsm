@@ -2,7 +2,7 @@
 version: 1
 creator: callgrind-3.24.0
 pid: 1
-cmd:  /pc/kvnode-head
+cmd:  /pc/kvasm-head
 part: 1
 
 
@@ -18,7 +18,7 @@ events: Ir
 summary: 942723760
 
 
-ob=(1) /pc/kvnode-head
+ob=(1) /pc/kvasm-head
 fl=(8) /pc/head/server/src//src/store.asm
 fn=(2076) 0x000000000000bcb6
 0xbcb6 865 521957

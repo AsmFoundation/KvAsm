@@ -1,7 +1,7 @@
 ; =============================================================================
 ; cuckoo.asm — bucketized cuckoo hash index with lock-free readers.
 ;
-; Layout: 2^k buckets of one cache line each (see Bucket in kvnode.inc):
+; Layout: 2^k buckets of one cache line each (see Bucket in kvasm.inc):
 ; version word, six one-byte tags, six record pointers. Every key has exactly
 ; two candidate buckets, so a lookup reads at most two cache lines — O(1) in
 ; the worst case, and the two addresses are known up front so the CPU fetches
@@ -35,7 +35,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 
 %define ALT_MUL     0x9E3779B97F4A7C15      ; tag -> bucket-offset mixer
 %define GEN_LIMIT   0x0000000000FFFFFF      ; 24-bit visited-set generation
@@ -160,7 +160,7 @@ kv_set_scan_mode:
 ; @param  rdi  Table*   @param rsi  h1   @param rdx  h2
 ; @returns nothing. Clobbers rax, rcx, r8, r9, r10.
 ; @remarks Why: under GET load the bucket's first cache miss was the single
-;          hottest instruction in KvNode (50% of the lookup's samples, on the
+;          hottest instruction in KvAsm (50% of the lookup's samples, on the
 ;          tag load). A request can be hashed long before it is looked up;
 ;          issuing both bucket loads at parse time lets the misses of a whole
 ;          batch of requests overlap instead of stalling one after another.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ab.py — paired A/B of two kvnode binaries on one pinned core.
+"""ab.py — paired A/B of two kvasm binaries on one pinned core.
 
 Usage: ab.py BLOCKS CONFIG... where CONFIG is "blocking:100", "busy:100",
 "blocking:16" (client mode : value bytes).
@@ -22,7 +22,7 @@ import time
 
 KVB = "/src/benchmarks/kvbench/build/kvbench"
 PORT = 50191
-BIN = {"A": "/tmp/kvnode-A", "B": "/tmp/kvnode-B"}
+BIN = {"A": "/tmp/kvasm-A", "B": "/tmp/kvasm-B"}
 TICK = os.sysconf("SC_CLK_TCK")
 
 
@@ -34,7 +34,7 @@ def ticks(pid):
 
 def run(variant, mode, vsize):
     """One fresh-server run; returns (ops/s, server CPU ns per op)."""
-    env = dict(os.environ, KVNODE_PORT=str(PORT), KVNODE_WORKERS="1", KVNODE_CAPACITY="1250000")
+    env = dict(os.environ, KVASM_PORT=str(PORT), KVASM_WORKERS="1", KVASM_CAPACITY="1250000")
     log = open("/tmp/ab.srv.log", "w")
     srv = subprocess.Popen(["taskset", "-c", "2", BIN[variant]], env=env, stderr=log)
     for _ in range(200):

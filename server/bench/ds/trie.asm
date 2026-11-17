@@ -26,7 +26,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 
 %define PTR_MASK    0x00FFFFFFFFFFFFFF  ; clears the critical-bit tag
 %define NODE_SIZE   16

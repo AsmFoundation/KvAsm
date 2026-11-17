@@ -108,7 +108,7 @@
    "data": 0,
    "bss": 0
   },
-  "kvnode": {
+  "kvasm": {
    "text": 622497,
    "rodata": 253543,
    "data": 30312,

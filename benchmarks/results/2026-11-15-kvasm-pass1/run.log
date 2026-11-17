@@ -1,0 +1,52 @@
+host load outside the container VM: 4.7 of 32 logical CPUs
+  WARNING: other programs are using 4.7 logical CPUs; they compete with the servers and the client, and results will carry that noise. Close them for a publishable run.
+recording environment and calibrating the CPU clock ...
+  cpu clock factor 1.0356
+== E0 Thread-count tuning: 18 runs, ~7 min
+[E0 1/18] kvasm     c2 t1 get100-v100-k1000000-uni-c64d16                                    902,021/s  eta 5m
+[E0 2/18] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,347,700/s  eta 4m
+[E0 3/18] kvasm     c8 t8 get100-v100-k1000000-uni-c64d16                                  3,746,302/s  eta 4m
+[E0 4/18] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  1,836,120/s  eta 4m
+[E0 5/18] kvasm     c4 t3 get100-v100-k1000000-uni-c64d16                                  3,174,886/s  eta 4m
+[E0 6/18] kvasm     c8 t7 get100-v100-k1000000-uni-c64d16                                  5,050,368/s  eta 3m
+[E0 7/18] kvasm     c8 t8 get100-v100-k1000000-uni-c64d16                                  5,333,941/s  eta 3m
+[E0 8/18] kvasm     c8 t7 get100-v100-k1000000-uni-c64d16                                  5,047,112/s  eta 3m
+[E0 9/18] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,392,031/s  eta 2m
+[E0 10/18] kvasm     c2 t1 get100-v100-k1000000-uni-c64d16                                    936,819/s  eta 2m
+[E0 11/18] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,446,199/s  eta 2m
+[E0 12/18] kvasm     c4 t3 get100-v100-k1000000-uni-c64d16                                  3,752,250/s  eta 2m
+[E0 13/18] kvasm     c4 t3 get100-v100-k1000000-uni-c64d16                                  3,735,464/s  eta 1m
+[E0 14/18] kvasm     c8 t7 get100-v100-k1000000-uni-c64d16                                  5,277,297/s  eta 1m
+[E0 15/18] kvasm     c2 t1 get100-v100-k1000000-uni-c64d16                                    935,868/s  eta 1m
+[E0 16/18] kvasm     c8 t8 get100-v100-k1000000-uni-c64d16                                  5,496,962/s  eta 1m
+[E0 17/18] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,658,541/s  eta 0m
+[E0 18/18] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,217,345/s  eta 0m
+== E1 Throughput scaling: 24 runs, ~11 min
+[E1 1/24] kvasm     c8 t8 get100-v100-k1000000-uni-c64d16                                  5,275,937/s  eta 7m
+[E1 2/24] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,037,295/s  eta 7m
+[E1 3/24] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    915,774/s  eta 7m
+[E1 4/24] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,204,393/s  eta 6m
+[E1 5/24] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    912,688/s  eta 6m
+[E1 6/24] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  1,960,080/s  eta 6m
+[E1 7/24] kvasm     c8 t8 get100-v100-k1000000-uni-c64d16                                  5,118,036/s  eta 5m
+[E1 8/24] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,370,962/s  eta 5m
+[E1 9/24] kvasm     c8 t8 get100-v100-k1000000-uni-c64d16                                  5,087,121/s  eta 5m
+[E1 10/24] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    911,435/s  eta 4m
+[E1 11/24] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,060,495/s  eta 4m
+[E1 12/24] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,617,879/s  eta 4m
+[E1 13/24] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,335,780/s  eta 3m
+[E1 14/24] kvasm     c8 t8 get100-v100-k1000000-uni-c64d16                                  5,398,201/s  eta 3m
+[E1 15/24] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,357,547/s  eta 3m
+[E1 16/24] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    919,957/s  eta 3m
+[E1 17/24] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    935,405/s  eta 2m
+[E1 18/24] kvasm     c8 t8 get100-v100-k1000000-uni-c64d16                                  5,227,648/s  eta 2m
+[E1 19/24] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,687,902/s  eta 2m
+[E1 20/24] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,048,393/s  eta 1m
+[E1 21/24] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,391,380/s  eta 1m
+[E1 22/24] kvasm     c8 t8 get100-v100-k1000000-uni-c64d16                                  5,407,394/s  eta 1m
+[E1 23/24] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,615,832/s  eta 0m
+[E1 24/24] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    949,059/s  eta 0m
+== E2 Read/write mixes: 24 runs, ~11 min
+[E2 1/24] kvasm     c4 t4 get50-v100-k1000000-uni-c64d16                                   3,810,809/s  eta 7m
+[E2 2/24] kvasm     c4 t4 get0-v100-k1000000-uni-c64d16                                    4,000,114/s  eta 7m
+[E2 3/24] kvasm     c4 t4 get90-v100-k1000000-zipf0.99-c64d16                              4,482,394/s  eta 7m

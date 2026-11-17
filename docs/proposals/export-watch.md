@@ -74,7 +74,7 @@
   duplicates, resumable after a disconnect.
 - One filter language for both: exact keys, prefixes, globs, regular
   expressions, combined with include and exclude lists.
-- Keep KvNode's properties:
+- Keep KvAsm's properties:
   - Get unchanged and readers lock-free;
   - Put and Delete O(1) with a small constant;
   - no new libraries (ADR 0008);
@@ -92,7 +92,7 @@
 - Durability. Export feeds snapshot files that the client writes; the
   server still never writes to disk.
 - Multi-key transactions.
-- Authentication. KvNode has none; §10 covers what enumeration exposes.
+- Authentication. KvAsm has none; §10 covers what enumeration exposes.
 
 ## 2. API
 
@@ -100,7 +100,7 @@ New methods in the existing service, which is backward compatible: old
 clients never call them.
 
 ```proto
-service KvNode {
+service KvAsm {
   // ... Get, Put, Delete unchanged ...
 
   // Streams the keys (and values) that match a filter, as they were at one
@@ -196,10 +196,10 @@ failure before the first message is a Trailers-Only response.
 | `OK` | complete, after `summary` | never: a watch ends by cancel, error or drain |
 | `INVALID_ARGUMENT` | malformed filter, pattern syntax, over a filter limit ("filter too complex") | the same |
 | `OUT_OF_RANGE` | — | `start_revision` older than the retained history, the watcher fell behind it, or `incarnation` names another process |
-| `RESOURCE_EXHAUSTED` | too many concurrent exports, or aborted because the churn during it exceeded `KVNODE_EXPORT_RETAIN_MB` | too many watchers; an `initial_state` cut hits the export limits |
-| `DEADLINE_EXCEEDED` | ran longer than `KVNODE_EXPORT_TIMEOUT_SEC` | — |
+| `RESOURCE_EXHAUSTED` | too many concurrent exports, or aborted because the churn during it exceeded `KVASM_EXPORT_RETAIN_MB` | too many watchers; an `initial_state` cut hits the export limits |
+| `DEADLINE_EXCEEDED` | ran longer than `KVASM_EXPORT_TIMEOUT_SEC` | — |
 | `UNAVAILABLE` | the server is draining (SIGTERM) | the server is draining |
-| `UNIMPLEMENTED` | Export is disabled (`KVNODE_EXPORT=off`) | Watch is disabled (`KVNODE_WATCH_HISTORY=0`) |
+| `UNIMPLEMENTED` | Export is disabled (`KVASM_EXPORT=off`) | Watch is disabled (`KVASM_WATCH_HISTORY=0`) |
 | `CANCELLED` | the client reset the stream | the same |
 
 ## 3. Semantics
@@ -313,7 +313,7 @@ Official clients send keys longer than 64 bytes as `0xFF ‖ SHA-512(key)`
   mark such entries with `KeyCompaction.IsCompacted`.
 
 A keyspace that needs patterns over keys longer than 64 bytes must run all
-its clients in raw mode, with `KVNODE_MAX_KEY_BYTES` raised to fit (open
+its clients in raw mode, with `KVASM_MAX_KEY_BYTES` raised to fit (open
 decision 2).
 
 ### 3.5 List-then-watch
@@ -360,7 +360,7 @@ nothing missed. Two ways:
 | anything else | itself |
 
 - **Strictness.** An unterminated `[` or a trailing `\` is
-  `INVALID_ARGUMENT`. Redis tolerates both; KvNode rejects a pattern whose
+  `INVALID_ARGUMENT`. Redis tolerates both; KvAsm rejects a pattern whose
   meaning is unclear.
 - **Compilation.** A glob compiles to the same automaton as a regex:
   `*` → `(?s:.*)`, `?` → `(?s:.)`, sets → classes.
@@ -394,7 +394,7 @@ nothing missed. Two ways:
     one short pattern and one short key. That is ReDoS.
   - Redis shipped exactly this for globs: **CVE-2022-36021**, where a
     crafted `KEYS`/`SCAN` pattern hangs the server at 100% CPU.
-- **The choice.** KvNode compiles a filter into a deterministic automaton.
+- **The choice.** KvAsm compiles a filter into a deterministic automaton.
   Matching a key then costs one table step per key byte, stops at the
   first byte from which no match is possible, and has no worst case beyond
   the key's length.
@@ -410,7 +410,7 @@ nothing missed. Two ways:
    every transition treats alike (typically 2-40). The DFA table is then
    `states × classes`, not `states × 256`.
 4. **Subset construction** into a DFA, with two limits:
-   - `KVNODE_FILTER_MAX_STATES` (default 2,048);
+   - `KVASM_FILTER_MAX_STATES` (default 2,048);
    - at most 131,072 transitions, so a table of 16-bit state ids is at
      most 256 KiB, sized to fit in L2.
 
@@ -478,7 +478,7 @@ between the writes it contains and the writes it does not, with no lock.
 
 **Then, in order:**
 
-1. **Hold.** Set one of the `KVNODE_MAX_EXPORTS` reserved QSBR reader slots
+1. **Hold.** Set one of the `KVASM_MAX_EXPORTS` reserved QSBR reader slots
    to the current epoch E (§5.5).
 2. **Announce.** Set the cut's bit in `Table.cut_mask`, with its revision
    `c.R` marked pending.
@@ -604,7 +604,7 @@ The cut holds pointers to records that writers may replace or delete after R.
   slot spans passes.
 - **Records created after R** are not in the cut, but if they are retired
   while it is held, they wait too. Retention is therefore the churn during
-  the export, bounded by `KVNODE_EXPORT_RETAIN_MB` (§5.7).
+  the export, bounded by `KVASM_EXPORT_RETAIN_MB` (§5.7).
 
 ### 5.6 Memory
 
@@ -625,11 +625,11 @@ The cut holds pointers to records that writers may replace or delete after R.
     gRPC stream.
   - A 1M-key export is ~25 ms of CPU, spread over passes.
 - **Limits:**
-  - `KVNODE_MAX_EXPORTS` (default 2) concurrent cuts, `initial_state`
+  - `KVASM_MAX_EXPORTS` (default 2) concurrent cuts, `initial_state`
     watches included; past it, `RESOURCE_EXHAUSTED`;
-  - `KVNODE_EXPORT_TIMEOUT_SEC` (default 600).
+  - `KVASM_EXPORT_TIMEOUT_SEC` (default 600).
 - **Abort is cooperative.**
-  - If retained records exceed `KVNODE_EXPORT_RETAIN_MB` (checked by
+  - If retained records exceed `KVASM_EXPORT_RETAIN_MB` (checked by
     writers in the reclaim step), the writer flags the oldest cut for abort
     and rings its worker's doorbell.
   - That worker ends the stream with `RESOURCE_EXHAUSTED` and releases the
@@ -657,7 +657,7 @@ The cut holds pointers to records that writers may replace or delete after R.
 
 ### 6.1 The history ring
 
-The ring holds `KVNODE_WATCH_HISTORY` 32-byte events (a power of two, two
+The ring holds `KVASM_WATCH_HISTORY` 32-byte events (a power of two, two
 per cache line), allocated once at startup:
 
 | Offset | Field | Meaning |
@@ -698,7 +698,7 @@ release held records whose aux < hist_tail   // bounded per write (see 6.3)
     Download's pin table do.
   - Concurrent writers would give reclamation its own synchronization, for
     all of them at once.
-- **When Watch is disabled** (`KVNODE_WATCH_HISTORY=0`):
+- **When Watch is disabled** (`KVASM_WATCH_HISTORY=0`):
   - the fetch-and-add remains;
   - so does a store into a small completion ring, which keeps the stable
     revision exact for cuts (§3.1);
@@ -715,7 +715,7 @@ count.**
   QSBR limbo list. `aux` holds the revision of the newest event that
   references the record; at most two do, its PUT and its DELETE, and the
   DELETE is newer. `aux` is writer-only today and unused while a record is
-  live (`kvnode.inc`), so the record header does not grow.
+  live (`kvasm.inc`), so the record header does not grow.
 - **Release.** Each write moves up to 8 FIFO heads whose `aux < hist_tail`
   into limbo, stamped with the current epoch. From there QSBR frees them
   after a grace period as usual.
@@ -729,7 +729,7 @@ count.**
   then touch a record written thousands of events earlier, which is a DRAM
   miss inside the critical section on nearly every write.
 - **Byte budget.** Held records are counted in `hist_held_bytes`. Above
-  `KVNODE_WATCH_HISTORY_MB` a writer also advances `hist_tail` by up to 8
+  `KVASM_WATCH_HISTORY_MB` a writer also advances `hist_tail` by up to 8
   events per write. That is a soft limit enforced amortized, so each write
   stays O(1). Large values thus shorten the history window instead of
   exhausting memory.
@@ -845,7 +845,7 @@ lost:
   that wake-ups are not free (~4.5 µs per cross-vCPU wake on this host).
   Gate G4 measures CPU per event across event rates. If the middle ground
   is costly, coalescing follows: at most one wake per
-  `KVNODE_WATCH_COALESCE_US`.
+  `KVASM_WATCH_COALESCE_US`.
 
 ### 6.6 initial_state
 
@@ -885,7 +885,7 @@ per interval per worker, not per watcher.
     worker, when any of its watchers needs the key.
 - **Fan-out.** At 1M writes per second, 100 regex watchers on one worker
   would cost that worker ~2-4 s of CPU per second. Watch therefore caps
-  watchers (`KVNODE_MAX_WATCHERS`). Per-worker indexes are the scaling
+  watchers (`KVASM_MAX_WATCHERS`). Per-worker indexes are the scaling
   step: an exact `h1` table, a prefix table, and one union DFA with
   per-watcher accept sets. They are gated by measurement (G5).
 
@@ -924,7 +924,7 @@ what it must also cover, so that there is one mechanism.
 5. **Idle timeout.** `housekeeping` counts only received bytes as activity.
    A connection with a live producer stream is not idle. Its liveness
    comes from client keepalive PINGs, which grpc-dotnet sends every 60 s
-   with KvNode's options. Server-sent PINGs are a later option.
+   with KvAsm's options. Server-sent PINGs are a later option.
 6. **Drain.** At `begin_drain`, watch streams end at once with
    `UNAVAILABLE`: they would never finish. Exports continue until the grace
    deadline.
@@ -938,8 +938,8 @@ what it must also cover, so that there is one mechanism.
 
 | File | Change |
 |---|---|
-| `proto/kvnode/v1/kvnode.proto` | the messages and methods of §2 |
-| `server/include/kvnode.inc` | `Table`: `revision` and the history head/tail next to `epoch` (both polled by readers once per pass); `incarnation` (immutable line); `cut_mask`, cut and history pointers; the `HistEvent` and `Cut` structs; `Rec.aux` documented as "newest history revision while live" |
+| `proto/kvasm/v1/kvasm.proto` | the messages and methods of §2 |
+| `server/include/kvasm.inc` | `Table`: `revision` and the history head/tail next to `epoch` (both polled by readers once per pass); `incarnation` (immutable line); `cut_mask`, cut and history pointers; the `HistEvent` and `Cut` structs; `Rec.aux` documented as "newest history revision while live" |
 | `server/src/store.asm` | revision fetch-and-add and slot publication (every publishing path: Put, Delete, Upload's publish, snapshot load); history append and held FIFO; retire deferral; reserved QSBR slots for cuts; retention accounting and abort flags |
 | `server/src/cuckoo.asm` | the page-preserve hook before bucket stores (publish, replace, remove, displacement moves) |
 | `server/src/filter.asm` (new) | filter parser, NFA, byte classes, DFA construction, executor, exact/prefix fast paths |
@@ -964,7 +964,7 @@ await using KvExport export = await kv.ExportAsync(filter);
 Console.WriteLine($"as of revision {export.Revision}");
 await foreach (KvEntry e in export) { /* e.Key, e.Value */ }
 
-// Live data survives a restart: write it as a KVNSNAP1 snapshot. Keys are
+// Live data survives a restart: write it as a KVASNAP1 snapshot. Keys are
 // already in wire form, so the writer must not compact them again.
 await SnapshotFile.WriteExportAsync(kv, "/data/seed.kvs", KeyFilter.All);
 
@@ -979,17 +979,17 @@ invalid value stops startup.
 
 | Variable | Range | Default | Meaning |
 |---|---|---|---|
-| `KVNODE_EXPORT` | `off` \| `on` | `off` (open decision 1) | enables Export |
-| `KVNODE_MAX_EXPORTS` | 1-16 | 2 | concurrent cuts, `initial_state` watches included |
-| `KVNODE_EXPORT_RETAIN_MB` | 1-1048576 | 256 | records kept alive by cuts before the oldest is aborted |
-| `KVNODE_EXPORT_TIMEOUT_SEC` | 0-86400 | 600 | longest export; 0 = none |
-| `KVNODE_WATCH_HISTORY` | 0, or a power of two 1024-16777216 | 0 (open decision 1) | events retained; 0 disables Watch and costs nothing |
-| `KVNODE_WATCH_HISTORY_MB` | 1-1048576 | 64 | replaced/deleted records kept for the history (soft) |
-| `KVNODE_MAX_WATCHERS` | 1-1000000 | 1024 | watchers per process |
-| `KVNODE_FILTER_MAX_STATES` | 16-65536 | 2048 | DFA states per filter |
+| `KVASM_EXPORT` | `off` \| `on` | `off` (open decision 1) | enables Export |
+| `KVASM_MAX_EXPORTS` | 1-16 | 2 | concurrent cuts, `initial_state` watches included |
+| `KVASM_EXPORT_RETAIN_MB` | 1-1048576 | 256 | records kept alive by cuts before the oldest is aborted |
+| `KVASM_EXPORT_TIMEOUT_SEC` | 0-86400 | 600 | longest export; 0 = none |
+| `KVASM_WATCH_HISTORY` | 0, or a power of two 1024-16777216 | 0 (open decision 1) | events retained; 0 disables Watch and costs nothing |
+| `KVASM_WATCH_HISTORY_MB` | 1-1048576 | 64 | replaced/deleted records kept for the history (soft) |
+| `KVASM_MAX_WATCHERS` | 1-1000000 | 1024 | watchers per process |
+| `KVASM_FILTER_MAX_STATES` | 16-65536 | 2048 | DFA states per filter |
 
 - **Naming.** "Cut" is used for the in-memory point-in-time view so it
-  cannot be confused with `KVNODE_SNAPSHOT`, the snapshot *file*.
+  cannot be confused with `KVASM_SNAPSHOT`, the snapshot *file*.
 - **Memory.** The history costs 32 bytes per event at startup (2 MiB for
   65,536 events), plus the held records within its budget.
 
@@ -998,7 +998,7 @@ invalid value stops startup.
 - **Enumeration is new exposure.**
   - Today a client that can reach the port can read any key *it can name*.
     With Export it can read every key, and with Watch every future write.
-  - KvNode has no authentication (OPERATIONS.md).
+  - KvAsm has no authentication (OPERATIONS.md).
   - Hence the proposed default: both **off** until an operator enables
     them (open decision 1).
 - **Pattern DoS** is excluded by construction:

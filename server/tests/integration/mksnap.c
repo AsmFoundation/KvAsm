@@ -3,7 +3,7 @@
  *
  * Usage: mksnap PATH COUNT [corrupt]
  *
- * Writes COUNT records from snapgen.h in the KVNSNAP1 format — byte for byte
+ * Writes COUNT records from snapgen.h in the KVASNAP1 format — byte for byte
  * what the C# SnapshotWriter produces — with the checksum computed by the
  * server's own kv_siphash128. With "corrupt", one byte in the middle of the
  * record area is flipped AFTER the checksum was computed: the server must
@@ -11,7 +11,7 @@
  * integrity before parsing any record, so the flipped byte can never be
  * reported as a different, misleading error).
  */
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 #include "snapgen.h"
 #include "test_common.h"
 
@@ -47,7 +47,7 @@ int main(int argc, char **argv) {
   size_t n = 0;
   uint32_t version = 1, flags = 0;
   uint64_t reserved = 0;
-  append(buf, &n, "KVNSNAP1", 8);
+  append(buf, &n, "KVASNAP1", 8);
   append(buf, &n, &version, 4);
   append(buf, &n, &flags, 4);
   append(buf, &n, &count, 8);
@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
   static const uint64_t zero_key[2] = {0, 0};
   uint64_t h[2];
   kv_siphash128(buf, n, zero_key, h);        /* over every byte before the trailer */
-  append(buf, &n, "KVNSEND1", 8);
+  append(buf, &n, "KVASEND1", 8);
   append(buf, &n, &h[0], 8);
   if (corrupt) buf[32 + (n - 48) / 2] ^= 0x40;
 

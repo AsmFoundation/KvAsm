@@ -1,10 +1,10 @@
 # Native HTTP/2 engine with the header-block cache — N1-N3, 2026-09-26
 
-The second measurement of KvNode's native HTTP/2 engine
+The second measurement of KvAsm's native HTTP/2 engine
 ([ADR 0007](../../../docs/adr/0007-native-http2-engine.md)). The full
 report is in [REPORT.md](REPORT.md); the raw records are in `raw.jsonl`.
 
-**What was measured.** The `kvnode:0.1.0` image built from the working tree
+**What was measured.** The `kvasm:0.1.0` image built from the working tree
 with the engine's first version plus two changes that a profile pointed
 to:
 
@@ -23,7 +23,7 @@ engine explicitly anyway.
 
 **Host:** outside load was a median of 5.0, 7.7 and 5.0 logical CPUs for
 N1, N2 and N3, close to the published standard session (2-7). Absolute
-levels match it: KvNode with nghttp2 did 785k GET/s on 1 core here, against
+levels match it: KvAsm with nghttp2 did 785k GET/s on 1 core here, against
 813k in E1.
 
 | Experiment | Result (native ÷ X, paired over 6 blocks, sign test) |

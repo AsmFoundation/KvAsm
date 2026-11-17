@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Throughput / CPU / allocation benchmark of the .NET client's streaming
+    calls against a running KvAsm server (see Program.cs). Not packaged,
+    not part of the test run; published as a self-contained Linux executable
+    so it runs next to a pinned server inside the dev VM
+    (benchmarks/results/2026-09-30-streaming/abdotnet.py).
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Server GC off: one client process, and the allocation figures should
+         reflect the workstation collector a typical client app runs. -->
+    <ServerGarbageCollector>false</ServerGarbageCollector>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KvAsm.Client\KvAsm.Client.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -8,7 +8,7 @@ Usage: cgcount.py DUMP NM
 Prints total instructions (Ir), the number of requests, Ir per request, and
 per-request call counts of the functions the second pass targets.
 
-Why the NM file: callgrind resolves KvNode's file and line (DWARF) but not
+Why the NM file: callgrind resolves KvAsm's file and line (DWARF) but not
 its function names — NASM's DWARF has no function entries — so every
 function appears as its link-time address ("fn=(id) 0x...cf20"). Those are
 mapped back to the enclosing symbol here (nearest preceding text symbol that

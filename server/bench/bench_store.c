@@ -45,7 +45,7 @@
 #include <math.h>
 #include <sched.h>
 
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 #include "test_common.h"
 
 enum { KEY_LEN = 16, VAL_LEN = 100, SEQ_LEN = 1 << 20, MAX_BATCH = 64 };

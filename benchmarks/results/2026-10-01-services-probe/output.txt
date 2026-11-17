@@ -115,7 +115,7 @@ GEO: points within a radius, among 10000000 uniform points (a 445 x 190 km regio
 all checks passed
 
 == certification (host side, docker events for the run's window) ==
-1790875268 container exec_create: bash /src/benchmarks/results/2026-10-01-services-probe/run.sh 4 5 kvnode-dev
-1790875268 container exec_start: bash /src/benchmarks/results/2026-10-01-services-probe/run.sh 4 5 kvnode-dev
+1790875268 container exec_create: bash /src/benchmarks/results/2026-10-01-services-probe/run.sh 4 5 kvasm-dev
+1790875268 container exec_start: bash /src/benchmarks/results/2026-10-01-services-probe/run.sh 4 5 kvasm-dev
 attempt 1 window 2026-10-01T17:21:07Z .. 2026-10-01T17:21:45Z rc=0 foreign=0
-idle before the run: kvnode-dev had no process besides pid 1, zombies and the six D-state trees stuck since 2026-09-29; VM CPU 0.2% over 2 s; host CPU 15.3% (desktop: browsers, a game client, a NumSharp testhost.exe spinning since 2026-09-26)
+idle before the run: kvasm-dev had no process besides pid 1, zombies and the six D-state trees stuck since 2026-09-29; VM CPU 0.2% over 2 s; host CPU 15.3% (desktop: browsers, a game client, a NumSharp testhost.exe spinning since 2026-09-26)

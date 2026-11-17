@@ -38,11 +38,11 @@
     "dirty": true
   },
   "images": {
-    "kvnode": {
-      "image": "kvnode:0.1.0",
+    "kvasm": {
+      "image": "kvasm:0.1.0",
       "id": "sha256:a64a7e0fb9922ab88ac5a2d9e8faf1e8248412617a7c53fa31d893381e8b8a99",
       "digests": [
-        "kvnode@sha256:a64a7e0fb9922ab88ac5a2d9e8faf1e8248412617a7c53fa31d893381e8b8a99"
+        "kvasm@sha256:a64a7e0fb9922ab88ac5a2d9e8faf1e8248412617a7c53fa31d893381e8b8a99"
       ]
     },
     "redis": {
@@ -81,10 +81,10 @@
       ]
     },
     "kvbench": {
-      "image": "kvnode-kvbench:dev",
+      "image": "kvasm-kvbench:dev",
       "id": "sha256:d6eca327b6635fa589e943073f3f7a6cb9f87bcd66968c2ef04705d6d2d1a7a0",
       "digests": [
-        "kvnode-kvbench@sha256:d6eca327b6635fa589e943073f3f7a6cb9f87bcd66968c2ef04705d6d2d1a7a0"
+        "kvasm-kvbench@sha256:d6eca327b6635fa589e943073f3f7a6cb9f87bcd66968c2ef04705d6d2d1a7a0"
       ]
     },
     "memtier": {
@@ -95,20 +95,20 @@
       ]
     },
     "h2load": {
-      "image": "kvnode-toolchain:latest",
+      "image": "kvasm-toolchain:latest",
       "id": "sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d",
       "digests": [
-        "kvnode-toolchain@sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d"
+        "kvasm-toolchain@sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d"
       ]
     }
   },
   "systems": {
-    "kvnode": {
-      "title": "KvNode 0.1.0",
-      "image": "kvnode:0.1.0",
+    "kvasm": {
+      "title": "KvAsm 0.1.0",
+      "image": "kvasm:0.1.0",
       "protocol": "grpc",
-      "notes": "gRPC over h2c; one worker thread per core (KVNODE_WORKERS).",
-      "build": "docker build --target runtime -t kvnode:0.1.0 . (repository root)"
+      "notes": "gRPC over h2c; one worker thread per core (KVASM_WORKERS).",
+      "build": "docker build --target runtime -t kvasm:0.1.0 . (repository root)"
     },
     "redis": {
       "title": "Redis 8.10.2",
@@ -149,10 +149,10 @@
   "experiments": [
     {
       "id": "N1",
-      "title": "One core: KvNode vs Redis and Valkey",
-      "question": "Does KvNode beat Redis and Valkey on a single core? E1's workload.",
+      "title": "One core: KvAsm vs Redis and Valkey",
+      "question": "Does KvAsm beat Redis and Valkey on a single core? E1's workload.",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey"
       ],
@@ -182,7 +182,7 @@
       "title": "One core: per-request floor",
       "question": "E5's no-op round trip on 1 core: gRPC health check against PING on Redis and Valkey.",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey"
       ],

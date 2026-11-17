@@ -26,7 +26,7 @@ read them in that light.
 | Commit | What | Findings |
 |---|---|---|
 | `8111e66` | replies of any length framed in place and sent as they are framed; the response template; one `epoll_wait` per pass; 64-bit SipHash placement | 1, 2 (64-bit), 3, 4, 9 |
-| `1c3f20b` | AES-128 through AES-NI as the default key hash (`KVNODE_HASH`), SipHash-2-4 the fallback | 2 (AES) |
+| `1c3f20b` | AES-128 through AES-NI as the default key hash (`KVASM_HASH`), SipHash-2-4 the fallback | 2 (AES) |
 | `dc59368` | protobuf fast path; streams opened and closed inline; a key's buckets located once | 5, 7, 8 |
 | `913c234` | a unary request's DATA frame handled right behind its HEADERS; `fuzz_h2`'s request matrix | 6 |
 
@@ -357,16 +357,16 @@ GETs of multi-frame values past the high-water mark against a slow reader
 ## Reproducing
 
 ```sh
-# inside kvnode-dev, a variant built in /pc/<name>/server by `make all`
+# inside kvasm-dev, a variant built in /pc/<name>/server by `make all`
 bash build_bench.sh head && bash build_bench.sh all
 bash abbench.sh get 13 10 head all            # in-process ns per request
-bash getcost.sh /pc/all/server/build/kvnode all 2000 16384 "" 5
-bash abpair.sh /pc/head/server/build/kvnode /pc/all/server/build/kvnode 6 2000 16384 ""
+bash getcost.sh /pc/all/server/build/kvasm all 2000 16384 "" 5
+bash abpair.sh /pc/head/server/build/kvasm /pc/all/server/build/kvasm 6 2000 16384 ""
 # from the host
-AUDIT_WORK=<dir with the binaries> bash cgrun.sh kvnode-head get 20000 100 "" ""
-python cgannot.py cg-kvnode-head-get.out.1 kvnode-head.nm get_execute
-python cgannot.py cg-kvnode-head-get.out.1 kvnode-head.nm get_execute --src <repo>/server/src reply_fast
+AUDIT_WORK=<dir with the binaries> bash cgrun.sh kvasm-head get 20000 100 "" ""
+python cgannot.py cg-kvasm-head-get.out.1 kvasm-head.nm get_execute
+python cgannot.py cg-kvasm-head-get.out.1 kvasm-head.nm get_execute --src <repo>/server/src reply_fast
 ```
 
-`callgrind-*.out` are the raw dumps behind the tables; `kvnode-*.nm` map
+`callgrind-*.out` are the raw dumps behind the tables; `kvasm-*.nm` map
 their addresses to functions.

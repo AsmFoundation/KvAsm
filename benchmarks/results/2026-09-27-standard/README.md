@@ -37,17 +37,17 @@ measures outside load and never excludes it, so no run was discarded.
 So **E0 and E1 ran on a heavily loaded host, and everything after them ran
 at the level of the published 2026-09-26 session** (3–6 CPUs). The effect
 of the load shows in S1, which repeats E1's 4-core cell at the end. The
-same cell ran 1.16–1.78× faster there, depending on the system: KvNode
+same cell ran 1.16–1.78× faster there, depending on the system: KvAsm
 1.78×, Redis 1.72×, Dragonfly 1.43×, Valkey 1.30×, Memcached 1.22× and
 Garnet 1.16×.
 
-The load cost KvNode more than the multi-threaded servers. Its 4-core lead
+The load cost KvAsm more than the multi-threaded servers. Its 4-core lead
 over Garnet was 1.50× in E1 but 2.29× in S1, over Memcached 2.02× against
 2.94×, and over Valkey 2.02× against 2.76×. Over Redis it barely moved
-(2.98× against 3.07×). E1's ratios therefore *understate* KvNode's lead
+(2.98× against 3.07×). E1's ratios therefore *understate* KvAsm's lead
 where they differ from S1.
 
-A plausible mechanism, not verified: KvNode runs closest to the load
+A plausible mechanism, not verified: KvAsm runs closest to the load
 generator's limit (see *The client is the ceiling*), and the client's 16
 vCPUs are what the outside load contends with.
 
@@ -62,7 +62,7 @@ watcher* below).
 - The other two are single 5-s blips of 0.3–0.5 vCPU on otherwise unused
   vCPUs, both in block 0 of E0/E1:
   - one was the observer's own first `docker logs` call (17:27:06–11 UTC);
-  - one is unexplained (17:49:07–12 UTC, `E1/kvnode/c1/r0`).
+  - one is unexplained (17:49:07–12 UTC, `E1/kvasm/c1/r0`).
 
 ## The headline: 4 cores on the quiet host (S1)
 
@@ -71,25 +71,25 @@ GET, 1M keys, 100-byte values, 64 connections × 16 in flight. Outside load
 had a median of 5.2 CPUs. The paired statistics come from `pairs.py` →
 `pairs.out`, with the method of METHODOLOGY.md §7.
 
-| 4 cores, S1 | KvNode | Redis | Valkey | Dragonfly | Garnet | Memcached |
+| 4 cores, S1 | KvAsm | Redis | Valkey | Dragonfly | Garnet | Memcached |
 |---|---|---|---|---|---|---|
 | GET/s, median of 10 | **8.84 M** | 2.88 M | 3.20 M | 2.40 M | 3.86 M | 3.01 M |
-| KvNode ÷ X | — | **3.07×** [2.76–3.84] | **2.76×** [2.52–2.97] | **3.68×** [3.40–4.25] | **2.29×** [2.09–2.47] | **2.94×** [2.73–3.21] |
+| KvAsm ÷ X | — | **3.07×** [2.76–3.84] | **2.76×** [2.52–2.97] | **3.68×** [3.40–4.25] | **2.29×** [2.09–2.47] | **2.94×** [2.73–3.21] |
 | between-run CV | 4.2% | 5.3% | 2.2% | 2.9% | 1.6% | 2.7% |
 
-KvNode was ahead of every system in **all ten blocks** (sign test p =
+KvAsm was ahead of every system in **all ten blocks** (sign test p =
 0.002 each).
 
 ## One core (N1, N3, E5; quiet host)
 
-| 1 core, N1 | KvNode | Redis 8.10.2 | Valkey 9.1.2 |
+| 1 core, N1 | KvAsm | Redis 8.10.2 | Valkey 9.1.2 |
 |---|---|---|---|
 | GET/s | **1.76 M** | 1.40 M | 1.42 M |
-| KvNode ÷ X, 6 blocks | — | **1.26×** [1.22–1.38], 6/6 | **1.24×** [1.20–1.28], 6/6 |
+| KvAsm ÷ X, 6 blocks | — | **1.26×** [1.22–1.38], 6/6 | **1.24×** [1.20–1.28], 6/6 |
 | server CPU per GET | **576 ns** | 722 ns | 710 ns |
 | p50 | **532 µs** | 705 µs | 696 µs |
 
-KvNode won every block against both (p = 0.031). So did the 2026-09-26
+KvAsm won every block against both (p = 0.031). So did the 2026-09-26
 native-final session, by less (1.19× and 1.22×); the noisier two-phase
 session won 5 of 6. Absolute numbers are not comparable across sessions on
 this host, because the hypervisor places vCPUs on P- or E-cores
@@ -106,34 +106,34 @@ with nghttp2, it was 1,086 ns against Redis's 422.
 Blocks 0–4 ran with 11–18 CPUs busy outside the VM, so the absolute numbers
 are depressed and S1 above is the quiet-host reference.
 
-| E1 | KvNode | Redis | Valkey | Dragonfly | Garnet | Memcached |
+| E1 | KvAsm | Redis | Valkey | Dragonfly | Garnet | Memcached |
 |---|---|---|---|---|---|---|
 | 1 core | **1.39 M** | 1.01 M | 1.04 M | 629 k | 642 k | 587 k |
 | 2 cores | **3.06 M** | 1.29 M | 1.68 M | 1.08 M | 1.51 M | 1.23 M |
 | 4 cores | **4.98 M** | 1.67 M | 2.46 M | 1.68 M | 3.32 M | 2.47 M |
 | 8 cores | **5.99 M** | 1.86 M | 1.82 M | 2.18 M | 4.96 M | 4.34 M |
 
-KvNode was ahead of every system in all six blocks at every budget. The one
+KvAsm was ahead of every system in all six blocks at every budget. The one
 exception is Garnet at 8 cores: 1.21× [0.88–1.29], 5/6. After the
 adjustment to equal outside load, the conclusions are the same (REPORT.md,
 *Host interference*).
 
-Once the load had dropped, in blocks 4 and 5 (5.6–8.9 CPUs during KvNode's
-runs), KvNode served 7.78M and 8.39M at 4 cores, and 9.33M and 9.02M at 8.
+Once the load had dropped, in blocks 4 and 5 (5.6–8.9 CPUs during KvAsm's
+runs), KvAsm served 7.78M and 8.39M at 4 cores, and 9.33M and 9.02M at 8.
 
-**At 8 cores the limit is not KvNode.**
+**At 8 cores the limit is not KvAsm.**
 
-- Under the load (blocks 0–3), KvNode used only 0.52–0.56 of its 8 cores
+- Under the load (blocks 0–3), KvAsm used only 0.52–0.56 of its 8 cores
   and the client 0.74–0.81 of its 16 vCPUs: the host was taking vCPUs away
   from both.
-- In blocks 4 and 5 the client was 90–92% busy while KvNode's cores were
+- In blocks 4 and 5 the client was 90–92% busy while KvAsm's cores were
   0.67–0.70 busy.
 
 Both of those runs, and two 8-core E0 runs, are flagged client-bound (see
 *The client is the ceiling*).
 
 E0 ran under the heaviest load, and at 8 cores it chose N−1 threads for
-KvNode, Redis, Valkey and Dragonfly (N for Memcached). With 8 server vCPUs
+KvAsm, Redis, Valkey and Dragonfly (N for Memcached). With 8 server vCPUs
 plus 16 busy client vCPUs against ~15 free logical CPUs, the 8-core cells
 were oversubscribed. On 2026-09-26, N won for every system except Valkey.
 Only E1's 8-core cell uses these choices.
@@ -142,16 +142,16 @@ Only E1's 8-core cell uses these choices.
 
 | 4 cores | 90% GET | 50% GET | 100% SET | 90% GET, Zipf 0.99 |
 |---|---|---|---|---|
-| KvNode | **7.66 M** | 3.79 M | 2.23 M | **7.87 M** |
+| KvAsm | **7.66 M** | 3.79 M | 2.23 M | **7.87 M** |
 | Redis | 2.88 M | 2.65 M | 2.58 M | 2.98 M |
 | Valkey | 3.01 M | 2.24 M | 1.78 M | 3.09 M |
 | Dragonfly | 2.43 M | 2.33 M | 2.48 M | 2.57 M |
 | Garnet | 3.96 M | **3.84 M** | **3.75 M** | 4.19 M |
 | Memcached | 2.95 M | 2.36 M | 1.54 M | 4.13 M |
 
-- **Read-heavy:** KvNode is ahead of every system in every block, 1.88–3.16×
+- **Read-heavy:** KvAsm is ahead of every system in every block, 1.88–3.16×
   (Garnet is the closest).
-- **50/50:** a tie with Garnet (0.99×). KvNode is ahead of the others,
+- **50/50:** a tie with Garnet (0.99×). KvAsm is ahead of the others,
   1.43–1.69×.
 - **Writes are still the weak spot:**
   - 2.23M SET/s is behind Redis (0.87×: 5/6 blocks raw, clear after the
@@ -167,7 +167,7 @@ Only E1's 8-core cell uses these choices.
   - the lowest p50, 274 µs;
   - a p99 of 791 µs, lower than every system but Valkey (721 µs).
 - **Latency at identical offered load** (E4, open loop):
-  - At 418k, 836k and 1.25M requests/s, KvNode's p50 is 101, 117 and 111
+  - At 418k, 836k and 1.25M requests/s, KvAsm's p50 is 101, 117 and 111
     µs, and its p99 375, 444 and 428 µs.
   - Only Valkey has a lower p99 (253–395 µs). Redis reaches 0.65–0.91 ms.
     Garnet's p99 grows to 9.0 ms and then 93 ms.
@@ -180,14 +180,14 @@ Only E1's 8-core cell uses these choices.
   - At 1 request in flight, the round trip is 24.7 µs (35k/s), level with
     Valkey, Garnet and Memcached. Redis and Dragonfly take ~48 µs.
   - At 16 in flight, Memcached is ahead (0.90×).
-  - From 64 in flight on, KvNode leads every system. At 1,024 in flight it
+  - From 64 in flight on, KvAsm leads every system. At 1,024 in flight it
     does **9.11M GET/s**: 2.23× Garnet and 2.67–3.64× the others.
 
 ## Value size (E6; 4 cores, quiet host)
 
 | 4 cores | 1 KiB values | 16 KiB values |
 |---|---|---|
-| KvNode | **5.59 M** | 481 k |
+| KvAsm | **5.59 M** | 481 k |
 | Redis | 1.91 M | 461 k |
 | Valkey | 1.85 M | 273 k |
 | Dragonfly | 1.53 M | 444 k |
@@ -203,7 +203,7 @@ Only E1's 8-core cell uses these choices.
 
 ## Memory per key (E1)
 
-KvNode's 163 bytes per 100-byte-value key is **not** a gain over
+KvAsm's 163 bytes per 100-byte-value key is **not** a gain over
 2026-09-26's 178. Since `9885e64` the store table (16 MiB for the default
 capacity) is written at startup, so it is resident before kvbench's
 pre-load baseline and no longer counted in the delta. With it, the figure
@@ -212,11 +212,11 @@ and Garnet 285.
 
 ## Against the previous full session
 
-KvNode then was the nghttp2 build `8cb0fef`. Both sessions' quiet cells
+KvAsm then was the nghttp2 build `8cb0fef`. Both sessions' quiet cells
 are compared here. The other systems barely moved between the two sessions
-(Redis's S1: 2.89M then, 2.88M now), so KvNode's column is its own change.
+(Redis's S1: 2.89M then, 2.88M now), so KvAsm's column is its own change.
 
-| Cell | KvNode 2026-09-26 | KvNode now | Change | The other systems' change |
+| Cell | KvAsm 2026-09-26 | KvAsm now | Change | The other systems' change |
 |---|---|---|---|---|
 | 4 cores, 100% GET (S1) | 2.93 M | **8.84 M** | **3.02×** | −6% to 0% |
 | 90% GET (E2) | 2.75 M | 7.66 M | 2.79× | 0% to +10% |
@@ -229,7 +229,7 @@ are compared here. The other systems barely moved between the two sessions
 | 1,024 in flight (E7) | 2.77 M | 9.11 M | 3.29× | +3% to +8% |
 
 The other systems moved by up to about ±10% between sessions, cell by cell:
-the host itself was not identical. KvNode's changes are several times
+the host itself was not identical. KvAsm's changes are several times
 larger, except at 16 KiB, where it moved the other way.
 
 ## A 16 KiB regression
@@ -254,25 +254,25 @@ and a profile:
 
 kvbench's gRPC client reaches about **9.3M requests/s** on its 16 vCPUs:
 
-- E8, one key: 9.30M against KvNode, with h2load at only 5.89M;
+- E8, one key: 9.30M against KvAsm, with h2load at only 5.89M;
 - E1 at 8 cores once the load had dropped: 9.02–9.33M, with the client
-  90–92% busy while KvNode used 0.67–0.70 of its cores;
-- S1, 4 cores: the client was 80% busy with KvNode's server at 0.96.
+  90–92% busy while KvAsm used 0.67–0.70 of its cores;
+- S1, 4 cores: the client was 80% busy with KvAsm's server at 0.96.
 
-KvNode's 8-core cell (and E7's 1,024-in-flight cell) therefore measures the
+KvAsm's 8-core cell (and E7's 1,024-in-flight cell) therefore measures the
 load generator. Its 4-core S1 is a floor, not a ceiling. E8 also shows that
 kvbench never handicaps a system: it matches or beats redis-benchmark
 (1.03–1.06×) and memtier_benchmark (1.05×) against Redis.
 
-Measuring KvNode at 8 cores needs clients on another machine. This host
+Measuring KvAsm at 8 cores needs clients on another machine. This host
 cannot supply more client CPU, as a follow-up A/B measured
 ([2026-09-28-client-ceiling](../2026-09-28-client-ceiling/README.md)):
 
 - **The client is saturated:** with the standard client (16 vCPUs), 8
-  workers did 9.72M GET/s, with the client 97% busy and KvNode's cores 69%
+  workers did 9.72M GET/s, with the client 97% busy and KvAsm's cores 69%
   busy.
 - **A bigger client is slower:** on 24 vCPUs (8–31) it was 12% slower in
-  6 of 6 blocks. KvNode's CPU per GET rose 43% and the client's 18%.
+  6 of 6 blocks. KvAsm's CPU per GET rose 43% and the client's 18%.
 - **Why:** the i9-13900K's 24 physical cores are already taken by 8 server
   and 16 client vCPUs. The spare vCPUs are hyperthread siblings.
 
@@ -286,7 +286,7 @@ every container cgroup's CPU (`cpuacct.usage`), keyed by container id.
 `vmwatch_report.py --runs` differences the samples and judges each run's
 measured window, [end − duration − 3 s, end]:
 
-- CPU used by the dev container (`kvnode-dev`, idle at exactly 0) or by
+- CPU used by the dev container (`kvasm-dev`, idle at exactly 0) or by
   BuildKit;
 - more than the suite's own two containers active inside the window;
 - the mean load on the side vCPUs 8–14 over the window's interior.
@@ -320,7 +320,7 @@ python vmwatch_report.py --log vmwatch.log --runs raw.jsonl \
 |---|---|
 | `raw.jsonl`, `environment.json`, `REPORT.md`, `charts/` | the session: every run, the environment, and analyze.py's report |
 | `run.log` | run.py's console output |
-| `pairs.py` → `pairs.out` | S1 and E1 paired KvNode ÷ X with sign tests, plus client and server saturation |
+| `pairs.py` → `pairs.out` | S1 and E1 paired KvAsm ÷ X with sign tests, plus client and server saturation |
 | `hostload.py` | the pre-start probe: outside-VM load and the heaviest host processes |
 | `vmwatch.sh`, `vmwatch.log` | the in-VM watcher and its raw samples |
 | `vmwatch_report.py` → `vmwatch-verdict.txt` | the per-run interference verdict |

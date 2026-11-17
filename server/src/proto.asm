@@ -1,5 +1,5 @@
 ; =============================================================================
-; proto.asm — protobuf wire-format codec for the kvnode.v1 messages.
+; proto.asm — protobuf wire-format codec for the kvasm.v1 messages.
 ;
 ; All three request messages share one shape: field 1 = key (bytes) and, for
 ; PutRequest, field 2 = value (bytes). kv_pb_decode_kv extracts both as
@@ -27,7 +27,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 %include "pbstream.inc"
 
 ; Decoded view of a request (pointers into the caller's buffer).

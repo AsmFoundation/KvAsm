@@ -14,7 +14,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 
 struc Chain
     .heads:     resq 1                  ; Rec*[nb], anonymous mapping (zeroed)

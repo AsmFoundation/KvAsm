@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
 # run.sh — build and run export_probe (see export_probe.c) inside the
-# kvnode-dev container:
+# kvasm-dev container:
 #   MSYS_NO_PATHCONV=1 docker exec -e REV="$(git rev-parse --short HEAD)" \
-#     kvnode-dev bash /src/benchmarks/results/2026-09-29-export-probe/run.sh [CPU] [REPS]
+#     kvasm-dev bash /src/benchmarks/results/2026-09-29-export-probe/run.sh [CPU] [REPS]
 #
 # Why a scratch build directory: other sessions share /src/server/build, and
 # this probe must neither read stale objects from there nor leave anything

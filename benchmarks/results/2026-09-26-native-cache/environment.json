@@ -38,25 +38,25 @@
     "dirty": true
   },
   "images": {
-    "kvnode": {
-      "image": "kvnode:0.1.0",
+    "kvasm": {
+      "image": "kvasm:0.1.0",
       "id": "sha256:97bd65affd55499483ce838a5771d72590b64a2fe7100093e181df167f5310cc",
       "digests": [
-        "kvnode@sha256:97bd65affd55499483ce838a5771d72590b64a2fe7100093e181df167f5310cc"
+        "kvasm@sha256:97bd65affd55499483ce838a5771d72590b64a2fe7100093e181df167f5310cc"
       ]
     },
-    "kvnode-native": {
-      "image": "kvnode:0.1.0",
+    "kvasm-native": {
+      "image": "kvasm:0.1.0",
       "id": "sha256:97bd65affd55499483ce838a5771d72590b64a2fe7100093e181df167f5310cc",
       "digests": [
-        "kvnode@sha256:97bd65affd55499483ce838a5771d72590b64a2fe7100093e181df167f5310cc"
+        "kvasm@sha256:97bd65affd55499483ce838a5771d72590b64a2fe7100093e181df167f5310cc"
       ]
     },
-    "kvnode-nghttp2": {
-      "image": "kvnode:0.1.0",
+    "kvasm-nghttp2": {
+      "image": "kvasm:0.1.0",
       "id": "sha256:97bd65affd55499483ce838a5771d72590b64a2fe7100093e181df167f5310cc",
       "digests": [
-        "kvnode@sha256:97bd65affd55499483ce838a5771d72590b64a2fe7100093e181df167f5310cc"
+        "kvasm@sha256:97bd65affd55499483ce838a5771d72590b64a2fe7100093e181df167f5310cc"
       ]
     },
     "redis": {
@@ -95,10 +95,10 @@
       ]
     },
     "kvbench": {
-      "image": "kvnode-kvbench:dev",
+      "image": "kvasm-kvbench:dev",
       "id": "sha256:5dc8d1ad6d331d329c424c7f04866bd44bfce93759b23f8b0c44c9644af9cd19",
       "digests": [
-        "kvnode-kvbench@sha256:5dc8d1ad6d331d329c424c7f04866bd44bfce93759b23f8b0c44c9644af9cd19"
+        "kvasm-kvbench@sha256:5dc8d1ad6d331d329c424c7f04866bd44bfce93759b23f8b0c44c9644af9cd19"
       ]
     },
     "memtier": {
@@ -109,34 +109,34 @@
       ]
     },
     "h2load": {
-      "image": "kvnode-toolchain:latest",
+      "image": "kvasm-toolchain:latest",
       "id": "sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d",
       "digests": [
-        "kvnode-toolchain@sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d"
+        "kvasm-toolchain@sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d"
       ]
     }
   },
   "systems": {
-    "kvnode": {
-      "title": "KvNode 0.1.0",
-      "image": "kvnode:0.1.0",
+    "kvasm": {
+      "title": "KvAsm 0.1.0",
+      "image": "kvasm:0.1.0",
       "protocol": "grpc",
-      "notes": "gRPC over h2c; one worker thread per core (KVNODE_WORKERS).",
-      "build": "docker build --target runtime -t kvnode:0.1.0 . (repository root)"
+      "notes": "gRPC over h2c; one worker thread per core (KVASM_WORKERS).",
+      "build": "docker build --target runtime -t kvasm:0.1.0 . (repository root)"
     },
-    "kvnode-native": {
-      "title": "KvNode 0.1.0 native-h2",
-      "image": "kvnode:0.1.0",
+    "kvasm-native": {
+      "title": "KvAsm 0.1.0 native-h2",
+      "image": "kvasm:0.1.0",
       "protocol": "grpc",
-      "notes": "KvNode with its own HTTP/2 engine (server/src/h2n.asm, KVNODE_H2_ENGINE=native).",
-      "build": "docker build --target runtime -t kvnode:0.1.0 . (repository root)"
+      "notes": "KvAsm with its own HTTP/2 engine (server/src/h2n.asm, KVASM_H2_ENGINE=native).",
+      "build": "docker build --target runtime -t kvasm:0.1.0 . (repository root)"
     },
-    "kvnode-nghttp2": {
-      "title": "KvNode 0.1.0 nghttp2",
-      "image": "kvnode:0.1.0",
+    "kvasm-nghttp2": {
+      "title": "KvAsm 0.1.0 nghttp2",
+      "image": "kvasm:0.1.0",
       "protocol": "grpc",
-      "notes": "KvNode with nghttp2 1.70 as its HTTP/2 engine (KVNODE_H2_ENGINE=nghttp2).",
-      "build": "docker build --target runtime -t kvnode:0.1.0 . (repository root)"
+      "notes": "KvAsm with nghttp2 1.70 as its HTTP/2 engine (KVASM_H2_ENGINE=nghttp2).",
+      "build": "docker build --target runtime -t kvasm:0.1.0 . (repository root)"
     },
     "redis": {
       "title": "Redis 8.10.2",
@@ -178,10 +178,10 @@
     {
       "id": "N1",
       "title": "Native HTTP/2 engine on 1 core",
-      "question": "Does KvNode's own HTTP/2 engine (h2n.asm) beat nghttp2 \u2014 and Redis and Valkey \u2014 on a single core? E1's workload.",
+      "question": "Does KvAsm's own HTTP/2 engine (h2n.asm) beat nghttp2 \u2014 and Redis and Valkey \u2014 on a single core? E1's workload.",
       "systems": [
-        "kvnode-native",
-        "kvnode-nghttp2",
+        "kvasm-native",
+        "kvasm-nghttp2",
         "redis",
         "valkey"
       ],
@@ -211,8 +211,8 @@
       "title": "Native HTTP/2 engine scaling",
       "question": "The two engines at 2 and 4 cores (E1's workload): does the gain hold as cores grow?",
       "systems": [
-        "kvnode-native",
-        "kvnode-nghttp2"
+        "kvasm-native",
+        "kvasm-nghttp2"
       ],
       "cores": [
         2,
@@ -241,8 +241,8 @@
       "title": "Native HTTP/2 engine per-request floor",
       "question": "E5's no-op round trip on 1 core with each engine, against PING on Redis and Valkey.",
       "systems": [
-        "kvnode-native",
-        "kvnode-nghttp2",
+        "kvasm-native",
+        "kvasm-nghttp2",
         "redis",
         "valkey"
       ],

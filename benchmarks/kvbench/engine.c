@@ -296,7 +296,7 @@ static void *worker_main(void *arg) {
   for (int i = 0; open_loop && i < w->nconns; i++) w->conns[i].next_due = start + poisson_gap(w);
 
   /* Preload writes with Upload for the streaming workloads: their values may
-   * exceed a unary Put's limit (KVNODE_MAX_VALUE_BYTES). */
+   * exceed a unary Put's limit (KVASM_MAX_VALUE_BYTES). */
   const int preload_op =
       g_opt.workload == WL_UPLOAD || g_opt.workload == WL_DOWNLOAD ? OP_UPLOAD : OP_SET;
   struct epoll_event events[64];

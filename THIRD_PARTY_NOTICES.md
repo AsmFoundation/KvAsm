@@ -1,14 +1,14 @@
 # Third-party notices
 
-KvNode's own code — the assembly server, the tests, the .NET client, the
+KvAsm's own code — the assembly server, the tests, the .NET client, the
 benchmark suite and the documentation — is licensed under the
 [Apache License 2.0](LICENSE). This file lists the third-party software that
-ships inside KvNode's artifacts or that its build uses, under which license,
+ships inside KvAsm's artifacts or that its build uses, under which license,
 and what that license asks of anyone who redistributes the artifacts.
 
 ## In the server binary and the container image
 
-The server (`kvnode`) is one static, position-independent executable. The
+The server (`kvasm`) is one static, position-independent executable. The
 build links it with `cc -static-pie … -pthread` (`server/Makefile`), so two
 third-party libraries are copied into it:
 
@@ -18,7 +18,7 @@ third-party libraries are copied into it:
 | GCC runtime support (`libgcc.a`, `libgcc_eh.a`) | Debian trixie source package `gcc-14` (binary package `libgcc-14-dev`), 14.2.0-19 when this file was written | GPL-3.0-or-later with the GCC Runtime Library Exception 3.1 | <https://gcc.gnu.org/>, and <https://snapshot.debian.org/package/gcc-14/> |
 
 The image's build stage records the exact versions it linked in
-`/usr/share/doc/kvnode/third-party/VERSIONS`, because the toolchain image
+`/usr/share/doc/kvasm/third-party/VERSIONS`, because the toolchain image
 installs whatever the Debian archive holds at build time. The image also
 carries the license texts in the same directory:
 
@@ -27,28 +27,28 @@ carries the license texts in the same directory:
 - `LGPL-2.1`, `gcc.copyright` (which includes the GCC Runtime Library
   Exception) and `GPL-3`.
 
-### What the LGPL asks of you, and how KvNode meets it
+### What the LGPL asks of you, and how KvAsm meets it
 
 Distributing a program statically linked with an LGPL library is allowed
 when its users can relink the program against a modified version of that
-library (LGPL-2.1, section 6). KvNode meets this as follows:
+library (LGPL-2.1, section 6). KvAsm meets this as follows:
 
-- **The rest of the program is open source.** This repository is KvNode's
+- **The rest of the program is open source.** This repository is KvAsm's
   complete source, with the build scripts. `make -C server all` assembles
   every object and links the binary.
 - **Relinking against your own glibc.** Build the modified glibc with its
   static libraries, install it into a sysroot, and repeat the link step
   only. For example:
-  `make -C server build/kvnode CC="gcc --sysroot=/path/to/sysroot"`.
+  `make -C server build/kvasm CC="gcc --sysroot=/path/to/sysroot"`.
   The server includes no glibc headers: its objects are NASM output, so
   only the link step uses your glibc.
 - **The library's source.** glibc's source for every Debian version stays
   available at the snapshot archive linked above.
-- **Written offer.** For three years after each KvNode release, the
+- **Written offer.** For three years after each KvAsm release, the
   maintainers will provide on request the complete corresponding source
   code of the glibc and libgcc versions linked into that release, for no
   more than the cost of providing it. Ask through an issue at
-  <https://github.com/Nucs/KvNode/issues>.
+  <https://github.com/AsmFoundation/KvAsm/issues>.
 
 **libgcc needs nothing extra.** The GCC Runtime Library Exception lets
 programs compiled with GCC link libgcc into binaries under any license.
@@ -57,7 +57,7 @@ programs compiled with GCC link libgcc into binaries under any license.
 
 `kvbench` (the `kvbench` Docker stage) statically links **nghttp2 1.70.0**
 (MIT License, <https://github.com/nghttp2/nghttp2>), built from its
-SHA-256-pinned release tarball. KvNode does not publish this image. If you
+SHA-256-pinned release tarball. KvAsm does not publish this image. If you
 redistribute it, include nghttp2's `COPYING` file with it.
 
 ## Used only to build and test, not shipped
@@ -73,7 +73,7 @@ redistribute it, include nghttp2's `COPYING` file with it.
 
 The benchmark suite runs Redis, Valkey, Dragonfly, Garnet and Memcached from
 their own published images. They are only measured, never redistributed or
-linked into KvNode.
+linked into KvAsm.
 
 ## Data and specifications in the source
 
@@ -86,13 +86,13 @@ linked into KvNode.
   and B.
 - **CRC-32C** parameters and check values: from RFC 3720. The folding
   method follows Intel's white paper *Fast CRC Computation for Generic
-  Polynomials Using PCLMULQDQ Instruction* (2009). KvNode's code computes
+  Polynomials Using PCLMULQDQ Instruction* (2009). KvAsm's code computes
   every table and folding constant at assembly time and copies no code from
   any source.
 
 ## .NET client dependencies
 
-The `KvNode.Client` NuGet package references these packages, which NuGet
+The `KvAsm.Client` NuGet package references these packages, which NuGet
 resolves when you install it. It does not bundle them.
 
 | Package | License |

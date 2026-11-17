@@ -12,7 +12,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 %include "server.inc"
 
 section .rodata

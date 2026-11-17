@@ -1,16 +1,57 @@
 # Changelog
 
-All notable changes to KvNode — the server, the .NET client and the gRPC
+All notable changes to KvAsm — the server, the .NET client and the gRPC
 contract, which are released together under one version. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0, a
 minor version may change the configuration or the client API; the wire
-protocol `kvnode.v1` only grows backward-compatibly.
+protocol `kvasm.v1` only grows backward-compatibly.
 
 Each entry names the commits and decision records (`docs/adr`) behind it,
 so every line can be checked against the code and the measurements.
 
 ## [Unreleased]
+
+## [0.3.0] — 2026-11-17
+
+The project is renamed **KvAsm** and published by the
+[AsmFoundation](https://github.com/AsmFoundation). The rename breaks
+compatibility with 0.2.0 on purpose: no old name is accepted anywhere.
+0.3.0 also releases the batched writes and the shorter request path
+described below.
+
+### Renamed (breaking)
+
+| What | 0.2.0 | 0.3.0 |
+|---|---|---|
+| Project and repository | KvNode, `github.com/Nucs/KvNode` | KvAsm, `github.com/AsmFoundation/KvAsm` (the old address redirects) |
+| Container image | `ghcr.io/nucs/kvnode` | `ghcr.io/asmfoundation/kvasm` |
+| .NET package | `KvNode.Client`: `KvNodeClient`, `KvNodeClientOptions` | `KvAsm.Client`: `KvAsmClient`, `KvAsmClientOptions` |
+| gRPC package and service | `kvnode.v1.KvNode`, routes `/kvnode.v1.KvNode/*` | `kvasm.v1.KvAsm`, routes `/kvasm.v1.KvAsm/*` |
+| Health service name | `kvnode.v1.KvNode` | `kvasm.v1.KvAsm` (`""` still means the whole server) |
+| Settings | `KVNODE_*` | `KVASM_*`, otherwise the same names and values |
+| Snapshot file magics | `KVNSNAP1`, `KVNSEND1` | `KVASNAP1`, `KVASEND1`, with the same layout and checksum rule |
+| Server binary | `/usr/local/bin/kvnode` | `/usr/local/bin/kvasm` |
+
+- **Upgrade both ends together.**
+  - A 0.2.0 client gets `UNIMPLEMENTED` from a 0.3.0 server, and a
+    0.3.0 client gets the same from a 0.2.0 server.
+  - A `KVNODE_*` variable is ignored like any other unknown variable, so a
+    deployment must rename its settings before it upgrades. Otherwise the
+    server starts with the defaults.
+  - A 0.2.0 snapshot is refused at startup for its magic. To convert one,
+    rewrite its two magics and recompute the checksum, or write it again
+    with `SnapshotFile.WriteAsync`.
+- **The wire promise restarts with `kvasm.v1`.** From 0.3.0 the protocol
+  only grows backward-compatibly.
+- **The snapshot conformance vector** (docs/PROTOCOL.md) changed with the
+  magics. Its checksum is now `0a633ad6a4e06994`. The server's `mksnap`
+  tool and the .NET writer both reproduce it.
+- **On nuget.org,** KvNode.Client is deprecated in favor of KvAsm.Client
+  and unlisted.
+- **Every record in the repository uses the new name:** the benchmark
+  results, the case-study paper and the decision records. Only commit
+  messages keep the old one.
 
 ### Changed
 
@@ -45,7 +86,7 @@ so every line can be checked against the code and the measurements.
 - **Per-worker memory** grows by up to 256 KiB of cached records, plus a
   1,472-byte QSBR slot (it was 64 bytes; docs/OPERATIONS.md).
 - **The key hash is AES-128 where the CPU has AES-NI** (ADR 0004, second
-  amendment; `KVNODE_HASH=auto|siphash|aes`, default `auto`). One
+  amendment; `KVASM_HASH=auto|siphash|aes`, default `auto`). One
   CMAC-shaped encryption under the per-process secret replaces SipHash on
   every Get, Put, Delete, Upload and Download: 43.8 / 7.6 core cycles per
   16-byte key against 86.6 / 70.6 for SipHash-2-4-128.
@@ -144,7 +185,7 @@ so every line can be checked against the code and the measurements.
 
 ### Added
 
-- `KVNODE_HASH`, `server/src/aeshash.asm` and `test_aeshash`: the AES
+- `KVASM_HASH`, `server/src/aeshash.asm` and `test_aeshash`: the AES
   hash against an AES-128 written from FIPS-197 in C, and the store under
   each hash. The startup line now ends with `hash=aes` or `hash=siphash`.
 - `kv_siphash64` (the fallback placement hash) and its vectors in
@@ -153,7 +194,7 @@ so every line can be checked against the code and the measurements.
   (`test_store`: they agree with the plain lookups under both tag scans);
   `test_proto`: every canonical shape of the decoder's fast path, cut at
   every byte, at a guard page.
-- `fuzz_h2`'s **request matrix**, run before the fuzzing: 506
+- `fuzz_h2`'s **request matrix**, run before the fuzzing: 500
   conversations with exact expected answers at the frame boundaries of a
   unary request — three Gets cut into two writes at every byte,
   equal-length header blocks that differ, padded DATA, a body in two
@@ -173,20 +214,20 @@ so every line can be checked against the code and the measurements.
   (`cgannot.py`) and an in-process request-path harness (`bench_h2.c`).
 - `kv_store_write_begin`, `kv_store_put_locked`, `kv_store_delete_locked`,
   `kv_store_write_end`, `kv_store_reclaim_local` and
-  `kv_store_rec_alloc_local`: the store's batch API (`server/tests/kvnode_abi.h`).
+  `kv_store_rec_alloc_local`: the store's batch API (`server/tests/kvasm_abi.h`).
 - `server/bench/bench_write.c` (`make bench-write`); its `--quick`
   verification runs in `make test`.
 - Benchmarks: `run.py --profile writes` (W1, E2's write cells against
-  every store in about 35 minutes), and `KVNODE_BENCH_IMAGE` to measure an
-  unreleased KvNode build under its own tag. The first W1 run
+  every store in about 35 minutes), and `KVASM_BENCH_IMAGE` to measure an
+  unreleased KvAsm build under its own tag. The first W1 run
   (`benchmarks/results/2026-11-15-writes-w1`) put writes ahead of all five
   stores. It ran on a loaded host and is indicative only.
 - Benchmarks: `run.py --systems` re-measures some systems alone, and
   `--e4-rates` holds E4 at an earlier session's loads. `--control-image`
-  runs an older KvNode image in the same blocks, and `transfer.py` carries
+  runs an older KvAsm image in the same blocks, and `transfer.py` carries
   an earlier session's pairings over through it.
   - The standard suite for `main` paired with the 2026-09-27 image
-    (`benchmarks/results/2026-11-15-kvnode-head`):
+    (`benchmarks/results/2026-11-15-kvasm-head`):
     - 100% SET 3.14×, 50/50 1.88×, 16 KiB values 1.81×, one-core GETs
       1.06× (6/6 blocks; 16 KiB 3/3);
     - estimated 1.87× Garnet to 4.56× Memcached on 100% SET.
@@ -204,7 +245,7 @@ The first public release, under the Apache License 2.0.
 
 ### Added
 
-- **KvNode's own HTTP/2 engine and HPACK decoder, in assembly**
+- **KvAsm's own HTTP/2 engine and HPACK decoder, in assembly**
   (`h2n.asm`, `hpack.asm`; ADR 0007).
   - It passes h2spec 146/146. The HPACK decoder is differential-tested
     against nghttp2, and every build fuzzes the engine.
@@ -218,7 +259,7 @@ The first public release, under the Apache License 2.0.
   - A download is generated frame by frame from a pinned record: one
     version per call, and no response buffer.
 - **CRC-32C in four implementations**, picked at startup by
-  `KVNODE_CRC32C` (`auto` takes the fastest the CPU has; `b751a97`):
+  `KVASM_CRC32C` (`auto` takes the fastest the CPU has; `b751a97`):
   - VPCLMULQDQ + AVX2 256-bit folding;
   - PCLMULQDQ 128-bit folding;
   - the SSE4.2 `crc32` instruction;
@@ -229,7 +270,7 @@ The first public release, under the Apache License 2.0.
   prefetches its two candidate buckets, then its record lines, before any
   of them is answered. A per-worker pool allocator serves stream state.
 - **SSE2 tag matching** of both candidate buckets in one compare, the
-  default (ADR 0006; `dd28221`). `KVNODE_SCAN=swar` keeps the scalar path.
+  default (ADR 0006; `dd28221`). `KVASM_SCAN=swar` keeps the scalar path.
   The optional per-worker L1/L2 record caches are off by default; they
   measured slower.
 - **.NET client** (`18ba0f0`, `bb42b44`, `27866e1`):
@@ -245,7 +286,7 @@ The first public release, under the Apache License 2.0.
     monitoring;
   - the committed results of every session.
 - **A case-study paper** (`docs/paper`; `9f3e290`) on how an LLM coding
-  agent built KvNode.
+  agent built KvAsm.
 - **Design proposals** (`docs/proposals`): Export/Watch, key indexes, and a
   58-function plan with measured prototypes. None of them is implemented.
 - **Publication files:**
@@ -257,13 +298,13 @@ The first public release, under the Apache License 2.0.
     anywhere;
   - NuGet package metadata with Source Link and symbols.
 - The runtime image now carries its license texts under
-  `/usr/share/doc/kvnode/`. That includes the exact glibc and libgcc
+  `/usr/share/doc/kvasm/`. That includes the exact glibc and libgcc
   versions statically linked into the binary.
 
 ### Changed
 
 - **nghttp2 left the server** (ADR 0008; `864a130`). The server links no
-  HTTP/2 library, and `KVNODE_H2_ENGINE` no longer exists. nghttp2 stays
+  HTTP/2 library, and `KVASM_H2_ENGINE` no longer exists. nghttp2 stays
   as the independent client of the tests and of `kvbench`.
 - **Two-phase event loop** (ADR 0009; `c3dec96`). A worker reads and
   processes its whole epoll batch, then flushes every connection once. This
@@ -273,9 +314,9 @@ The first public release, under the Apache License 2.0.
 - Running out of memory while replying now closes the connection. It used
   to answer `INTERNAL` "server out of memory" (`a0264f7`; docs/PROTOCOL.md).
 - Version 0.2.0 everywhere: the startup log line, the client package and
-  the local image tag `kvnode:0.2.0`. Results recorded before this release
+  the local image tag `kvasm:0.2.0`. Results recorded before this release
   keep the version they measured.
-- KvNode.Client documents what `ReadAttempts` recovers from: connections
+- KvAsm.Client documents what `ReadAttempts` recovers from: connections
   that break after they were established. A server that refuses
   connections fails a read fast, because gRPC's reconnect backoff (1 s at
   first) outlasts the ~150 ms the attempts take. The fault-injection test
@@ -294,9 +335,9 @@ The first public release, under the Apache License 2.0.
 
 Measured on an i9-13900K under Docker Desktop on WSL2, over loopback. The
 full session ran 747 runs on revision `a0264f7`
-([results](https://github.com/Nucs/KvNode/blob/main/benchmarks/results/2026-09-27-standard/README.md);
+([results](https://github.com/AsmFoundation/KvAsm/blob/main/benchmarks/results/2026-09-27-standard/README.md);
 every claim with its scope:
-[docs/CLAIMS.md](https://github.com/Nucs/KvNode/blob/main/docs/CLAIMS.md)).
+[docs/CLAIMS.md](https://github.com/AsmFoundation/KvAsm/blob/main/docs/CLAIMS.md)).
 
 - **4 cores:** 8.84M GET/s, 2.29–3.68× Redis, Valkey, Dragonfly, Garnet and
   Memcached, ahead of each in all ten paired blocks. That is 3.0× the last
@@ -339,10 +380,11 @@ tagged afterwards; never released). The case-study paper calls it "v0.1.0".
   - Get, Put and Delete;
   - the standard health service;
   - graceful drain, idle timeouts and strict configuration.
-- The `KVNSNAP1` snapshot loader, verified before any record is stored.
+- The `KVASNAP1` snapshot loader, verified before any record is stored.
 - A .NET 8/10 client and a snapshot writer.
 - Four layers of tests: native unit tests, the data-structure bake-off, an
   end-to-end suite with h2spec, and the .NET suite.
 
-[0.2.0]: https://github.com/Nucs/KvNode/releases/tag/v0.2.0
-[0.1.0]: https://github.com/Nucs/KvNode/tree/v0.1.0
+[0.3.0]: https://github.com/AsmFoundation/KvAsm/releases/tag/v0.3.0
+[0.2.0]: https://github.com/AsmFoundation/KvAsm/releases/tag/v0.2.0
+[0.1.0]: https://github.com/AsmFoundation/KvAsm/tree/v0.1.0

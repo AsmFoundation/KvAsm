@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
-# solo.sh — one kvnode alone with the whole client: absolute write
+# solo.sh — one kvasm alone with the whole client: absolute write
 # throughput, for the headline numbers abw.py's side-by-side runs cannot give
 # (there each variant gets half of every core, and a fast variant's client
 # saturates first).
 #
-# Usage (inside the kvnode-dev container):
+# Usage (inside the kvasm-dev container):
 #   solo.sh ROUNDS WORKERS READ_RATIO BINARY_A BINARY_B
 # Runs A, B, A, B, ... (ROUNDS pairs, order alternating per round so drift
 # and position effects cancel), each: a fresh server with WORKERS workers on
@@ -34,7 +34,7 @@ esac
 # run BINARY -> prints "ops ns_per_req client_busy"
 run() {
     local bin=$1 log=/tmp/solo.log
-    KVNODE_PORT=$PORT KVNODE_WORKERS=$WORKERS KVNODE_CAPACITY=1250000 \
+    KVASM_PORT=$PORT KVASM_WORKERS=$WORKERS KVASM_CAPACITY=1250000 \
         taskset -c "$SCPU" "$bin" 2> "$log" &
     local spid=$!
     for _ in $(seq 1 200); do grep -q 'msg="listening"' "$log" && break; sleep 0.05; done

@@ -1,9 +1,9 @@
 ; =============================================================================
 ; pool.asm — per-worker size-class allocator (malloc-shaped, Pool* last).
 ;
-; Why: profiling KvNode under GET load showed ~12% of user CPU in glibc
+; Why: profiling KvAsm under GET load showed ~12% of user CPU in glibc
 ; malloc/free — its first HTTP/2 layer (nghttp2) allocated a stream,
-; outbound items and frame buffers per request, and so did KvNode (Stream,
+; outbound items and frame buffers per request, and so did KvAsm (Stream,
 ; request and response buffers). Today's users are the Stream objects,
 ; request bodies, small responses, stream maps, header-block and carry
 ; buffers and HPACK rings. Every one of those objects is created and
@@ -29,7 +29,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 %include "server.inc"
 
 extern malloc

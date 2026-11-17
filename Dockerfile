@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # =============================================================================
-# KvNode container build.
+# KvAsm container build.
 #
 # Stages:
 #   toolchain  Debian trixie + NASM/GCC + nghttp2 (pinned, verified, built as a
@@ -8,14 +8,14 @@
 #              benchmark CLIENTS only (itest_grpc, test_hpack's oracle,
 #              kvbench): the server has its own HTTP/2 engine (ADR 0008).
 #              Also used as the development and test container:
-#              `docker build --target toolchain -t kvnode-toolchain .`
+#              `docker build --target toolchain -t kvasm-toolchain .`
 #   build      Assembles/links the server, runs the native unit tests and the
 #              end-to-end suite (real server over loopback: gRPC protocol,
 #              concurrency, shutdown, snapshots, h2spec baseline, fuzzing);
 #              any failure fails the image build.
 #   runtime    FROM scratch: the single static-PIE server binary (glibc
 #              linked in, ~1 MB) and the license texts it must carry
-#              (/usr/share/doc/kvnode, THIRD_PARTY_NOTICES.md), nothing else
+#              (/usr/share/doc/kvasm, THIRD_PARTY_NOTICES.md), nothing else
 #              — no shell, no package manager, no libraries to patch or
 #              exploit. Runs as the unprivileged uid/gid 10001. To debug, use
 #              the build stage (`docker build --target build`), which has the
@@ -64,7 +64,7 @@ COPY server/ server/
 # passed. --strip-debug keeps the symbol table, so perf/gdb backtraces from
 # production still name functions; DWARF stays in the build stage.
 RUN make -C server NGHTTP2_PREFIX=/opt/nghttp2 all test itest \
- && strip --strip-debug -o /kvnode server/build/kvnode
+ && strip --strip-debug -o /kvasm server/build/kvasm
 # The license texts the runtime image must carry for the third-party code
 # linked INTO the binary (THIRD_PARTY_NOTICES.md): glibc (LGPL-2.1+) and
 # libgcc (GPL-3.0+ with the GCC Runtime Library Exception). VERSIONS records
@@ -104,26 +104,26 @@ FROM scratch AS runtime
 # image.source is what links a GHCR package to its repository; the release
 # workflow (.github/workflows/release.yml) adds version, revision and created
 # from the tag being released, so a local build carries no stale version.
-LABEL org.opencontainers.image.title="KvNode" \
+LABEL org.opencontainers.image.title="KvAsm" \
       org.opencontainers.image.description="gRPC key-value server written in x86-64 assembly" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.source="https://github.com/Nucs/KvNode" \
-      org.opencontainers.image.documentation="https://github.com/Nucs/KvNode#readme"
-COPY --from=build /kvnode /usr/local/bin/kvnode
-# Licenses travel with the binary (Apache-2.0 §4, LGPL-2.1 §6): KvNode's own
+      org.opencontainers.image.source="https://github.com/AsmFoundation/KvAsm" \
+      org.opencontainers.image.documentation="https://github.com/AsmFoundation/KvAsm#readme"
+COPY --from=build /kvasm /usr/local/bin/kvasm
+# Licenses travel with the binary (Apache-2.0 §4, LGPL-2.1 §6): KvAsm's own
 # LICENSE/NOTICE/THIRD_PARTY_NOTICES.md from the build context, and the
 # glibc/libgcc texts plus the exact versions linked from the build stage.
 # A few hundred KB of text the server never reads.
-COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /usr/share/doc/kvnode/
-COPY --from=build /licenses/ /usr/share/doc/kvnode/third-party/
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /usr/share/doc/kvasm/
+COPY --from=build /licenses/ /usr/share/doc/kvasm/third-party/
 # Numeric: scratch has no /etc/passwd, and the server needs no user database.
 USER 10001:10001
 EXPOSE 50051
 # Snapshots are read-only inputs; mount them, e.g.
-#   docker run -v ./data:/data:ro -e KVNODE_SNAPSHOT=/data/seed.kvs ...
+#   docker run -v ./data:/data:ro -e KVASM_SNAPSHOT=/data/seed.kvs ...
 # (deliberately no VOLUME instruction: the server never writes to disk, and a
 # declared volume would leave an anonymous volume behind on every run)
 # No HEALTHCHECK: the image has no gRPC client to run one. Orchestrators probe
 # the standard grpc.health.v1 service directly (Kubernetes: grpc probe on
 # port 50051); see docs/OPERATIONS.md.
-ENTRYPOINT ["/usr/local/bin/kvnode"]
+ENTRYPOINT ["/usr/local/bin/kvasm"]

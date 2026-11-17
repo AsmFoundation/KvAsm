@@ -13,7 +13,7 @@ body:
     attributes:
       label: Version
       description: The release, or the commit and the image digest you built.
-      placeholder: "0.2.0, or 1a2b3c4 + sha256:..."
+      placeholder: "0.3.0, or 1a2b3c4 + sha256:..."
     validations:
       required: true
   - type: textarea
@@ -21,7 +21,7 @@ body:
     attributes:
       label: How you run it
       description: >-
-        Image or binary, the KVNODE_* variables you set, the CPU (the server
+        Image or binary, the KVASM_* variables you set, the CPU (the server
         picks CRC-32C and tag-scan paths from it), the kernel, and the client
         (language, version, connections).
     validations:

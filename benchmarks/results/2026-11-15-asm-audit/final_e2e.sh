@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# final_e2e.sh — the end-to-end A/B runs of the final tree (inside kvnode-dev):
+# final_e2e.sh — the end-to-end A/B runs of the final tree (inside kvasm-dev):
 # abseq.sh quads (A B B A in one slot) of server CPU per request and requests
 # per second, one worker.
 #
@@ -20,9 +20,9 @@
 set -u
 PART=$1
 export AB_SCPU=8 AB_CCPU=9-14 AB_THREADS=6 AB_CONNS=24 AB_SECS=4
-H=/pc/head2/server/build/kvnode
-A=/pc/landA/server/build/kvnode
-F=/pc/fuse/server/build/kvnode
+H=/pc/head2/server/build/kvasm
+A=/pc/landA/server/build/kvasm
+F=/pc/fuse/server/build/kvasm
 OUT=/pc/out/final-e2e-$PART.out
 {
 echo "## abseq.sh: one slot (server vCPU 8; kvbench 6 threads x 24 connections x 16 in flight on vCPUs 9-14), quads of A B B A,"

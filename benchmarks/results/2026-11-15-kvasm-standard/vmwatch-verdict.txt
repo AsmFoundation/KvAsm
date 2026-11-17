@@ -1,0 +1,180 @@
+272 runs; 105 clean, 167 flagged, 0 without monitor coverage
+  E0: side-vCPU busy per run window (interior mean), median 0.120, max 6.936 vCPU
+  E1: side-vCPU busy per run window (interior mean), median 0.143, max 6.938 vCPU
+  E2: side-vCPU busy per run window (interior mean), median 0.720, max 5.625 vCPU
+  E3: side-vCPU busy per run window (interior mean), median 0.200, max 1.088 vCPU
+  E4: side-vCPU busy per run window (interior mean), median 0.264, max 1.292 vCPU
+  E5: side-vCPU busy per run window (interior mean), median 0.178, max 1.132 vCPU
+  E6: side-vCPU busy per run window (interior mean), median 1.645, max 2.416 vCPU
+  E7: side-vCPU busy per run window (interior mean), median 2.157, max 6.951 vCPU
+  E8: side-vCPU busy per run window (interior mean), median 0.170, max 0.464 vCPU
+  N1: side-vCPU busy per run window (interior mean), median 0.107, max 6.249 vCPU
+  N3: side-vCPU busy per run window (interior mean), median 0.078, max 0.149 vCPU
+  S1: side-vCPU busy per run window (interior mean), median 0.089, max 0.225 vCPU
+  FLAG E0/kvasm/c8/t8/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 2158 ms; side vCPUs 0.64 busy (window mean)
+  FLAG E0/kvasm/c2/t2/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 7599 ms
+  FLAG E0/kvasm/c2/t1/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 29882 ms; dev container 35669 ms; dev container 35959 ms; side vCPUs 6.88 busy (window mean)
+  FLAG E0/kvasm-control/c2/t2/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 21507 ms; dev container 35601 ms; dev container 35906 ms; side vCPUs 6.94 busy (window mean)
+  FLAG E0/kvasm/c4/t4/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 13065 ms; dev container 14936 ms; dev container 9448 ms; side vCPUs 2.40 busy (window mean)
+  FLAG E0/kvasm-control/c8/t8/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 4464 ms; dev container 61 ms; dev container 806 ms
+  FLAG E0/kvasm-control/c8/t7/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 1420 ms; dev container 21357 ms; dev container 3952 ms; side vCPUs 1.18 busy (window mean)
+  FLAG E0/kvasm-control/c4/t3/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 24186 ms; dev container 2695 ms; dev container 35721 ms; side vCPUs 4.70 busy (window mean)
+  FLAG E0/kvasm/c4/t3/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 35262 ms; dev container 35975 ms; dev container 36061 ms; side vCPUs 6.81 busy (window mean)
+  FLAG E0/kvasm/c8/t7/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 17871 ms; dev container 28965 ms; dev container 6952 ms; side vCPUs 3.50 busy (window mean)
+  FLAG E0/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 12077 ms; dev container 14913 ms; dev container 246 ms; dev container 44 ms; side vCPUs 1.28 busy (window mean)
+  FLAG E0/kvasm/c8/t7/get100-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 1044 ms; dev container 1972 ms; dev container 6902 ms; side vCPUs 0.75 busy (window mean)
+  FLAG E0/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 16634 ms; dev container 2931 ms; side vCPUs 0.64 busy (window mean)
+  FLAG E0/kvasm-control/c2/t2/get100-v100-k1000000-uni-c64d16/r2 (block 2, ok): side vCPUs 0.26 busy (window mean)
+  FLAG E0/kvasm-control/c8/t7/get100-v100-k1000000-uni-c64d16/r2 (block 2, ok): dev container 1623 ms; dev container 2132 ms; side vCPUs 0.70 busy (window mean)
+  FLAG E1/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 13411 ms; dev container 35889 ms; dev container 36046 ms; side vCPUs 4.76 busy (window mean)
+  FLAG E1/kvasm/c2/t2/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 35115 ms; dev container 35936 ms; dev container 36115 ms; side vCPUs 6.74 busy (window mean)
+  FLAG E1/kvasm-control/c2/t2/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 12782 ms; dev container 12784 ms; dev container 20612 ms; dev container 9193 ms; side vCPUs 1.91 busy (window mean)
+  FLAG E1/kvasm-control/c8/t8/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 1095 ms; dev container 158 ms; dev container 2511 ms; dev container 525 ms; idle-declared containers 79 ms; side vCPUs 0.47 busy (window mean)
+  FLAG E1/kvasm/c4/t4/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 14583 ms; dev container 6768 ms; dev container 9647 ms; side vCPUs 2.83 busy (window mean)
+  FLAG E1/kvasm/c8/t7/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 35289 ms; dev container 35809 ms; dev container 35999 ms; side vCPUs 6.94 busy (window mean)
+  FLAG E1/kvasm/c1/t1/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 10896 ms; dev container 12837 ms; dev container 29033 ms; side vCPUs 1.40 busy (window mean)
+  FLAG E1/kvasm-control/c1/t1/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 104 ms; dev container 12157 ms; dev container 251 ms; dev container 911 ms
+  FLAG E1/kvasm/c4/t4/get100-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 15722 ms; dev container 2549 ms; dev container 2865 ms; dev container 7595 ms; side vCPUs 2.35 busy (window mean)
+  FLAG E1/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d16/r1 (block 1, ok): idle-declared containers 21 ms
+  FLAG E1/kvasm-control/c8/t8/get100-v100-k1000000-uni-c64d16/r2 (block 2, ok): dev container 2175 ms; dev container 2182 ms; side vCPUs 0.75 busy (window mean)
+  FLAG E1/kvasm-control/c2/t2/get100-v100-k1000000-uni-c64d16/r2 (block 2, ok): dev container 1303 ms; dev container 2008 ms; dev container 818 ms; side vCPUs 0.30 busy (window mean)
+  FLAG E1/kvasm/c1/t1/get100-v100-k1000000-uni-c64d16/r2 (block 2, ok): idle-declared containers 20 ms
+  FLAG E1/kvasm-control/c1/t1/get100-v100-k1000000-uni-c64d16/r3 (block 3, ok): dev container 87 ms
+  FLAG E1/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d16/r3 (block 3, ok): dev container 215 ms; dev container 291 ms
+  FLAG E1/kvasm-control/c2/t2/get100-v100-k1000000-uni-c64d16/r3 (block 3, ok): side vCPUs 0.29 busy (window mean)
+  FLAG E1/kvasm/c4/t4/get100-v100-k1000000-uni-c64d16/r3 (block 3, ok): dev container 358 ms; dev container 45 ms; dev container 68 ms
+  FLAG E1/kvasm-control/c2/t2/get100-v100-k1000000-uni-c64d16/r4 (block 4, ok): dev container 1329 ms; dev container 2331 ms; side vCPUs 0.51 busy (window mean)
+  FLAG E1/kvasm/c8/t7/get100-v100-k1000000-uni-c64d16/r5 (block 5, ok): dev container 1768 ms; dev container 1788 ms; side vCPUs 0.33 busy (window mean)
+  FLAG E1/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d16/r5 (block 5, ok): dev container 17386 ms; dev container 35670 ms; side vCPUs 3.44 busy (window mean)
+  FLAG E1/kvasm/c4/t4/get100-v100-k1000000-uni-c64d16/r5 (block 5, ok): dev container 34996 ms; dev container 35325 ms; dev container 35798 ms; side vCPUs 6.73 busy (window mean)
+  FLAG E1/kvasm-control/c1/t1/get100-v100-k1000000-uni-c64d16/r5 (block 5, ok): dev container 17195 ms; dev container 5748 ms; dev container 9529 ms; side vCPUs 1.84 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get50-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 1108 ms; dev container 5014 ms; dev container 64 ms; dev container 935 ms; side vCPUs 0.27 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get90-v100-k1000000-zipf0.99-c64d16/r0 (block 0, ok): dev container 19779 ms; dev container 23754 ms; dev container 3655 ms; idle-declared containers 21 ms; side vCPUs 1.01 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get0-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 35052 ms; dev container 35834 ms; dev container 36069 ms; idle-declared containers 81 ms; side vCPUs 5.62 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get90-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 13509 ms; dev container 16353 ms; dev container 30145 ms; dev container 9769 ms; side vCPUs 2.38 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get50-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 5003 ms; dev container 64 ms; dev container 8790 ms; dev container 984 ms; side vCPUs 0.78 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get0-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 21725 ms; dev container 4187 ms; dev container 957 ms; side vCPUs 0.86 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get90-v100-k1000000-zipf0.99-c64d16/r0 (block 0, ok): dev container 1515 ms; dev container 1701 ms; dev container 2592 ms; dev container 397 ms; side vCPUs 0.36 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get90-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 1348 ms
+  FLAG E2/kvasm/c4/t4/get90-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 1013 ms; dev container 2842 ms; side vCPUs 0.29 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get90-v100-k1000000-zipf0.99-c64d16/r1 (block 1, ok): dev container 5217 ms; dev container 652 ms
+  FLAG E2/kvasm-control/c4/t4/get90-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 5221 ms; dev container 5227 ms; dev container 5230 ms; dev container 5232 ms; side vCPUs 1.09 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get50-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 5221 ms; dev container 5224 ms; side vCPUs 0.76 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get90-v100-k1000000-zipf0.99-c64d16/r1 (block 1, ok): dev container 1811 ms; dev container 5228 ms; dev container 5230 ms; dev container 5232 ms; side vCPUs 1.06 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get0-v100-k1000000-uni-c64d16/r1 (block 1, ok): side vCPUs 0.29 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get50-v100-k1000000-uni-c64d16/r2 (block 2, ok): 3 active containers; dev container 75 ms; idle-declared containers 154 ms; idle-declared containers 305 ms; idle-declared containers 47 ms
+  FLAG E2/kvasm-control/c4/t4/get90-v100-k1000000-zipf0.99-c64d16/r2 (block 2, ok): 3 active containers; 5 active containers; dev container 741 ms; idle-declared containers 50 ms; idle-declared containers 51 ms; idle-declared containers 93 ms; side vCPUs 1.19 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get0-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers; dev container 526 ms; idle-declared containers 53 ms; idle-declared containers 55 ms; side vCPUs 2.12 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get90-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers; idle-declared containers 54 ms; idle-declared containers 61 ms; idle-declared containers 62 ms; side vCPUs 2.28 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get90-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers; dev container 75 ms; idle-declared containers 41 ms; idle-declared containers 49 ms; idle-declared containers 59 ms; idle-declared containers 98 ms; side vCPUs 1.70 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get90-v100-k1000000-zipf0.99-c64d16/r2 (block 2, ok): 4 active containers; idle-declared containers 106 ms; side vCPUs 1.83 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get50-v100-k1000000-uni-c64d16/r2 (block 2, ok): 5 active containers; dev container 1131 ms; dev container 158 ms; idle-declared containers 304 ms; side vCPUs 1.07 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get0-v100-k1000000-uni-c64d16/r2 (block 2, ok): 4 active containers; side vCPUs 0.98 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get90-v100-k1000000-zipf0.99-c64d16/r3 (block 3, ok): 5 active containers; dev container 94 ms; side vCPUs 1.50 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get90-v100-k1000000-uni-c64d16/r3 (block 3, ok): 4 active containers; dev container 1069 ms; dev container 60 ms; side vCPUs 0.57 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get50-v100-k1000000-uni-c64d16/r3 (block 3, ok): 4 active containers; dev container 190 ms; side vCPUs 0.49 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get90-v100-k1000000-uni-c64d16/r3 (block 3, ok): 4 active containers; 5 active containers; dev container 76 ms; idle-declared containers 133 ms; idle-declared containers 23 ms; side vCPUs 1.34 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get50-v100-k1000000-uni-c64d16/r3 (block 3, ok): 4 active containers; side vCPUs 1.10 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get90-v100-k1000000-zipf0.99-c64d16/r3 (block 3, ok): 4 active containers; dev container 695 ms; side vCPUs 1.34 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get0-v100-k1000000-uni-c64d16/r3 (block 3, ok): 5 active containers; idle-declared containers 147 ms; side vCPUs 0.52 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get0-v100-k1000000-uni-c64d16/r3 (block 3, ok): 3 active containers; 5 active containers; idle-declared containers 100 ms; idle-declared containers 116 ms; idle-declared containers 133 ms; side vCPUs 0.73 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get90-v100-k1000000-zipf0.99-c64d16/r4 (block 4, ok): 4 active containers; 5 active containers; dev container 84 ms; idle-declared containers 116 ms; idle-declared containers 260 ms; idle-declared containers 93 ms; side vCPUs 0.40 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get90-v100-k1000000-zipf0.99-c64d16/r4 (block 4, ok): 5 active containers; idle-declared containers 204 ms; idle-declared containers 265 ms; idle-declared containers 51 ms; idle-declared containers 92 ms; side vCPUs 0.72 busy (window mean)
+  FLAG E2/kvasm/c4/t4/get90-v100-k1000000-uni-c64d16/r4 (block 4, ok): 5 active containers; dev container 263 ms; idle-declared containers 270 ms; idle-declared containers 60 ms; idle-declared containers 64 ms; side vCPUs 0.94 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get50-v100-k1000000-uni-c64d16/r4 (block 4, ok): 3 active containers; dev container 20 ms; dev container 91 ms; side vCPUs 0.31 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get0-v100-k1000000-uni-c64d16/r4 (block 4, ok): 3 active containers; dev container 189 ms; dev container 881 ms; side vCPUs 0.63 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get90-v100-k1000000-uni-c64d16/r4 (block 4, ok): 3 active containers
+  FLAG E2/kvasm/c4/t4/get50-v100-k1000000-uni-c64d16/r4 (block 4, ok): 3 active containers; dev container 30 ms
+  FLAG E2/kvasm/c4/t4/get0-v100-k1000000-uni-c64d16/r4 (block 4, ok): 3 active containers; dev container 448 ms; dev container 666 ms; side vCPUs 0.88 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get90-v100-k1000000-zipf0.99-c64d16/r5 (block 5, ok): 3 active containers
+  FLAG E2/kvasm/c4/t4/get0-v100-k1000000-uni-c64d16/r5 (block 5, ok): dev container 408 ms; dev container 84 ms; side vCPUs 0.33 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get0-v100-k1000000-uni-c64d16/r5 (block 5, ok): 3 active containers; dev container 702 ms
+  FLAG E2/kvasm-control/c4/t4/get90-v100-k1000000-uni-c64d16/r5 (block 5, ok): 3 active containers
+  FLAG E2/kvasm/c4/t4/get50-v100-k1000000-uni-c64d16/r5 (block 5, ok): 3 active containers; dev container 61 ms; side vCPUs 0.29 busy (window mean)
+  FLAG E2/kvasm-control/c4/t4/get50-v100-k1000000-uni-c64d16/r5 (block 5, ok): 3 active containers
+  FLAG E2/kvasm/c4/t4/get90-v100-k1000000-zipf0.99-c64d16/r5 (block 5, ok): 3 active containers
+  FLAG E2/kvasm/c4/t4/get90-v100-k1000000-uni-c64d16/r5 (block 5, ok): 3 active containers; dev container 1020 ms; dev container 141 ms; dev container 84 ms; side vCPUs 0.86 busy (window mean)
+  FLAG E3/kvasm-control/c4/t4/get100-v100-k1000000-uni-c256d1/r0 (block 0, ok): 3 active containers
+  FLAG E3/kvasm/c4/t4/get100-v100-k1000000-uni-c256d1/r0 (block 0, ok): 3 active containers; dev container 93 ms; idle-declared containers 67 ms
+  FLAG E3/kvasm/c4/t4/get100-v100-k1000000-uni-c256d1/r1 (block 1, ok): 3 active containers; dev container 471 ms
+  FLAG E3/kvasm-control/c4/t4/get100-v100-k1000000-uni-c256d1/r1 (block 1, ok): 3 active containers
+  FLAG E3/kvasm/c4/t4/get100-v100-k1000000-uni-c256d1/r2 (block 2, ok): 3 active containers
+  FLAG E3/kvasm-control/c4/t4/get100-v100-k1000000-uni-c256d1/r2 (block 2, ok): 3 active containers; dev container 81 ms; side vCPUs 0.30 busy (window mean)
+  FLAG E3/kvasm/c4/t4/get100-v100-k1000000-uni-c256d1/r3 (block 3, ok): 3 active containers; dev container 1579 ms; dev container 350 ms
+  FLAG E3/kvasm-control/c4/t4/get100-v100-k1000000-uni-c256d1/r3 (block 3, ok): 3 active containers
+  FLAG E3/kvasm/c4/t4/get100-v100-k1000000-uni-c256d1/r4 (block 4, ok): 3 active containers
+  FLAG E3/kvasm-control/c4/t4/get100-v100-k1000000-uni-c256d1/r4 (block 4, ok): 3 active containers; dev container 37 ms; dev container 46 ms
+  FLAG E3/kvasm/c4/t4/get100-v100-k1000000-uni-c256d1/r5 (block 5, ok): 3 active containers; side vCPUs 0.34 busy (window mean)
+  FLAG E3/kvasm-control/c4/t4/get100-v100-k1000000-uni-c256d1/r5 (block 5, ok): 3 active containers; dev container 1677 ms; dev container 838 ms; side vCPUs 1.09 busy (window mean)
+  FLAG E4/kvasm/c4/t4/get100-v100-k1000000-uni-c64d64-r836000/r0 (block 0, ok): 3 active containers
+  FLAG E4/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d64-r836000/r0 (block 0, ok): 3 active containers
+  FLAG E4/kvasm/c4/t4/get100-v100-k1000000-uni-c64d64-r418000/r0 (block 0, ok): 3 active containers; dev container 29 ms; side vCPUs 0.39 busy (window mean)
+  FLAG E4/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d64-r1254000/r0 (block 0, ok): 3 active containers
+  FLAG E4/kvasm/c4/t4/get100-v100-k1000000-uni-c64d64-r1254000/r0 (block 0, ok): 3 active containers
+  FLAG E4/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d64-r418000/r0 (block 0, ok): 3 active containers; dev container 113 ms; idle-declared containers 25 ms
+  FLAG E4/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d64-r418000/r1 (block 1, ok): 3 active containers
+  FLAG E4/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d64-r1254000/r1 (block 1, ok): 3 active containers
+  FLAG E4/kvasm/c4/t4/get100-v100-k1000000-uni-c64d64-r1254000/r1 (block 1, ok): 3 active containers; dev container 27 ms; side vCPUs 0.26 busy (window mean)
+  FLAG E4/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d64-r836000/r1 (block 1, ok): 3 active containers; dev container 1027 ms
+  FLAG E4/kvasm/c4/t4/get100-v100-k1000000-uni-c64d64-r418000/r1 (block 1, ok): 3 active containers; dev container 5227 ms; dev container 5232 ms; dev container 5273 ms; side vCPUs 1.06 busy (window mean)
+  FLAG E4/kvasm/c4/t4/get100-v100-k1000000-uni-c64d64-r836000/r1 (block 1, ok): 3 active containers; dev container 5226 ms; dev container 5239 ms; dev container 5264 ms; dev container 5503 ms; side vCPUs 1.05 busy (window mean)
+  FLAG E4/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d64-r418000/r2 (block 2, ok): 3 active containers; dev container 5233 ms; dev container 5234 ms; dev container 5245 ms; side vCPUs 1.27 busy (window mean)
+  FLAG E4/kvasm/c4/t4/get100-v100-k1000000-uni-c64d64-r836000/r2 (block 2, ok): 3 active containers; dev container 30 ms; dev container 5232 ms; dev container 619 ms
+  FLAG E4/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d64-r836000/r2 (block 2, ok): 3 active containers; dev container 32 ms; dev container 5235 ms; dev container 5240 ms; dev container 5247 ms; side vCPUs 1.22 busy (window mean)
+  FLAG E4/kvasm/c4/t4/get100-v100-k1000000-uni-c64d64-r418000/r2 (block 2, ok): 3 active containers; dev container 5225 ms; dev container 5227 ms; dev container 5230 ms; side vCPUs 1.29 busy (window mean)
+  FLAG E4/kvasm/c4/t4/get100-v100-k1000000-uni-c64d64-r1254000/r2 (block 2, ok): 3 active containers; dev container 5232 ms; dev container 5244 ms; dev container 5331 ms; dev container 5468 ms; side vCPUs 1.14 busy (window mean)
+  FLAG E4/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d64-r1254000/r2 (block 2, ok): 3 active containers; dev container 3153 ms; dev container 5245 ms; side vCPUs 0.97 busy (window mean)
+  FLAG E5/kvasm/c1/t1/ping-v100-k1000000-uni-c64d16/r0 (block 0, ok): 3 active containers; dev container 3034 ms; dev container 5238 ms; dev container 5240 ms; side vCPUs 1.08 busy (window mean)
+  FLAG E5/kvasm-control/c1/t1/ping-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 5238 ms; dev container 5240 ms; dev container 5246 ms; dev container 5254 ms; side vCPUs 1.07 busy (window mean)
+  FLAG E5/kvasm/c1/t1/ping-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 5233 ms; dev container 5258 ms; dev container 5260 ms; dev container 5270 ms; side vCPUs 1.13 busy (window mean)
+  FLAG E5/kvasm-control/c1/t1/ping-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 3112 ms
+  FLAG E5/kvasm-control/c1/t1/ping-v100-k1000000-uni-c64d16/r2 (block 2, ok): 3 active containers; dev container 50 ms
+  FLAG E5/kvasm/c1/t1/ping-v100-k1000000-uni-c64d16/r2 (block 2, ok): 3 active containers; dev container 1966 ms; dev container 607 ms; side vCPUs 0.72 busy (window mean)
+  FLAG E5/kvasm/c1/t1/ping-v100-k1000000-uni-c64d16/r3 (block 3, ok): 3 active containers; dev container 63 ms
+  FLAG E5/kvasm-control/c1/t1/ping-v100-k1000000-uni-c64d16/r3 (block 3, ok): 3 active containers
+  FLAG E5/kvasm-control/c1/t1/ping-v100-k1000000-uni-c64d16/r4 (block 4, ok): 3 active containers
+  FLAG E5/kvasm/c1/t1/ping-v100-k1000000-uni-c64d16/r4 (block 4, ok): 3 active containers; dev container 1591 ms; dev container 955 ms; side vCPUs 0.37 busy (window mean)
+  FLAG E5/kvasm-control/c1/t1/ping-v100-k1000000-uni-c64d16/r5 (block 5, ok): 3 active containers
+  FLAG E6/kvasm/c4/t4/get100-v1024-k1000000-uni-c64d16/r1 (block 1, ok): dev container 129 ms; dev container 9699 ms
+  FLAG E6/kvasm-control/c4/t4/get100-v1024-k1000000-uni-c64d16/r1 (block 1, ok): dev container 13248 ms; dev container 8454 ms; dev container 9927 ms; side vCPUs 1.98 busy (window mean)
+  FLAG E6/kvasm-control/c4/t4/get100-v16384-k65536-uni-c64d16/r1 (block 1, ok): dev container 10685 ms; dev container 12531 ms; dev container 8381 ms; side vCPUs 2.04 busy (window mean)
+  FLAG E6/kvasm/c4/t4/get100-v16384-k65536-uni-c64d16/r2 (block 2, ok): dev container 12362 ms; dev container 12980 ms; dev container 8520 ms; dev container 9677 ms; side vCPUs 2.42 busy (window mean)
+  FLAG E6/kvasm/c4/t4/get100-v1024-k1000000-uni-c64d16/r2 (block 2, ok): dev container 10822 ms; dev container 11014 ms; dev container 11173 ms; dev container 9701 ms; side vCPUs 2.16 busy (window mean)
+  FLAG E6/kvasm-control/c4/t4/get100-v16384-k65536-uni-c64d16/r2 (block 2, ok): dev container 10096 ms; dev container 10212 ms; dev container 9303 ms; dev container 9877 ms; side vCPUs 1.65 busy (window mean)
+  FLAG E6/kvasm-control/c4/t4/get100-v1024-k1000000-uni-c64d16/r2 (block 2, ok): dev container 10033 ms; dev container 10287 ms; dev container 10743 ms; dev container 10811 ms; side vCPUs 2.15 busy (window mean)
+  FLAG E7/kvasm-control/c4/t4/get100-v100-k1000000-uni-c16d1/r0 (block 0, ok): dev container 10151 ms; dev container 10902 ms; dev container 10953 ms; dev container 9955 ms; side vCPUs 2.16 busy (window mean)
+  FLAG E7/kvasm/c4/t4/get100-v100-k1000000-uni-c64d1/r0 (block 0, ok): dev container 10058 ms; dev container 10588 ms; dev container 10753 ms; dev container 10783 ms; side vCPUs 2.12 busy (window mean)
+  FLAG E7/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d1/r0 (block 0, ok): dev container 10179 ms; dev container 10992 ms; dev container 11112 ms; side vCPUs 1.55 busy (window mean)
+  FLAG E7/kvasm/c4/t4/get100-v100-k1000000-uni-c1d1/r0 (block 0, ok): dev container 29027 ms; dev container 30458 ms; dev container 35559 ms; side vCPUs 6.81 busy (window mean)
+  FLAG E7/kvasm/c4/t4/get100-v100-k1000000-uni-c64d4/r0 (block 0, ok): dev container 27244 ms; dev container 27349 ms; dev container 28869 ms; dev container 35569 ms; side vCPUs 6.03 busy (window mean)
+  FLAG E7/kvasm/c4/t4/get100-v100-k1000000-uni-c16d1/r0 (block 0, ok): dev container 21326 ms; dev container 31083 ms; dev container 33852 ms; side vCPUs 6.01 busy (window mean)
+  FLAG E7/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d4/r0 (block 0, ok): dev container 16998 ms; dev container 20000 ms; dev container 20928 ms; side vCPUs 3.19 busy (window mean)
+  FLAG E7/kvasm-control/c4/t4/get100-v100-k1000000-uni-c1d1/r0 (block 0, ok): dev container 15100 ms; dev container 15849 ms; dev container 16525 ms; dev container 16947 ms; side vCPUs 3.08 busy (window mean)
+  FLAG E7/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 16125 ms; dev container 17883 ms; dev container 18581 ms; side vCPUs 3.49 busy (window mean)
+  FLAG E7/kvasm/c4/t4/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 16425 ms; dev container 17849 ms; dev container 17859 ms; side vCPUs 2.39 busy (window mean)
+  FLAG E7/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d4/r1 (block 1, ok): dev container 15585 ms; dev container 17681 ms; dev container 17761 ms; dev container 18359 ms; side vCPUs 3.46 busy (window mean)
+  FLAG E7/kvasm-control/c4/t4/get100-v100-k1000000-uni-c1d1/r1 (block 1, ok): dev container 15440 ms; dev container 16121 ms; dev container 3761 ms; side vCPUs 1.82 busy (window mean)
+  FLAG E7/kvasm/c4/t4/get100-v100-k1000000-uni-c64d1/r1 (block 1, ok): dev container 12243 ms; dev container 1789 ms; dev container 3040 ms; side vCPUs 0.80 busy (window mean)
+  FLAG E7/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 35527 ms; dev container 35873 ms; dev container 36045 ms; dev container 36400 ms; side vCPUs 6.95 busy (window mean)
+  FLAG E7/kvasm/c4/t4/get100-v100-k1000000-uni-c1d1/r1 (block 1, ok): dev container 20913 ms; dev container 35943 ms; dev container 35976 ms; dev container 36219 ms; side vCPUs 6.90 busy (window mean)
+  FLAG E7/kvasm/c4/t4/get100-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 14563 ms; dev container 18749 ms; dev container 4016 ms; side vCPUs 2.74 busy (window mean)
+  FLAG E7/kvasm/c4/t4/get100-v100-k1000000-uni-c64d4/r1 (block 1, ok): dev container 70 ms; dev container 753 ms; dev container 926 ms
+  FLAG E7/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d1/r1 (block 1, ok): dev container 18926 ms; dev container 20370 ms; dev container 3470 ms; side vCPUs 0.74 busy (window mean)
+  FLAG E7/kvasm-control/c4/t4/get100-v100-k1000000-uni-c16d1/r1 (block 1, ok): dev container 19176 ms; dev container 34978 ms; dev container 35178 ms; dev container 36114 ms; side vCPUs 6.12 busy (window mean)
+  FLAG E7/kvasm/c4/t4/get100-v100-k1000000-uni-c64d4/r2 (block 2, ok): dev container 11756 ms; dev container 15987 ms; dev container 3740 ms; dev container 71 ms; side vCPUs 1.62 busy (window mean)
+  FLAG E7/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d1/r2 (block 2, ok): dev container 13186 ms; dev container 3985 ms; dev container 672 ms; dev container 955 ms; side vCPUs 0.55 busy (window mean)
+  FLAG E7/kvasm-control/c4/t4/get100-v100-k1000000-uni-c16d1/r2 (block 2, ok): dev container 35716 ms; dev container 36025 ms; dev container 36179 ms; idle-declared containers 69 ms; side vCPUs 6.88 busy (window mean)
+  FLAG E7/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d16/r2 (block 2, ok): dev container 13080 ms; dev container 19119 ms; dev container 34712 ms; dev container 36411 ms; side vCPUs 4.29 busy (window mean)
+  FLAG E7/kvasm/c4/t4/get100-v100-k1000000-uni-c64d16/r2 (block 2, ok): dev container 11697 ms; dev container 12859 ms; dev container 3772 ms; dev container 71 ms; side vCPUs 1.72 busy (window mean)
+  FLAG E8/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d16-kvbench-onekey/r1 (block 1, ok): side vCPUs 0.26 busy (window mean)
+  FLAG E8/kvasm/c4/t4/get100-v100-k1000000-uni-c64d16-h2load-onekey/r1 (block 1, ok): side vCPUs 0.46 busy (window mean)
+  FLAG E8/kvasm-control/c4/t4/get100-v100-k1000000-uni-c64d16-h2load-onekey/r2 (block 2, ok): side vCPUs 0.26 busy (window mean)
+  FLAG N1/kvasm/c1/t1/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 1549 ms; dev container 24322 ms; dev container 35983 ms; side vCPUs 2.30 busy (window mean)
+  FLAG N1/kvasm-control/c1/t1/get100-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 27826 ms; dev container 35462 ms; dev container 36212 ms; dev container 36419 ms; side vCPUs 6.25 busy (window mean)
+  FLAG N1/kvasm/c1/t1/get100-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 11635 ms; dev container 1227 ms; dev container 15656 ms; dev container 19763 ms; side vCPUs 2.40 busy (window mean)
+  FLAG N1/kvasm/c1/t1/get100-v100-k1000000-uni-c64d16/r2 (block 2, ok): dev container 1763 ms; dev container 79 ms; dev container 841 ms
+  FLAG N1/kvasm-control/c1/t1/get100-v100-k1000000-uni-c64d16/r2 (block 2, ok): dev container 15689 ms; dev container 2443 ms; side vCPUs 0.49 busy (window mean)
+  FLAG N3/kvasm-control/c1/t1/ping-v100-k1000000-uni-c64d16/r2 (block 2, ok): dev container 43 ms
+  FLAG N3/kvasm/c1/t1/ping-v100-k1000000-uni-c64d16/r3 (block 3, ok): dev container 30 ms
+  FLAG N3/kvasm-control/c1/t1/ping-v100-k1000000-uni-c64d16/r3 (block 3, ok): dev container 136 ms
+  FLAG N3/kvasm-control/c1/t1/ping-v100-k1000000-uni-c64d16/r5 (block 5, ok): idle-declared containers 20 ms; idle-declared containers 53 ms

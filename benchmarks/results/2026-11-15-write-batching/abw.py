@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""abw.py — concurrent paired A/B of two kvnode binaries on write-heavy mixes.
+"""abw.py — concurrent paired A/B of two kvasm binaries on write-heavy mixes.
 
 Usage: abw.py BLOCKS CONFIG... with
 CONFIG = WORKERS:READ_RATIO:VALUE_BYTES[:CONNECTIONS:DEPTH]
@@ -31,7 +31,7 @@ construction; the per-block slot swap still cancels any even/odd sibling
 difference. Absolute rates are lower (each variant gets half of each core),
 the ratios fair. vCPU 0-1 are avoided (vCPU 0 takes the VM's interrupts).
 
-Per run: fresh servers (KVNODE_WORKERS as configured, capacity 1.25M), 1M
+Per run: fresh servers (KVASM_WORKERS as configured, capacity 1.25M), 1M
 keys preloaded into each (so a SET replaces an existing key, the common
 case), then both kvbench clients start together: 16 threads, 64 connections x 16
 requests in flight by default (1,024), 3 s warm-up, 10 s measured. Recorded per
@@ -52,7 +52,7 @@ import sys
 import time
 
 KVB = "/src/benchmarks/kvbench/build/kvbench"
-BIN = {"A": "/tmp/kvnode-A", "B": "/tmp/kvnode-B"}
+BIN = {"A": "/tmp/kvasm-A", "B": "/tmp/kvasm-B"}
 EVEN_CLIENTS = ",".join(str(c) for c in range(16, 32, 2))
 ODD_CLIENTS = ",".join(str(c) for c in range(17, 32, 2))
 SLOTS = {
@@ -69,8 +69,8 @@ def start(variant, cpus, port, workers, log):
     Args:
         variant: "A" or "B", the key of BIN naming the binary to run.
         cpus: taskset CPU list the server is pinned to (e.g. "2-5").
-        port: TCP port the server listens on (KVNODE_PORT).
-        workers: KVNODE_WORKERS, the number of event-loop threads.
+        port: TCP port the server listens on (KVASM_PORT).
+        workers: KVASM_WORKERS, the number of event-loop threads.
         log: path of the file that receives the server's stderr (its log).
 
     Returns:
@@ -80,8 +80,8 @@ def start(variant, cpus, port, workers, log):
         SystemExit: the server did not log "listening" within 10 s.
         OSError: the log file or the binary could not be opened.
     """
-    env = dict(os.environ, KVNODE_PORT=str(port), KVNODE_WORKERS=str(workers),
-               KVNODE_CAPACITY="1250000")
+    env = dict(os.environ, KVASM_PORT=str(port), KVASM_WORKERS=str(workers),
+               KVASM_CAPACITY="1250000")
     f = open(log, "w")
     p = subprocess.Popen(["taskset", "-c", cpus, BIN[variant]], env=env, stderr=f)
     for _ in range(500):
@@ -166,7 +166,7 @@ def block(blk, workers, ratio, vsize, conns, depth):
 
     Args:
         blk: block index; its parity decides which variant takes slot 0.
-        workers: KVNODE_WORKERS for both servers (selects SLOTS[workers]).
+        workers: KVASM_WORKERS for both servers (selects SLOTS[workers]).
         ratio: kvbench --read-ratio (0 = 100% SET, 1 = 100% GET).
         vsize: value size in bytes.
         conns: kvbench --connections (spread over 16 client threads).

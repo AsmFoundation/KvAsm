@@ -13,7 +13,7 @@
 ; EPOLLOUT only (its input is not read), so a client that sends requests but
 ; never reads responses cannot make the server buffer unbounded replies.
 ;
-; HTTP/2 is KvNode's own engine (h2n.asm, ADR 0007): it reads, parses and
+; HTTP/2 is KvAsm's own engine (h2n.asm, ADR 0007): it reads, parses and
 ; frames responses straight into the connection's output buffer. Output is
 ; coalesced twice: everything one read produced leaves in one sendto
 ; (measured: ~1 syscall per 16 requests instead of 3 per request), and every
@@ -42,7 +42,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 %include "server.inc"
 
 %define SYS_close           3
@@ -152,7 +152,7 @@ global kv_worker_join
 ;          (-EADDRINUSE when any other socket is bound or listening on it).
 ; @remarks Why this exists: the workers bind with SO_REUSEPORT, and Linux
 ;          lets every process with the same effective UID join a REUSEPORT
-;          group. A second kvnode started on the same port (host networking,
+;          group. A second kvasm started on the same port (host networking,
 ;          a dev machine, a botched rolling restart) would therefore NOT fail
 ;          to bind — it would silently receive a share of new connections and
 ;          answer them from its own, different store. The probe binds WITHOUT
@@ -259,7 +259,7 @@ kv_worker_create:
     test    rax, rax
     jz      .fail_alloc
 
-    ; Private L1/L2 record cache (KVNODE_CACHE_L1_BITS/L2_BITS; off by
+    ; Private L1/L2 record cache (KVASM_CACHE_L1_BITS/L2_BITS; off by
     ; default, see ADR 0006). Main enabled the table's invalidation
     ; generations before any worker was created.
     mov     rax, [r14 + Config.cache_l1_bits]
@@ -1106,7 +1106,7 @@ conn_flush:
     ; Output the peer accepts is activity too: a long Download whose window
     ; never runs out makes the client send nothing, and must not be cut by
     ; the idle timeout. A peer that stops reading makes no progress here, so
-    ; KVNODE_IDLE_TIMEOUT_SEC still ends a stalled transfer (and its pin).
+    ; KVASM_IDLE_TIMEOUT_SEC still ends a stalled transfer (and its pin).
     mov     rcx, [rbx + Worker.now]
     mov     [rbp + Conn.last_active], rcx
     jmp     .send_pending
@@ -1308,7 +1308,7 @@ conn_destroy:
 ;          stalled at the TCP level, CONN_IDLE_CLOSING) — and returns
 ;          retired store memory even when no writes happen: every worker
 ;          its own slot's (ADR 0011), worker 0 also the global limbo.
-;          "Idle" is no byte received or sent for KVNODE_IDLE_TIMEOUT_SEC,
+;          "Idle" is no byte received or sent for KVASM_IDLE_TIMEOUT_SEC,
 ;          so a transfer that keeps moving is never cut, while one whose
 ;          peer stopped reading ends at most ~2 s (two passes) after the
 ;          timeout. With the timeout disabled (0) neither ever happens.

@@ -4,7 +4,7 @@
 # block: the concurrent paired A/B that cancels load that varies over time
 # (other benchmarks, VMs on the host), which sequential runs cannot.
 #
-# Usage (inside kvnode-dev):
+# Usage (inside kvasm-dev):
 #   abpair.sh BIN_A BIN_B BLOCKS KEYS VALUE_SIZE "KVBENCH_RUN_ARGS"
 # Environment (defaults in parentheses):
 #   AB_SCPU0 / AB_SCPU1   server vCPU of slot 0 / slot 1          (12 / 13)
@@ -29,7 +29,7 @@ PORT=(50355 50356)
 
 run_side() {  # slot binary tag: start a server, preload it, remember its pid
   local s=$1 bin=$2 tag=$3
-  KVNODE_PORT=${PORT[$s]} KVNODE_WORKERS=1 KVNODE_CAPACITY=$((KEYS * 2 + 1000)) \
+  KVASM_PORT=${PORT[$s]} KVASM_WORKERS=1 KVASM_CAPACITY=$((KEYS * 2 + 1000)) \
       taskset -c "${SCPU[$s]}" "$bin" 2> /tmp/abpair.$tag.log &
   local spid=$!
   for _ in $(seq 1 200); do grep -q 'msg="listening"' /tmp/abpair.$tag.log && break; sleep 0.05; done

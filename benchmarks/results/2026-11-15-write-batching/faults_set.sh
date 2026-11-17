@@ -5,7 +5,7 @@
 # without extra environment (e.g. GLIBC_TUNABLES), to test whether glibc's
 # heap trimming makes record memory churn through the kernel.
 #
-# Usage (inside the kvnode-dev container):
+# Usage (inside the kvasm-dev container):
 #   [READ_RATIO=r] faults_set.sh BINARY [ENV=VALUE ...]   (READ_RATIO: kvbench
 #   --read-ratio, default 0 = 100% SET; 1 = 100% GET, the comparison)
 # One worker on vCPU 2, the same 100% SET load as profile_set.sh, 8 s window.
@@ -20,7 +20,7 @@ PORT=50298
 KVB=/src/benchmarks/kvbench/build/kvbench
 LOG=/tmp/faults_set.log
 
-env "$@" KVNODE_PORT=$PORT KVNODE_WORKERS=1 KVNODE_CAPACITY=1250000 \
+env "$@" KVASM_PORT=$PORT KVASM_WORKERS=1 KVASM_CAPACITY=1250000 \
     taskset -c 2 "$BIN" 2> "$LOG" &
 SPID=$!
 trap 'kill -TERM $SPID 2>/dev/null || true; wait $SPID 2>/dev/null || true' EXIT

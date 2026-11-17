@@ -2,7 +2,7 @@
  {
   "commit": "d95793d",
   "date": "2026-09-26T01:12:00+03:00",
-  "subject": "KvNode 0.1.0: gRPC key-value server in x86-64 assembly + .NET client",
+  "subject": "KvAsm 0.1.0: gRPC key-value server in x86-64 assembly + .NET client",
   "results_docs": 0,
   "asm": 6911,
   "server_tests": 3175,

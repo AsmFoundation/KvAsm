@@ -38,11 +38,11 @@
     "dirty": false
   },
   "images": {
-    "kvnode": {
-      "image": "kvnode:0.1.0",
+    "kvasm": {
+      "image": "kvasm:0.1.0",
       "id": "sha256:3728b25dfe862db82726c94be8a7acb4f44388e7eee60bcb8a8ab03267ecf9f3",
       "digests": [
-        "kvnode@sha256:3728b25dfe862db82726c94be8a7acb4f44388e7eee60bcb8a8ab03267ecf9f3"
+        "kvasm@sha256:3728b25dfe862db82726c94be8a7acb4f44388e7eee60bcb8a8ab03267ecf9f3"
       ]
     },
     "redis": {
@@ -81,10 +81,10 @@
       ]
     },
     "kvbench": {
-      "image": "kvnode-kvbench:dev",
+      "image": "kvasm-kvbench:dev",
       "id": "sha256:952a6003559218bdb17f3b6ac3995904815278647064a4aca8cb7064e43cdf86",
       "digests": [
-        "kvnode-kvbench@sha256:952a6003559218bdb17f3b6ac3995904815278647064a4aca8cb7064e43cdf86"
+        "kvasm-kvbench@sha256:952a6003559218bdb17f3b6ac3995904815278647064a4aca8cb7064e43cdf86"
       ]
     },
     "memtier": {
@@ -95,20 +95,20 @@
       ]
     },
     "h2load": {
-      "image": "kvnode-toolchain:latest",
+      "image": "kvasm-toolchain:latest",
       "id": "sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d",
       "digests": [
-        "kvnode-toolchain@sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d"
+        "kvasm-toolchain@sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d"
       ]
     }
   },
   "systems": {
-    "kvnode": {
-      "title": "KvNode 0.1.0",
-      "image": "kvnode:0.1.0",
+    "kvasm": {
+      "title": "KvAsm 0.1.0",
+      "image": "kvasm:0.1.0",
       "protocol": "grpc",
-      "notes": "gRPC over h2c; one worker thread per core (KVNODE_WORKERS).",
-      "build": "docker build --target runtime -t kvnode:0.1.0 . (repository root)"
+      "notes": "gRPC over h2c; one worker thread per core (KVASM_WORKERS).",
+      "build": "docker build --target runtime -t kvasm:0.1.0 . (repository root)"
     },
     "redis": {
       "title": "Redis 8.10.2",
@@ -152,7 +152,7 @@
       "title": "Thread-count tuning",
       "question": "Which thread count gives each system its best throughput for N cores (N or N-1)?",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey",
         "dragonfly",
@@ -186,7 +186,7 @@
       "title": "Throughput scaling",
       "question": "Peak GET throughput as the core budget grows from 1 to 8.",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey",
         "dragonfly",
@@ -222,7 +222,7 @@
       "title": "Read/write mixes",
       "question": "How do writes and skewed (Zipfian) access change throughput at 4 cores?",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey",
         "dragonfly",
@@ -285,7 +285,7 @@
       "title": "No pipelining",
       "question": "Throughput with one request in flight per connection (256 connections), at 4 cores.",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey",
         "dragonfly",
@@ -318,7 +318,7 @@
       "title": "Latency at fixed load",
       "question": "Latency percentiles at identical offered loads (open loop, Poisson arrivals), at 25/50/75% of the slowest system's E1 peak at 4 cores.",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey",
         "dragonfly",
@@ -340,7 +340,7 @@
       "title": "Per-request floor",
       "question": "Cost of the cheapest round trip (PING / meta no-op / gRPC health check) on 1 core.",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey",
         "dragonfly",
@@ -373,7 +373,7 @@
       "title": "Value size",
       "question": "GET throughput with 1 KiB and 16 KiB values (about 1 GiB of data each), at 4 cores.",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey",
         "dragonfly",
@@ -416,7 +416,7 @@
       "title": "Concurrency sweep",
       "question": "Throughput and latency from exactly 1 request in flight up to 1,024, at 4 cores: 1x1, 16x1, 64x1, 64x4 and 64x16 connections x depth.",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey",
         "dragonfly",
@@ -490,7 +490,7 @@
       "question": "Is kvbench as efficient a client as each ecosystem's standard tool?",
       "systems": [
         "redis",
-        "kvnode"
+        "kvasm"
       ],
       "cores": [
         4
@@ -515,10 +515,10 @@
     },
     {
       "id": "N1",
-      "title": "One core: KvNode vs Redis and Valkey",
-      "question": "Does KvNode beat Redis and Valkey on a single core? E1's workload.",
+      "title": "One core: KvAsm vs Redis and Valkey",
+      "question": "Does KvAsm beat Redis and Valkey on a single core? E1's workload.",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey"
       ],
@@ -548,7 +548,7 @@
       "title": "One core: per-request floor",
       "question": "E5's no-op round trip on 1 core: gRPC health check against PING on Redis and Valkey.",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey"
       ],
@@ -578,7 +578,7 @@
       "title": "Measurement stability",
       "question": "Are the measurements repeatable? Ten fresh-server repetitions of E1's 4-core cell. It runs last, so comparing it with E1 also shows drift across the whole session.",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey",
         "dragonfly",

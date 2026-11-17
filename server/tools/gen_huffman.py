@@ -31,7 +31,7 @@ The table is checked before it is written:
   * padding rules: 7 one-bits accepted, 8 rejected, zero padding rejected,
     EOS inside a string rejected.
 Any failed check aborts with a non-zero exit and writes nothing.
-The output is committed, so building KvNode never needs Python.
+The output is committed, so building KvAsm never needs Python.
 """
 
 import sys

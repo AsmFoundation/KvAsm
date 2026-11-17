@@ -33,7 +33,7 @@ Two constraints come from the platform:
 
 ## Decision
 
-**Networking: thread-per-core, share-nothing.** `KVNODE_WORKERS` threads
+**Networking: thread-per-core, share-nothing.** `KVASM_WORKERS` threads
 (default: the CPUs in the affinity mask). Each worker has its own
 `SO_REUSEPORT` listener, `epoll` instance, connections and nghttp2 sessions,
 so a connection never changes threads and needs no lock. The kernel spreads

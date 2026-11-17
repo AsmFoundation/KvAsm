@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
-# getcost.sh — what one request costs a single kvnode worker, natively:
+# getcost.sh — what one request costs a single kvasm worker, natively:
 # requests/s, server CPU per request (user/kernel, ns-exact from schedstat via
 # kvbench --server-pid), minor page faults and syscalls-free counters from
 # /proc/PID/stat. One line per (binary, workload) so variants can be diffed.
 #
-# Usage (inside kvnode-dev):
+# Usage (inside kvasm-dev):
 #   getcost.sh BINARY LABEL KEYS VALUE_SIZE "KVBENCH_RUN_ARGS" [SECONDS] [SRV_CPU] [CLI_CPUS] [PORT]
 # Defaults: 6 s measured, server on vCPU 12, client on vCPUs 13-15, port 50352
 # (vCPUs and port chosen to stay off the ones other sessions benchmark on).
@@ -20,7 +20,7 @@ SECS=${6:-6}; SCPU=${7:-12}; CCPUS=${8:-13-15}; PORT=${9:-50352}
 KVB=/src/benchmarks/kvbench/build/kvbench
 LOG=/tmp/getcost.$PORT.log
 
-KVNODE_PORT=$PORT KVNODE_WORKERS=1 KVNODE_CAPACITY=$((KEYS * 2 + 1000)) \
+KVASM_PORT=$PORT KVASM_WORKERS=1 KVASM_CAPACITY=$((KEYS * 2 + 1000)) \
     taskset -c "$SCPU" "$BIN" 2> "$LOG" &
 SPID=$!
 trap 'kill -TERM $SPID 2>/dev/null || true; wait $SPID 2>/dev/null || true' EXIT

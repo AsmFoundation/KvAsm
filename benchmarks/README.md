@@ -1,21 +1,21 @@
-# KvNode benchmarks
+# KvAsm benchmarks
 
-This folder compares KvNode with other in-memory key-value servers (Redis,
+This folder compares KvAsm with other in-memory key-value servers (Redis,
 Valkey, Dragonfly, Garnet and Memcached), using one client, one placement
 and one statistical method for all of them. The rules, and the reasons
 behind each, are in [METHODOLOGY.md](METHODOLOGY.md).
 
-## KvNode re-measured, paired with the 2026-09-27 image (2026-11-15)
+## KvAsm re-measured, paired with the 2026-09-27 image (2026-11-15)
 
-The standard suite was re-run for KvNode only; the other stores were not
+The standard suite was re-run for KvAsm only; the other stores were not
 re-measured.
 - **The host had moved.** The very image the 2026-09-27 suite measured ran
   ~1.5× slower per GET than it did that day
-  ([pass 1](results/2026-11-15-kvnode-pass1/README.md)). So today's
+  ([pass 1](results/2026-11-15-kvasm-pass1/README.md)). So today's
   absolute numbers cannot meet the other stores' numbers of that day.
 - **So each run pairs two builds in the same blocks:**
   - the new build;
-  - that image, as `--control-image kvnode:0.1.0`.
+  - that image, as `--control-image kvasm:0.1.0`.
 
   Every cell yields a same-day new ÷ old ratio. Estimates against the
   other stores follow as (new ÷ control today) × (control ÷ store, paired
@@ -23,9 +23,9 @@ re-measured.
 - **Sessions:**
   - `main` at `850cfd9`: ADR 0011 plus the audit's request-path changes.
     A clean session, 222 of 272 windows clean
-    ([2026-11-15-kvnode-head](results/2026-11-15-kvnode-head/README.md)).
+    ([2026-11-15-kvasm-head](results/2026-11-15-kvasm-head/README.md)).
   - ADR 0011 alone: 167 of 272 windows overlapped another session's
-    builds ([2026-11-15-kvnode-standard](results/2026-11-15-kvnode-standard/README.md)).
+    builds ([2026-11-15-kvasm-standard](results/2026-11-15-kvasm-standard/README.md)).
 
 `main` ÷ the 2026-09-27 image, paired:
 
@@ -67,7 +67,7 @@ batches writes per read and moved their cleanup out of the writer lock.
   - Every run window overlapped other work in the VM, and a median 10.3
     CPUs were busy outside it. The other stores ran at under half their
     2026-09-27 rates.
-  - KvNode's writes came out ahead of all five on 100% SET:
+  - KvAsm's writes came out ahead of all five on 100% SET:
     - Redis 2.79×, Valkey 3.76×, Dragonfly 2.91× and Memcached 4.17×
       (6/6 blocks each);
     - Garnet 1.72× (5/6 blocks).
@@ -82,17 +82,17 @@ E1 went from 4.98M GET/s at 4 cores to 5.99M at 8. A paired A/B gave the
 same 8-worker server a bigger client
 ([README](results/2026-09-28-client-ceiling/README.md)):
 
-- **The standard client is saturated.** On 16 vCPUs, KvNode did 9.72M
+- **The standard client is saturated.** On 16 vCPUs, KvAsm did 9.72M
   GET/s with the client 97% busy and its own cores 69% busy.
 - **A bigger client is slower.** On 24 vCPUs it did 8.60M (0.877×, 6/6
   blocks, p = 0.031):
-  - KvNode's CPU per GET rose 43% (568 → 810 ns);
+  - KvAsm's CPU per GET rose 43% (568 → 810 ns);
   - the client's CPU per request rose 18%.
 - **Why:** the i9-13900K has 24 physical cores behind its 32 logical CPUs,
   and 8 server plus 16 client vCPUs already keep all 24 busy. The spare
-  vCPUs are hyperthread siblings. From 4 to 8 server vCPUs, KvNode's CPU per
+  vCPUs are hyperthread siblings. From 4 to 8 server vCPUs, KvAsm's CPU per
   GET also rose, from 435 to 568 ns (unpaired, across sessions).
-- **So:** from 4 to 8 cores on the quiet host, KvNode went from 8.84M to
+- **So:** from 4 to 8 cores on the quiet host, KvAsm went from 8.84M to
   9.72M. Its 8-core figures are floors (about 14M GET/s if 8 cores were
   fully busy at the same cost per GET), and measuring 8 cores needs the
   client on a second machine.
@@ -114,13 +114,13 @@ two-phase event loop and allocation-free small replies. Revision `a0264f7`,
 - An in-VM watcher found no interference from other sessions: 745 of 747
   run windows clean, and 2 single-interval blips.
 
-**4 cores, quiet host** (S1, 10 paired blocks; KvNode was ahead in every
+**4 cores, quiet host** (S1, 10 paired blocks; KvAsm was ahead in every
 block against every server, p = 0.002):
 
-| 4 cores | KvNode | Redis | Valkey | Dragonfly | Garnet | Memcached |
+| 4 cores | KvAsm | Redis | Valkey | Dragonfly | Garnet | Memcached |
 |---|---|---|---|---|---|---|
 | GET/s | **8.84 M** | 2.88 M | 3.20 M | 2.40 M | 3.86 M | 3.01 M |
-| KvNode ÷ X | — | **3.07×** | **2.76×** | **3.68×** | **2.29×** | **2.94×** |
+| KvAsm ÷ X | — | **3.07×** | **2.76×** | **3.68×** | **2.29×** | **2.94×** |
 
 - **1 core (N1, 6/6 blocks):**
   - 1.76M GET/s against Redis's 1.40M (1.26×) and Valkey's 1.42M (1.24×);
@@ -135,10 +135,10 @@ block against every server, p = 0.002):
   p99 is second only to Valkey's.
 - **Behind:**
   - writes: 2.23M SET/s, 0.87× Redis, 0.90× Dragonfly and 0.60× Garnet;
-  - 16 KiB values: 481k, 0.50× Garnet and 0.48× Memcached. Here KvNode is
+  - 16 KiB values: 481k, 0.50× Garnet and 0.48× Memcached. Here KvAsm is
     **30% below the old nghttp2 build**, while the other servers lost
     5–8%. The cause was found on 2026-11-15 — a reply longer than one
-    frame left the fast path — and fixed after 0.2.0
+    frame left the fast path — and fixed in 0.3.0
     ([results](results/2026-11-15-asm-audit/README.md)); this suite has
     not measured the fix yet.
 - **Against the nghttp2 build** (2026-09-26, with the other servers
@@ -148,16 +148,16 @@ block against every server, p = 0.002):
   - 1.3× on writes;
   - no-op 1,086 → 472 ns.
 - **The client is now the ceiling.** kvbench's gRPC client tops out near
-  9.3M requests/s on its 16 vCPUs. KvNode's 8-core cells therefore measure
-  the client (KvNode used 0.52–0.70 of its 8 cores), and S1's 8.84M is a
+  9.3M requests/s on its 16 vCPUs. KvAsm's 8-core cells therefore measure
+  the client (KvAsm used 0.52–0.70 of its 8 cores), and S1's 8.84M is a
   floor. A bigger client on this host is slower, as the section above
   shows.
 - **E1 (1–8 cores) ran under the load.**
-  - KvNode was ahead of every server at every budget in every block, except
+  - KvAsm was ahead of every server at every budget in every block, except
     Garnet at 8 cores (1.21×, 5 of 6 blocks).
   - Absolute numbers are depressed: S1 ran 1.16–1.78× faster than the same
     E1 cell.
-  - The load shrank KvNode's lead over Garnet, Memcached and Valkey rather
+  - The load shrank KvAsm's lead over Garnet, Memcached and Valkey rather
     than inflating it.
 
 ## Second pass: exact instruction counts (2026-09-27)
@@ -166,7 +166,7 @@ Another project kept 25–30 of 32 CPUs busy, so this pass measured what
 host load cannot change
 ([README](results/2026-09-27-second-pass/README.md)):
 
-- **Wakeups per 1,000 requests under load:** KvNode's worker 0.00, the
+- **Wakeups per 1,000 requests under load:** KvAsm's worker 0.00, the
   client ~27. The worker never sleeps under load; the wakeups on a
   loopback profile are the client's, run on our CPU by our `sendto`.
 - **Instructions per request, exact (callgrind):**
@@ -215,14 +215,14 @@ Evidence: [README](results/2026-09-27-two-phase/README.md).
 ## One core, profiled: where the time and the memory go (2026-09-26)
 
 Since [ADR 0008](../docs/adr/0008-remove-nghttp2-from-the-server.md)
-KvNode's own HTTP/2 engine is its only one: nghttp2 is out of the server,
+KvAsm's own HTTP/2 engine is its only one: nghttp2 is out of the server,
 and remains only as kvbench's gRPC client. A kernel-inclusive `perf`
 profile of one worker under E1's load (a privileged helper container, so
 kernel symbols resolve), the memory model, and the A/B of the one change
 the profile led to:
 [README](results/2026-09-26-profile-memory/README.md).
 
-- **Half of a loaded core is the client's wakeup, not KvNode.** Over
+- **Half of a loaded core is the client's wakeup, not KvAsm.** Over
   loopback, the server's `sendto` runs the client's TCP receive in softirq
   on the server's CPU and wakes the client thread sleeping in
   `epoll_wait`. Under WSL2 that wakeup is a cross-vCPU IPI: 48% of the
@@ -244,17 +244,17 @@ the profile led to:
 
 ## Native HTTP/2 engine: 1 core now beats Redis and Valkey (2026-09-26)
 
-KvNode's own HTTP/2 engine (`server/src/h2n.asm`,
+KvAsm's own HTTP/2 engine (`server/src/h2n.asm`,
 [ADR 0007](../docs/adr/0007-native-http2-engine.md)) replaced nghttp2 as
 the default. N1–N3 compared it with nghttp2 in the same image, and with
 Redis and Valkey, with the same method as below (ADR 0008 later removed
-nghttp2 from the server; N1 and N3 now compare KvNode with Redis and
+nghttp2 from the server; N1 and N3 now compare KvAsm with Redis and
 Valkey only). Final session:
 [REPORT.md](results/2026-09-26-native-final/REPORT.md)
 ([README](results/2026-09-26-native-final/README.md)); the two earlier
 sessions record the engine's first version and the header-block cache.
 
-| 1 core (N1) | KvNode native | Redis | Valkey | KvNode nghttp2 |
+| 1 core (N1) | KvAsm native | Redis | Valkey | KvAsm nghttp2 |
 |---|---|---|---|---|
 | GET/s, median of 6 | **1.51 M** | 1.27 M | 1.24 M | 744 k |
 | native ÷ X (paired, 6/6 blocks) | — | **1.19×** [1.10–1.35] | **1.22×** [1.14–1.34] | 2.03× |
@@ -282,12 +282,12 @@ sessions record the engine's first version and the header-block cache.
   linearly from 1 to 4 cores for every server. Compare servers within one
   core budget, not across budgets.
 
-The standard session below predates the native engine: its KvNode is the
+The standard session below predates the native engine: its KvAsm is the
 nghttp2 build (at the time, the only engine).
 
 ## Results (2026-09-26, nghttp2 build)
 
-Superseded for KvNode by the 2026-09-27 full session at the top. The other
+Superseded for KvAsm by the 2026-09-27 full session at the top. The other
 servers measured within about ±10% of their numbers here, cell by cell.
 
 **Setup.** Intel i9-13900K under Docker Desktop / WSL2, revision `8cb0fef`,
@@ -301,43 +301,43 @@ and the report adjusts for it
 **GET throughput** (E1): 100% GET, 1M preloaded keys, 100-byte values,
 1,024 requests in flight. Medians of 6 fresh-server runs, ops/s:
 
-| Server cores | KvNode | Redis | Valkey | Dragonfly | Garnet | Memcached |
+| Server cores | KvAsm | Redis | Valkey | Dragonfly | Garnet | Memcached |
 |---|---|---|---|---|---|---|
 | 1 | 813 k | 1.45 M | 1.44 M | 790 k | 872 k | 771 k |
 | 2 | 1.50 M | 1.57 M | 2.12 M | 1.39 M | 1.97 M | 1.57 M |
 | 4 | **3.02 M** | 2.89 M | 3.29 M | 2.29 M | 3.80 M | 3.12 M |
 | 8 | **5.18 M** | 2.82 M | 2.40 M | 2.92 M | 7.91 M | 6.22 M |
 
-What the comparison shows. Ratios are KvNode ÷ other, raw medians.
-"Clear" means KvNode was ahead (or behind) in all six paired blocks, both
+What the comparison shows. Ratios are KvAsm ÷ other, raw medians.
+"Clear" means KvAsm was ahead (or behind) in all six paired blocks, both
 raw and after adjusting to equal outside load. Everything else is an
 estimate.
 
-- **Scaling is KvNode's strength.** From 1 to 8 cores it grows 6.4×,
+- **Scaling is KvAsm's strength.** From 1 to 8 cores it grows 6.4×,
   thanks to thread-per-core workers over a lock-free store. Redis grows
   1.9×: commands run on one thread. Valkey peaks at 4 cores. At 8 cores
-  KvNode is clearly ahead of Redis (1.83×), Valkey (2.15×) and Dragonfly
+  KvAsm is clearly ahead of Redis (1.83×), Valkey (2.15×) and Dragonfly
   (1.77×), and clearly behind Garnet (0.66×). Behind Memcached (0.83×) is
   clear only after the load adjustment.
-- **Per request, the protocol costs KvNode.** At 1 core it clearly trails
+- **Per request, the protocol costs KvAsm.** At 1 core it clearly trails
   Redis (0.56×) and Valkey (0.57×) and ties Dragonfly, Garnet and
   Memcached. E5 isolates the cause: a no-op gRPC health check costs 1,086
   ns of server CPU, against 422 ns for a Redis `PING` (2.6×). That is
-  HTTP/2 framing, HPACK and gRPC trailers. It caps KvNode at about 920k
+  HTTP/2 framing, HPACK and gRPC trailers. It caps KvAsm at about 920k
   requests/s per core.
 - **Without pipelining** (E3, 256 connections × 1 request): 618k/s, clearly
   ahead of Redis (1.40×), Dragonfly (1.32×) and Garnet (1.25×), tied with
   Valkey and Memcached.
 - **Latency at identical offered load** (E4, open loop, 3 runs each, so
   estimates). At 574k, 1.15M and 1.72M requests/s:
-  - KvNode's p50 is 112, 142 and 163 µs; its p99 is 0.61, 0.68 and 1.17 ms.
+  - KvAsm's p50 is 112, 142 and 163 µs; its p99 is 0.61, 0.68 and 1.17 ms.
   - Only Valkey has consistently lower tails (p99 0.36–0.93 ms).
     Memcached's are lower only at the lightest load.
   - Redis reaches a p99 of 50 ms at the highest load, Dragonfly 3.0 ms, and
     Garnet 97 ms already at 1.15M/s. The highest closed-loop throughput
     does not mean the best latency.
   - Two runs were flagged client-bound: Redis and Dragonfly at 1.72M/s.
-- **Round trip at one request in flight** (E7): KvNode 25.5 µs (p50), level
+- **Round trip at one request in flight** (E7): KvAsm 25.5 µs (p50), level
   with Valkey, Garnet and Memcached (24–27 µs). Redis and Dragonfly take
   47–48 µs.
 - **Writes are the weak spot** (E2, 100% SET, 4 cores): 1.72M/s, clearly
@@ -354,10 +354,10 @@ estimate.
     Redis and 2.40× Valkey, but 0.67× Garnet and 0.66× Memcached.
 - **Memory** (E1): 178 bytes per key for 116 raw bytes. Redis uses 174,
   Valkey 173, Dragonfly 159, Memcached 196, Garnet 284.
-- **Verdict:** KvNode is a strong multi-core GET server with low, stable
+- **Verdict:** KvAsm is a strong multi-core GET server with low, stable
   latency. Garnet and Memcached are faster in raw multi-core throughput,
   and Redis and Valkey are cheaper per request on one core. Writes are
-  KvNode's weakest area.
+  KvAsm's weakest area.
 
 **Client validation** (E8): kvbench was at least as fast as each
 ecosystem's own tool on the same server:
@@ -366,7 +366,7 @@ ecosystem's own tool on the same server:
 |---|---|---|---|
 | Redis | random | 2.91M | redis-benchmark 2.73M, memtier_benchmark 2.73M |
 | Redis | one key | 3.45M | redis-benchmark 3.24M |
-| KvNode | one key | 3.12M | h2load 2.41M |
+| KvAsm | one key | 3.12M | h2load 2.41M |
 
 It handicaps no system.
 
@@ -384,7 +384,7 @@ On a quiet host, yes, and this session shows how to tell:
   - Other programs on the PC cost throughput visibly: Spearman ρ = −0.57
     between outside load and run throughput.
   - Each logical CPU of extra outside load on one side shifted a
-    KvNode ÷ X ratio by about 2–4%, depending on the experiment. The
+    KvAsm ÷ X ratio by about 2–4%, depending on the experiment. The
     report corrects every closed-loop comparison for it.
   - An earlier session with 14–23 busy CPUs outside the VM showed 3×
     swings ([its README](results/2026-09-26-standard/README.md)). Its
@@ -397,7 +397,7 @@ On a quiet host, yes, and this session shows how to tell:
 
 Yes, on both sides, and it is configurable:
 
-- **Server:** KvNode runs one worker thread per core (`KVNODE_WORKERS` =
+- **Server:** KvAsm runs one worker thread per core (`KVASM_WORKERS` =
   N). E0 tested N against N−1 and N won at every budget. Every other
   system also runs its best E0 setting.
 - **Client:** kvbench runs 16 threads with 64 connections and 16 requests
@@ -406,10 +406,10 @@ Yes, on both sides, and it is configurable:
   memcached.
 - **Other levels:** `--threads`, `--connections` and `--depth` set any
   level from 1 up. E3 runs 256 × 1. E7 sweeps 1, 16, 64, 256 and 1,024 in
-  flight. KvNode then goes from 33k to 2.77M GET/s at 4 cores with nghttp2
+  flight. KvAsm then goes from 33k to 2.77M GET/s at 4 cores with nghttp2
   (2026-09-26), and from 35k to 9.11M with the native engine (2026-09-27).
 
-### Did KvNode reach 2,000,000 GET/s?
+### Did KvAsm reach 2,000,000 GET/s?
 
 Yes, reading the goal as 2M GET/s at 4 cores on the standard workload:
 
@@ -433,9 +433,9 @@ When the goal was first met (nghttp2 build, 2026-09-26):
 - **4 cores with the native engine:** 5.45M GET/s in the final N2 session,
   7.80M in the quieter one before it.
 
-How KvNode got there (+28% from batched GET prefetching, ablation-tested):
+How KvAsm got there (+28% from batched GET prefetching, ablation-tested):
 [ADR 0005](../docs/adr/0005-batched-get-prefetch-and-worker-pool.md) and
-[the ablation](results/2026-09-26-kvnode-ablation/README.md).
+[the ablation](results/2026-09-26-kvasm-ablation/README.md).
 
 ## What is here
 
@@ -452,9 +452,9 @@ How KvNode got there (+28% from batched GET prefetching, ablation-tested):
 
 ```sh
 # images (from the repository root)
-docker build --target runtime -t kvnode:0.2.0 .
-docker build --target kvbench -t kvnode-kvbench:dev .
-docker build --target toolchain -t kvnode-toolchain .            # h2load for E8
+docker build --target runtime -t kvasm:0.3.0 .
+docker build --target kvbench -t kvasm-kvbench:dev .
+docker build --target toolchain -t kvasm-toolchain .             # h2load for E8
 docker build -t kvbench/garnet:2.1.8 https://github.com/microsoft/garnet.git#v2.1.8
 
 python benchmarks/run.py --profile standard --out benchmarks/results/<date>-standard
@@ -468,10 +468,10 @@ python benchmarks/analyze.py benchmarks/results/<date>-standard   # writes REPOR
 - `--profile writes` runs only W1, E2's 100% SET and 50% GET cells, in
   about 35 minutes. It re-checks a change to the write path against every
   store.
-- `KVNODE_BENCH_IMAGE=kvnode:<tag>` measures an unreleased KvNode build
+- `KVASM_BENCH_IMAGE=kvasm:<tag>` measures an unreleased KvAsm build
   under its own tag. The report's title then names that image, not the
   release.
-- `--systems kvnode` re-measures KvNode alone, for example the whole
+- `--systems kvasm` re-measures KvAsm alone, for example the whole
   standard suite in about 50 minutes instead of 4.5 hours. Its numbers set
   against an earlier session's other stores are unpaired across sessions,
   so they hold only if the host is as quiet as it was then.
@@ -490,7 +490,7 @@ kvbench --protocol resp|memcache|grpc --port P [--threads 16] [--connections 64]
         [--busy-poll] [--upload | --download [--chunk BYTES]] [--server-pid PID]
 ```
 
-`--upload` / `--download` (gRPC, KvNode's streaming calls) make every
+`--upload` / `--download` (gRPC, KvAsm's streaming calls) make every
 request move one whole `--value-size` value, in `--chunk`-byte messages;
 `--load` then preloads with uploads, and every byte and the server's
 CRC-32C are verified. `--server-pid` reads the server's CPU from its
@@ -521,12 +521,12 @@ correct, 1 when any was wrong, missing or an error, and 2 on usage errors.
 | E6 | Value size: 1 KiB and 16 KiB values, about 1 GiB of data, 4 cores | 6 × 2 × 3 |
 | E7 | Concurrency sweep: 1, 16, 64, 256 and 1,024 requests in flight, 4 cores | 6 × 5 × 3 |
 | E8 | Is kvbench as good a client as redis-benchmark, memtier_benchmark and h2load? | 7 tool configurations × 3 |
-| N1 | One core: KvNode vs Redis and Valkey (E1's workload), the headline re-checked on its own | 3 × 1 × 6 |
+| N1 | One core: KvAsm vs Redis and Valkey (E1's workload), the headline re-checked on its own | 3 × 1 × 6 |
 | N3 | Per-request floor on 1 core: gRPC health check vs Redis/Valkey `PING` | 3 × 1 × 6 |
 | S1 | Stability: E1's 4-core cell ten more times, at the end of the session | 6 × 1 × 10 |
 | W1 | Writes at 4 cores: E2's 100% SET and 50% GET cells on their own (`--profile writes`) | 6 × 2 × 6 |
 
-(Until ADR 0008, N1 and N3 also ran KvNode's nghttp2 engine, and N2
+(Until ADR 0008, N1 and N3 also ran KvAsm's nghttp2 engine, and N2
 compared the two engines at 2 and 4 cores. Those sessions stay in
 `results/2026-09-26-native*`, and `analyze.py` still renders them.)
 

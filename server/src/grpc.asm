@@ -1,6 +1,6 @@
 ; =============================================================================
 ; grpc.asm — gRPC request handling: validation, routing, store operations and
-; the prefetched GET batch, on top of KvNode's HTTP/2 engine (h2n.asm).
+; the prefetched GET batch, on top of KvAsm's HTTP/2 engine (h2n.asm).
 ;
 ; h2n.asm does all HTTP/2 framing, HPACK, flow control and protocol
 ; hardening, and resolves the request header fields into Stream state while
@@ -21,7 +21,7 @@
 ;   kv_grpc_stream_release  unlink and free one Stream
 ;   kv_grpc_free_streams    free every Stream of a connection (teardown)
 ;
-; Routes: /kvnode.v1.KvNode/{Get,Put,Delete} (proto/kvnode/v1/kvnode.proto)
+; Routes: /kvasm.v1.KvAsm/{Get,Put,Delete} (proto/kvasm/v1/kvasm.proto)
 ; and /grpc.health.v1.Health/Check (the standard gRPC health protocol:
 ; SERVING, NOT_SERVING while draining). Anything else is UNIMPLEMENTED.
 ;
@@ -60,7 +60,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 %include "server.inc"
 %include "pbstream.inc"
 
@@ -76,7 +76,7 @@ bits 64
 ; 256 KiB read can carry ~1,500 Puts; applying them all in one hold would make
 ; every other worker's writes wait for it. 64 warm index updates hold the
 ; mutex for a few microseconds while still amortizing each acquisition over
-; 64 writes. It equals the slot's pending capacity (kvnode.inc), so every
+; 64 writes. It equals the slot's pending capacity (kvasm.inc), so every
 ; record a hold replaces is retired outside the mutex (ADR 0011).
 %define WRITE_HOLD_MAX          SLOT_PENDING_MAX
 
@@ -95,7 +95,7 @@ bits 64
 ; are a few calls long.
 %define UPLOAD_NT_MIN           65536
 
-; UploadRequest tags (proto/kvnode/v1/kvnode.proto): field << 3 | wire type.
+; UploadRequest tags (proto/kvasm/v1/kvasm.proto): field << 3 | wire type.
 %define UP_TAG_KEY              0x0A    ; 1: bytes
 %define UP_TAG_SIZE             0x10    ; 2: varint (optional uint64 total_size)
 %define UP_TAG_DATA             0x1A    ; 3: bytes
@@ -122,7 +122,7 @@ bits 64
 %define UE_ORDER                (-11)   ; key/total_size after data began, or data first
 %define UE_FIRST_MISSING        (-12)   ; the first message lacked key or total_size
 %define UE_KEY                  (-13)   ; key length out of range
-%define UE_TOO_LARGE            (-14)   ; total_size above KVNODE_MAX_UPLOAD_BYTES
+%define UE_TOO_LARGE            (-14)   ; total_size above KVASM_MAX_UPLOAD_BYTES
 %define UE_BUDGET               (-15)   ; the connection's upload budget is used up
 %define UE_MEMORY               (-16)   ; the store's memory limit (or malloc) refused
 %define UE_OVERFLOW             (-17)   ; more data than total_size
@@ -259,7 +259,7 @@ CSTR s_accept,      "accept"
 ; Plain HTTP error bodies. Beyond helping a human with curl, a body keeps the
 ; stream open while flow control holds its DATA — HTTP/2 conformance suites
 ; (h2spec) rely on that to exercise stream limits and window handling.
-CSTR b_405,         "405 method not allowed: KvNode speaks gRPC, send POST", 10
+CSTR b_405,         "405 method not allowed: KvAsm speaks gRPC, send POST", 10
 CSTR b_415,         "415 unsupported media type: send content-type application/grpc", 10
 CSTR s_gstatus,     "grpc-status"
 CSTR s_gmessage,    "grpc-message"
@@ -285,11 +285,11 @@ CSTR s_c11,         "11"                ; OUT_OF_RANGE
 CSTR s_c15,         "15"                ; DATA_LOSS
 CSTR s_m_notfound,  "key not found"
 CSTR s_m_range,     "offset is beyond the end of the value"
-CSTR s_m_bigget,    "value exceeds KVNODE_MAX_VALUE_BYTES: read it with Download"
+CSTR s_m_bigget,    "value exceeds KVASM_MAX_VALUE_BYTES: read it with Download"
 CSTR s_m_upfirst,   "key and total_size are only allowed in the first message"
 CSTR s_m_uporder,   "key and total_size must come before any data"
 CSTR s_m_upmissing, "the first message must carry key and total_size"
-CSTR s_m_upbudget,  "uploads in progress exceed this connection's budget (KVNODE_CONN_BUFFER_MB)"
+CSTR s_m_upbudget,  "uploads in progress exceed this connection's budget (KVASM_CONN_BUFFER_MB)"
 CSTR s_m_upover,    "more data than total_size"
 CSTR s_m_upshort,   "the upload ended before total_size bytes"
 CSTR s_m_uptrunc,   "the request stream ended inside a message"
@@ -300,7 +300,7 @@ CSTR s_m_upflag,    "invalid gRPC message prefix"
 CSTR v_post,        "POST"
 CSTR v_identity,    "identity"
 ; The one service name the health check reports on besides "" (whole server).
-CSTR v_service,     "kvnode.v1.KvNode"
+CSTR v_service,     "kvasm.v1.KvAsm"
 
 ; HdrField arrays carry absolute string pointers: PIE-legal only through
 ; load-time relocations, hence .data.rel.ro (relocated, then read-only via
@@ -793,7 +793,7 @@ kv_grpc_dispatch:
     jmp     .out
 
     ; ---- grpc.health.v1.Health/Check ----
-    ; service "" (whole server) or "kvnode.v1.KvNode" => SERVING (1), or
+    ; service "" (whole server) or "kvasm.v1.KvAsm" => SERVING (1), or
     ; NOT_SERVING (2) once this worker is draining, so probes and load
     ; balancers stop routing here before the connection closes; any other
     ; service => NOT_FOUND, as the health protocol specifies.
@@ -1267,8 +1267,8 @@ get_execute:
     jz      .missing
     mov     r15, rax                    ; Rec* (valid while this worker is online)
     mov     ebp, [r15 + Rec.val_len]
-    ; Values above KVNODE_MAX_VALUE_BYTES exist only through Upload (whose
-    ; limit, KVNODE_MAX_UPLOAD_BYTES, may be larger). A unary answer would be
+    ; Values above KVASM_MAX_VALUE_BYTES exist only through Upload (whose
+    ; limit, KVASM_MAX_UPLOAD_BYTES, may be larger). A unary answer would be
     ; the whole value as one message — copied into a response buffer when
     ; the windows are short, a memory hazard for a 2 GiB value, and beyond
     ; what clients accept — so it is refused, pointing to Download.
@@ -1620,7 +1620,7 @@ kv_grpc_upload_data:
 ;            same pass; more than total_size is UE_OVERFLOW, at once;
 ;          * crc32c may come in any message, once (UE_CRC_TWICE);
 ;          * unknown fields and known numbers of another wire type are
-;            skipped (forward compatibility, as in every KvNode decoder).
+;            skipped (forward compatibility, as in every KvAsm decoder).
 ;          Each event is O(1) plus the bytes it carries.
 ; =============================================================================
 upload_event:
@@ -1818,8 +1818,8 @@ upload_event:
 ; known. Internal.
 ; @param  rdi  Stream* (Xfer with key, key_len, size, h1/h2 set)
 ; @returns eax = 0 (the record exists), or UE_TOO_LARGE (total_size above
-;          KVNODE_MAX_UPLOAD_BYTES), UE_BUDGET (the connection's uploads in
-;          progress would exceed KVNODE_CONN_BUFFER_MB), UE_MEMORY (the
+;          KVASM_MAX_UPLOAD_BYTES), UE_BUDGET (the connection's uploads in
+;          progress would exceed KVASM_CONN_BUFFER_MB), UE_MEMORY (the
 ;          store's memory limit, or malloc, refused).
 ; @remarks Idempotent. The declared size is reserved twice on purpose: in
 ;          the store's memory accounting (kv_store_rec_alloc), which bounds

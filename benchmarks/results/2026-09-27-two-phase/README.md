@@ -5,7 +5,7 @@ previous profile put in `__wake_up_common_lock`, the server's `sendto`
 waking the co-located client (`../2026-09-26-profile-memory`):
 
 - "Can we change that?"
-- Is KvNode event-driven, spending no CPU while it waits, the way green
+- Is KvAsm event-driven, spending no CPU while it waits, the way green
   threads or C# async/await would be?
 
 Decision record:
@@ -13,7 +13,7 @@ Decision record:
 
 **Host:** i9-13900K, Docker Desktop on WSL2. Before and after every
 measurement the VM ran nothing but these benchmarks. That is checked with
-`docker ps` and a process list, and no other kvnode Claude session was busy
+`docker ps` and a process list, and no other kvasm Claude session was busy
 (see *Attempt 1*). Outside the VM, 4–11 of 32 logical CPUs were busy
 (docfx, a game, test hosts), recorded per run by the harness.
 
@@ -107,17 +107,17 @@ busy-polling (the busy-poll control).
 harness. Server on vCPU 0, kvbench in its network namespace on vCPUs
 16–31, 6 blocks, a fresh server per run.
 
-| 1 core | KvNode | Redis 8.10.2 | Valkey 9.1.2 | KvNode ÷ Redis | KvNode ÷ Valkey |
+| 1 core | KvAsm | Redis 8.10.2 | Valkey 9.1.2 | KvAsm ÷ Redis | KvAsm ÷ Valkey |
 |---|---|---|---|---|---|
 | N1 GET/s | **1.65M** | 1.26M | 1.34M | 1.32× [0.82–1.57] | 1.23× [0.86–1.44] |
 | N1 p50 | **545 µs** | 729 µs | 725 µs | **0.75×**, 6/6 | **0.75×**, 6/6 |
 | N3 no-op round trips/s | 2.03M | 2.11M | 1.95M | 0.96× | 1.04×, 6/6 |
 
 This session was noisy. Outside load during N1 had a median of 9 CPUs and
-peaked at 19. In one N1 block KvNode's run collapsed to 1.18M, so the GET
+peaked at 19. In one N1 block KvAsm's run collapsed to 1.18M, so the GET
 ratios pass in only 5 of 6 blocks (p = 0.219). Latency passes in 6 of 6.
 
-The no-op floor ties Redis here. Attempt 1 measured KvNode's no-op at
+The no-op floor ties Redis here. Attempt 1 measured KvAsm's no-op at
 2.74–2.78M against the same image, while Redis and Valkey were steady
 across both sessions. On this hybrid CPU, the hypervisor places vCPUs on
 P- or E-cores from session to session (the harness's CPU-clock
@@ -136,7 +136,7 @@ benchmark inside the VM. Both measurements were re-run once the VM was
 verifiably idle.
 
 Its A/B agreed with the re-run: 8 × 8 was 1.263× [1.246–1.277] 6/6, with
-wakeups 0.666×. Its N1 showed KvNode 1.2× Redis, and its N3 KvNode
+wakeups 0.666×. Its N1 showed KvAsm 1.2× Redis, and its N3 KvAsm
 1.3–1.5× Redis.
 
 ## Files

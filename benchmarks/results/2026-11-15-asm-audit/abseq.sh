@@ -3,7 +3,7 @@
 # abseq.sh — two server builds measured in ONE slot, alternating in a balanced
 # order (ABBA ABBA ...), for hosts where no two vCPU sets are equivalent.
 #
-# Usage (inside kvnode-dev):
+# Usage (inside kvasm-dev):
 #   abseq.sh BIN_A BIN_B QUADS KEYS VALUE_SIZE "KVBENCH_RUN_ARGS"
 # Environment (defaults in parentheses):
 #   AB_SCPU     server vCPU                         (2)
@@ -29,7 +29,7 @@ PORT=50357
 
 one() {  # binary -> "ops_per_sec cpu_ns_per_req busy errors bad"
   local bin=$1
-  KVNODE_PORT=$PORT KVNODE_WORKERS=1 KVNODE_CAPACITY=$((KEYS * 2 + 1000)) \
+  KVASM_PORT=$PORT KVASM_WORKERS=1 KVASM_CAPACITY=$((KEYS * 2 + 1000)) \
       taskset -c "$SCPU" "$bin" 2> /tmp/abseq.log &
   local spid=$!
   for _ in $(seq 1 200); do grep -q 'msg="listening"' /tmp/abseq.log && break; sleep 0.05; done

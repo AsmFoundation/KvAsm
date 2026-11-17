@@ -30,7 +30,7 @@
 #include <sys/mman.h>
 #include <time.h>
 
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 
 enum { KEY_LEN = 16, VAL_LEN = 100, SEQ = 1 << 20, BATCH = 16, NV = 4 };
 #define HUGE (2ull << 20)

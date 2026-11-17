@@ -118,6 +118,6 @@ GEO: points within a radius, among 10000000 uniform points (a 445 x 190 km regio
   AnonHugePages:    942080 kB
 all checks passed
 
-1790874873 container exec_create: bash /src/benchmarks/results/2026-10-01-services-probe/run.sh 4 5 kvnode-dev
-1790874873 container exec_start: bash /src/benchmarks/results/2026-10-01-services-probe/run.sh 4 5 kvnode-dev
+1790874873 container exec_create: bash /src/benchmarks/results/2026-10-01-services-probe/run.sh 4 5 kvasm-dev
+1790874873 container exec_start: bash /src/benchmarks/results/2026-10-01-services-probe/run.sh 4 5 kvasm-dev
 attempt 1 window 2026-10-01T17:14:33Z .. 2026-10-01T17:15:11Z rc=0 foreign=0

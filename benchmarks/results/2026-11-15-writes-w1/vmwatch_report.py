@@ -13,7 +13,7 @@ questions:
   for a re-run; everything else is certified clean of in-VM interference.
 
 Why a separate tool: run.py's host-load sampler sees only CPU used OUTSIDE
-the VM. Another Claude session building or benchmarking in the kvnode-dev
+the VM. Another Claude session building or benchmarking in the kvasm-dev
 container, a BuildKit build, or a helper container competes for the same
 vCPUs and is invisible to it.
 
@@ -32,9 +32,9 @@ What counts as interference in an interval (thresholds below):
   its interior mean and a live poll by two or more consecutive intervals.
 
 Usage:
-    docker logs kvnode-vmwatch | python vmwatch_report.py --tail 50 \\
+    docker logs kvasm-vmwatch | python vmwatch_report.py --tail 50 \\
         --watch 3719a2e3beb5 --dev bae3fd5a0c43
-    docker logs kvnode-vmwatch | python vmwatch_report.py --runs raw.jsonl \\
+    docker logs kvasm-vmwatch | python vmwatch_report.py --runs raw.jsonl \\
         --watch 3719a2e3beb5 --dev bae3fd5a0c43 [--offset -0.45]
 """
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build_bench.sh VARIANT — build bench_h2 against one server variant's objects
-# (inside kvnode-dev; the variant was built in /pc/VARIANT/server by make).
+# (inside kvasm-dev; the variant was built in /pc/VARIANT/server by make).
 #   output: /pc/probe/bench_h2-VARIANT
 # h2_process and conn_window_refill are internal to h2n.asm: a copy of the
 # object gets them made global (objcopy only edits the symbol table), so the

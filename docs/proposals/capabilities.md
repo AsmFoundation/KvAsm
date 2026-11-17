@@ -1,7 +1,7 @@
-# Proposal: O(1) and near-instant capabilities for a 100k-key KvNode
+# Proposal: O(1) and near-instant capabilities for a 100k-key KvAsm
 
 - **Status:** proposed catalog, 2026-09-29. Nothing here is implemented or
-  decided. It collects what KvNode could answer instantly beyond Get, Put
+  decided. It collects what KvAsm could answer instantly beyond Get, Put
   and Delete, with the technique and the cost of each.
 - **Companions:** [export-watch.md](export-watch.md) (streaming queries and
   the revision model), [key-indexes.md](key-indexes.md) (prefix, suffix
@@ -121,7 +121,7 @@ SymSpell (675 bytes per key) is an opt-in for typo-tolerant lookup.
 | compare-and-set, per-key versions | a revision per record | O(1) | +8 B/record | E |
 | sync a client or replica by its difference only | Rateless IBLT: communication proportional to the difference | O(difference) | O(1) | C [IBLT] |
 | the same, the classic way | Merkle tree over key-hash ranges (Dynamo-style anti-entropy) | O(difference × log n) | O(log n) | C [DYN] |
-| O(1) sharding if KvNode ever spans nodes | jump consistent hash (no table, minimal movement) | O(log buckets) arithmetic | — | C [JCH] |
+| O(1) sharding if KvAsm ever spans nodes | jump consistent hash (no table, minimal movement) | O(log buckets) arithmetic | — | C [JCH] |
 
 ### 1.8 Values (outside today's opaque-bytes model)
 
@@ -266,7 +266,7 @@ lookup, a count) read the current state.
 - **An arbitrary unanchored regex, or a fuzzy query beyond an index, is
   O(n).** That is 1-4 ms at 100k and 10-37 ms at 1M. At 100M it would be
   seconds, and only registration (maintained match sets) avoids it.
-- **KvNode stores values as opaque bytes,** so every value-content
+- **KvAsm stores values as opaque bytes,** so every value-content
   capability (§1.8) needs a schema decision first.
 - **Sketches are approximate by design.** Exact distinct counts over large
   groups cost memory proportional to the group.
@@ -282,5 +282,5 @@ lookup, a count) read the current state.
    statistics only?
 3. **Client-side filters:** a `GetFilter` RPC that returns a binary fuse
    filter the client can hold, rebuilt every N writes or seconds.
-4. **Structured values:** whether KvNode should ever index inside values.
+4. **Structured values:** whether KvAsm should ever index inside values.
    That changes its opaque-bytes contract.

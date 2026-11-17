@@ -23,7 +23,7 @@
  * that the store refuses the mode and reports what it skipped.
  */
 #include "test_common.h"
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 
 /* aeshash.asm returns h1 in rax and h2 in rdx: a 128-bit integer in C. */
 unsigned __int128 kv_aeshash128_r(const void *msg, size_t len, const uint8_t *block,

@@ -65,7 +65,7 @@
 #include <time.h>
 
 #include "art.h"
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 
 enum {
   VAL_LEN = 100,
@@ -339,7 +339,7 @@ static int query_match(const Query *q, const uint8_t *k, uint32_t len) {
 /* SCAN: the proposal's Export path without an index                          */
 /* ------------------------------------------------------------------------- */
 
-/** kvnode.inc Bucket (one cache line) and the head of Table (see export_probe.c). */
+/** kvasm.inc Bucket (one cache line) and the head of Table (see export_probe.c). */
 typedef struct {
   uint64_t ver, tags;
   KvRec *slot[SLOTS];
@@ -731,7 +731,7 @@ int main(int argc, char **argv) {
 
   /* ---- the store, filled as the server would be ---- */
   /* The assembled default is SWAR; the server selects SSE2 at startup
-   * (KVNODE_SCAN default, ADR 0006), so the probe's lookups do too. */
+   * (KVASM_SCAN default, ADR 0006), so the probe's lookups do too. */
   if (kv_set_scan_mode(KV_SCAN_SSE2) < 0) die("kv_set_scan_mode");
   g_store = kv_store_create(g_nkeys, 1, kSeed, 0);
   if (!g_store) die("kv_store_create");

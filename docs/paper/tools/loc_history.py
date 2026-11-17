@@ -1,4 +1,4 @@
-"""Line counts per artifact category at every commit of the KvNode repository.
+"""Line counts per artifact category at every commit of the KvAsm repository.
 
 Feeds the paper's development-timeline figure and its effort table: how the NASM
 server, the tests, the .NET client, the benchmark tooling and the documentation grew

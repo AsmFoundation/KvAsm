@@ -46,7 +46,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 #include "test_common.h"
 
 enum { MAX_THREADS = 32 };

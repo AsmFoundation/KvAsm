@@ -9,14 +9,14 @@ installed). Standard library only otherwise.
 
 Statistics, chosen for small samples (3-10 repetitions per cell):
   * median and min-max range per cell (no normality assumption);
-  * KvNode vs each system within one experiment: ratio of medians, plus a
+  * KvAsm vs each system within one experiment: ratio of medians, plus a
     *paired* analysis by block — repetition r of every cell runs in block r
     (run.plan), so within-block ratios cancel the host's slow drift. The
     range shown is the min-max of those per-block ratios and the p-value is
     the exact two-sided sign test (6 blocks all agreeing: p = 0.031);
   * comparisons across experiments (S1 vs E1) or with too few shared blocks
-    fall back to the conservative unpaired range [min(KvNode)/max(other),
-    max(KvNode)/min(other)] and the exact Mann-Whitney U p-value;
+    fall back to the conservative unpaired range [min(KvAsm)/max(other),
+    max(KvAsm)/min(other)] and the exact Mann-Whitney U p-value;
   * a run is excluded if kvbench flagged it invalid (any error, miss or
     wrong value); counts of excluded runs are reported, never hidden;
   * server CPU is divided by the host's measured CPU-clock factor; a run is
@@ -34,18 +34,18 @@ import statistics
 import sys
 from collections import defaultdict
 
-ORDER = ["kvnode", "kvnode-native", "kvnode-nghttp2", "redis", "valkey", "dragonfly", "garnet",
+ORDER = ["kvasm", "kvasm-native", "kvasm-nghttp2", "redis", "valkey", "dragonfly", "garnet",
          "memcached"]
-"""Row order of every table. kvnode-native / kvnode-nghttp2 only occur in
-results recorded before ADR 0008 (KvNode's two HTTP/2 engines, N1-N3)."""
+"""Row order of every table. kvasm-native / kvasm-nghttp2 only occur in
+results recorded before ADR 0008 (KvAsm's two HTTP/2 engines, N1-N3)."""
 
 NATIVE_EXPERIMENTS = ("N1", "N2", "N3")
 """One-core headline experiments. Results recorded before ADR 0008 compare
-KvNode's two HTTP/2 engines there (variants kvnode-native / kvnode-nghttp2,
-with kvnode-native as the base of the ratios); later ones compare kvnode
-with Redis and Valkey (base kvnode)."""
+KvAsm's two HTTP/2 engines there (variants kvasm-native / kvasm-nghttp2,
+with kvasm-native as the base of the ratios); later ones compare kvasm
+with Redis and Valkey (base kvasm)."""
 
-LEGACY_NATIVE = "kvnode-native"
+LEGACY_NATIVE = "kvasm-native"
 """The base system of pre-ADR 0008 N results (see NATIVE_EXPERIMENTS)."""
 
 ADJUSTED_EXPERIMENTS = ("E1", "E2", "E3", "E5", "E6", "E7", "W1")
@@ -188,7 +188,7 @@ def sign_test_p(ratios: list[float]) -> float:
 
 
 def compare(kv: dict | list, other: dict | list, higher_is_better: bool = True) -> dict | None:
-    """KvNode relative to another system, paired by block when possible.
+    """KvAsm relative to another system, paired by block when possible.
 
     Why pairing: on a noisy host the absolute level of *every* system drifts
     by tens of percent over hours, which swamps unpaired tests. Runs of the
@@ -196,7 +196,7 @@ def compare(kv: dict | list, other: dict | list, higher_is_better: bool = True) 
     (run.plan), so the ratio inside a block cancels that shared drift.
 
     Args:
-        kv: KvNode observations — a {block key: value} dict from
+        kv: KvAsm observations — a {block key: value} dict from
             Results.values() for paired analysis, or a plain list to force
             the unpaired test (e.g. comparing different experiments, whose
             blocks were not run together).
@@ -206,7 +206,7 @@ def compare(kv: dict | list, other: dict | list, higher_is_better: bool = True) 
     Returns:
         None when either side is empty or non-positive; otherwise
         {"ratio", "lo", "hi", "p", "kind", "n", "verdict"} with
-        ratio = median(KvNode) / median(other) and:
+        ratio = median(KvAsm) / median(other) and:
         * kind "paired" (≥ 3 shared blocks): lo..hi is the range of the
           within-block ratios, p the exact two-sided sign test, n the
           number of pairs;
@@ -404,7 +404,7 @@ def cell_text(s: dict | None, fmt=fmt_ops) -> str:
 
 
 def cmp_text(c: dict | None) -> str:
-    """KvNode-relative comparison as table text.
+    """KvAsm-relative comparison as table text.
 
     Args:
         c: compare() result.
@@ -512,13 +512,13 @@ class Report:
             s: system id.
 
         Returns:
-            "native" / "nghttp2" for KvNode's engine variants (their titles
-            all start with "KvNode"), else the title's first word.
+            "native" / "nghttp2" for KvAsm's engine variants (their titles
+            all start with "KvAsm"), else the title's first word.
         """
-        return {"kvnode-native": "native", "kvnode-nghttp2": "nghttp2"}.get(s, self.title(s).split()[0])
+        return {"kvasm-native": "native", "kvasm-nghttp2": "nghttp2"}.get(s, self.title(s).split()[0])
 
     def comparison_table(self, header: str, columns: list[tuple], fmt=fmt_ops,
-                         higher_is_better: bool = True, base: str = "kvnode") -> None:
+                         higher_is_better: bool = True, base: str = "kvasm") -> None:
         """A systems x columns table of medians, plus base-system ratios per
         column.
 
@@ -532,8 +532,8 @@ class Report:
                 cost, or the ▲/▼ verdicts point the wrong way.
             fmt: number formatter.
             higher_is_better: default orientation for columns without one.
-            base: system every other one is compared with ("kvnode" in the
-                general experiments, "kvnode-native" in the N experiments).
+            base: system every other one is compared with ("kvasm" in the
+                general experiments, "kvasm-native" in the N experiments).
         """
         cols = [(c[0], c[1], c[2] if len(c) > 2 else higher_is_better) for c in columns]
         systems = []
@@ -545,7 +545,7 @@ class Report:
             self.w(f"| {self.title(s)} | " + " | ".join(cell_text(summary(v.get(s, {})), fmt)
                                                         for _, v, _ in cols) + " |")
         if any(base in v for _, v, _ in cols):
-            label = "KvNode" if base == "kvnode" else f"KvNode {self.short(base)}"
+            label = "KvAsm" if base == "kvasm" else f"KvAsm {self.short(base)}"
             for s in systems:
                 if s == base:
                     continue
@@ -571,7 +571,7 @@ class Report:
         for s in systems_in(series):
             pts = sorted(series[s])
             ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o",
-                    linewidth=2.6 if s == "kvnode" else 1.4, label=self.title(s))
+                    linewidth=2.6 if s == "kvasm" else 1.4, label=self.title(s))
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
         if logx:
@@ -589,7 +589,7 @@ class Report:
         """Environment, systems and validity overview."""
         env = self.res.env
         h = env["host"]
-        self.w("# KvNode benchmark report", "",
+        self.w("# KvAsm benchmark report", "",
                f"Profile **{env['profile']}**, recorded {env['created'][:19]} UTC, repository "
                f"revision `{env['repository']['revision'][:12]}`"
                f"{' (uncommitted changes)' if env['repository']['dirty'] else ''}. "
@@ -712,9 +712,9 @@ class Report:
                 sample = next(r for r in recs if r["cores"] == c and r["workload_key"] == wk)
                 by_sys = {}
                 for s in systems_in(ops):
-                    if s == "kvnode":
+                    if s == "kvasm":
                         continue
-                    tup = (ops.get("kvnode", {}), ops.get(s, {}), load.get("kvnode", {}), load.get(s, {}))
+                    tup = (ops.get("kvasm", {}), ops.get(s, {}), load.get("kvasm", {}), load.get(s, {}))
                     comps.append((c, s, *tup))
                     by_sys[s] = tup
                     shared = [k for k in tup[0] if k in tup[1] and k in tup[2] and k in tup[3]]
@@ -726,17 +726,17 @@ class Report:
                 rows += [(label, slope, by_sys) for label, by_sys in labelled]
         if not rows:
             return
-        self.w(f"**Quiet-only check** (declared in advance): {n_quiet} of {n_pairs} KvNode-vs-other "
+        self.w(f"**Quiet-only check** (declared in advance): {n_quiet} of {n_pairs} KvAsm-vs-other "
                f"pairs had at most {HOST_BUSY:.0f} CPUs of outside load on both runs"
                + (", too few to recompute anything." if n_quiet < 3 else "."), "")
-        systems = [s for s in ORDER if s != "kvnode" and any(s in b for _, _, b in rows)]
+        systems = [s for s in ORDER if s != "kvasm" and any(s in b for _, _, b in rows)]
         self.w("**Adjusted to equal outside load.** Each experiment's pairs are corrected with one "
-               "common slope of log(KvNode ÷ X) on the difference in outside load between the two "
+               "common slope of log(KvAsm ÷ X) on the difference in outside load between the two "
                "runs of a block, estimated within comparisons (analysis of covariance). The slope "
                "column gives the change of the ratio per logical CPU of extra outside load on "
-               "KvNode's run. Raw, unadjusted results are the tables in each section below. Where the "
+               "KvAsm's run. Raw, unadjusted results are the tables in each section below. Where the "
                "two disagree, the difference is load, not the servers.", "",
-               "| Experiment · cell | slope | " + " | ".join(f"KvNode ÷ {self.title(s).split()[0]}"
+               "| Experiment · cell | slope | " + " | ".join(f"KvAsm ÷ {self.title(s).split()[0]}"
                                                           for s in systems) + " |",
                "|---|---|" + "---|" * len(systems))
         for label, slope, by_sys in rows:
@@ -756,7 +756,7 @@ class Report:
 
     @staticmethod
     def load_slope(comps: list[tuple]) -> float | None:
-        """Common within-comparison slope of log(KvNode ÷ X) on the outside-
+        """Common within-comparison slope of log(KvAsm ÷ X) on the outside-
         load difference between the two runs of a block.
 
         Fixed-effects estimate: centre both variables within each comparison
@@ -826,7 +826,7 @@ class Report:
                                                       self.res.values("E1", "ops_per_cpu_s", cores=c))
                                                      for c in cores])
         self.w("**Server CPU utilization** of its core budget (1.0 = all given cores busy; ▲ only "
-               "means KvNode kept more of its cores busy, which is neither good nor bad by itself):", "")
+               "means KvAsm kept more of its cores busy, which is neither good nor bad by itself):", "")
         self.comparison_table("utilization", [(f"{c} core{'s' if c > 1 else ''}",
                                                self.res.values("E1", "server_util", cores=c))
                                               for c in cores], fmt=lambda v: f"{v:.2f}")
@@ -904,9 +904,9 @@ class Report:
     def native(self) -> None:
         """N1-N3: the one-core headline.
 
-        Results recorded before ADR 0008 compare KvNode's native HTTP/2
+        Results recorded before ADR 0008 compare KvAsm's native HTTP/2
         engine with its nghttp2 engine (and Redis/Valkey), ratios based on
-        kvnode-native; later results compare kvnode with Redis and Valkey.
+        kvasm-native; later results compare kvasm with Redis and Valkey.
         The section adapts to whichever the records contain, so archived
         sessions keep rendering exactly as they were published.
         """
@@ -914,17 +914,17 @@ class Report:
         if not recs:
             return
         legacy = any(r["system"] == LEGACY_NATIVE for r in recs)
-        base = LEGACY_NATIVE if legacy else "kvnode"
+        base = LEGACY_NATIVE if legacy else "kvasm"
         if legacy:
-            self.w("## N — KvNode's native HTTP/2 engine (h2n.asm) vs nghttp2", "",
-                   "The same image, one variable: `KVNODE_H2_ENGINE=native` (KvNode's own HTTP/2 "
+            self.w("## N — KvAsm's native HTTP/2 engine (h2n.asm) vs nghttp2", "",
+                   "The same image, one variable: `KVASM_H2_ENGINE=native` (KvAsm's own HTTP/2 "
                    "engine, ADR 0007) or `nghttp2` (nghttp2 1.70). Ratios are native ÷ X, paired by "
                    "block. (Recorded before ADR 0008 removed nghttp2 from the server.)", "")
         else:
-            self.w("## N — one core: KvNode vs Redis and Valkey", "",
+            self.w("## N — one core: KvAsm vs Redis and Valkey", "",
                    "E1's and E5's 1-core cells for the single-threaded-execution servers, run on "
                    "their own so the headline is re-checked with full pairing. Ratios are "
-                   "KvNode ÷ X, paired by block.", "")
+                   "KvAsm ÷ X, paired by block.", "")
         if any(r["experiment"] == "N1" for r in recs):
             self.w("### N1 — 1 core, E1's workload (100% GET, 100-byte values, 1M keys, 64×16)", "")
             self.comparison_table("metric", [("ops/s", self.res.values("N1", "ops"), True),
@@ -1053,7 +1053,7 @@ class Report:
         for r in recs:
             if r["m"].get("ops"):
                 by[(r["system"], r["tool"])][r["rep"]] = r["m"]["ops"]
-        # Systems outside ORDER (run.py --control-image's kvnode-control) sort
+        # Systems outside ORDER (run.py --control-image's kvasm-control) sort
         # last, as in the E0 table, instead of failing the whole report.
         for (s, tool) in sorted(by, key=lambda k: (ORDER.index(k[0]) if k[0] in ORDER else 99, k[0], k[1])):
             self.w(f"| {self.title(s)} | {tool} | {cell_text(summary(by[(s, tool)]))} |")
@@ -1061,7 +1061,7 @@ class Report:
         pairs = [("redis", "kvbench-random", "redis-benchmark-random"),
                  ("redis", "kvbench-random", "memtier-random"),
                  ("redis", "kvbench-onekey", "redis-benchmark-onekey"),
-                 ("kvnode", "kvbench-onekey", "h2load-onekey")]
+                 ("kvasm", "kvbench-onekey", "h2load-onekey")]
         for s, a, b in pairs:
             if by.get((s, a)) and by.get((s, b)):
                 c = compare(by[(s, a)], by[(s, b)])
@@ -1101,11 +1101,11 @@ class Report:
         self.native()
         self.stability()
         self.w("---", "", "Legend: `median (min–max)` over repetitions, each with a fresh server. "
-               "KvNode ÷ X: ratio of medians, then either **sign** — [min–max of the per-block "
+               "KvAsm ÷ X: ratio of medians, then either **sign** — [min–max of the per-block "
                "ratios] and the exact two-sided sign test over blocks (paired: both systems ran in "
                "the same block, so shared drift cancels) — or **MW** — [conservative range "
                "containing every pairwise run ratio] and the exact two-sided Mann–Whitney p "
-               "(unpaired). ▲ KvNode clearly better, ▼ clearly worse (p < 0.05; for MW also the "
+               "(unpaired). ▲ KvAsm clearly better, ▼ clearly worse (p < 0.05; for MW also the "
                "range excludes 1), ≈ no clear difference. With 6 blocks, ▲/▼ means all six "
                "agree; cells with 3 repetitions are descriptive only — no test can reach "
                "p < 0.05 with them.")

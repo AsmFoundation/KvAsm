@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        KvNode decides performance questions by paired measurements
+        KvAsm decides performance questions by paired measurements
         (benchmarks/METHODOLOGY.md). The published numbers and their scope
         are in docs/CLAIMS.md. A report with the details below can be
         reproduced and checked.

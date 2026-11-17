@@ -68,7 +68,7 @@
 #include <time.h>
 
 #include "binaryfusefilter.h"   /* pinned by run.sh; -isystem: its warnings are not ours */
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 
 enum {
   KEYMAX = 32,           /* key buffer; the longest key is 21 bytes (+1 for a typo) */
@@ -532,13 +532,13 @@ __attribute__((target("avx2"))) static void fold32(const uint8_t *in, uint8_t *o
 /* Random sampling                                                            */
 /* ========================================================================= */
 
-/** kvnode.inc Bucket: version, 8 tags, 6 record slots (one 64-byte line). */
+/** kvasm.inc Bucket: version, 8 tags, 6 record slots (one 64-byte line). */
 typedef struct {
   uint64_t ver, tags;
   const KvRec *slot[SLOTS];
 } Bucket;
 
-/** The first fields of kvnode.inc Table. */
+/** The first fields of kvasm.inc Table. */
 typedef struct {
   Bucket *buckets;
   uint64_t mask;
@@ -614,7 +614,7 @@ static uint64_t sample_batched(uint32_t n, uint64_t seed, uint32_t *got) {
  * @returns the atomic word.
  * @remarks 8-aligned by construction: malloc returns 16-aligned records, the
  *          header is 24 bytes and the key is padded to 8. Mutating a record
- *          in place breaks KvNode's "records are immutable" rule on
+ *          in place breaks KvAsm's "records are immutable" rule on
  *          purpose: a counter-typed record holds an atomic cell that readers
  *          load with one aligned 8-byte access, so no reader can see a torn
  *          value. (Put/Delete of a counter key must mark the old word as

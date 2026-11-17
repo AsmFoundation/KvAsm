@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""memprobe.py — measure kvnode's memory use (run inside the dev container).
+"""memprobe.py — measure kvasm's memory use (run inside the dev container).
 
 Scenarios, each on a fresh server:
   idle-W     fresh server, W workers, default capacity (1M keys): RSS and
@@ -20,16 +20,16 @@ import subprocess
 import sys
 import time
 
-SERVER = "/src/server/build/kvnode"
+SERVER = "/src/server/build/kvasm"
 KVBENCH = "/src/benchmarks/kvbench/build/kvbench"
 PORT = 50061
 LOG = "/tmp/memprobe_server.log"
 
 
 def start(env_extra):
-    """Starts kvnode with the given settings; returns the Popen once it listens."""
+    """Starts kvasm with the given settings; returns the Popen once it listens."""
     env = dict(os.environ)
-    env.update({"KVNODE_PORT": str(PORT)})
+    env.update({"KVASM_PORT": str(PORT)})
     env.update(env_extra)
     log = open(LOG, "w")
     p = subprocess.Popen([SERVER], env=env, stderr=log, stdout=subprocess.DEVNULL)
@@ -126,7 +126,7 @@ def get_request(sid, key):
     """HEADERS + DATA of one unary Get."""
     block = (b"\x83"                                   # :method POST (static 3)
              + b"\x86"                                 # :scheme http (static 6)
-             + hpack_lit(4, b"/kvnode.v1.KvNode/Get")  # :path (static name 4)
+             + hpack_lit(4, b"/kvasm.v1.KvAsm/Get")  # :path (static name 4)
              + hpack_lit(1, b"localhost")              # :authority (static name 1)
              + hpack_lit(31, b"application/grpc")      # content-type (static name 31)
              + b"\x00\x02te\x08trailers")              # te: trailers (new name)
@@ -195,7 +195,7 @@ def main():
 
     # idle servers, 1 / 4 / 32 workers, default capacity 1,000,000
     for w in (1, 4, 32):
-        p = start({"KVNODE_WORKERS": str(w)})
+        p = start({"KVASM_WORKERS": str(w)})
         r = rollup(p.pid)
         print(f"idle-{w}: Rss {r['Rss']} KiB, Anonymous {r['Anonymous']}, "
               f"AnonHugePages {r['AnonHugePages']}, Pss {r['Pss']}")
@@ -205,13 +205,13 @@ def main():
 
     # capacity alone: 1 worker at 1, 1M, 10M, 100M capacity (empty table)
     for cap in (1000, 1000000, 10000000, 100000000):
-        p = start({"KVNODE_WORKERS": "1", "KVNODE_CAPACITY": str(cap)})
+        p = start({"KVASM_WORKERS": "1", "KVASM_CAPACITY": str(cap)})
         r = rollup(p.pid)
         print(f"capacity-{cap}: Rss {r['Rss']} KiB, AnonHugePages {r['AnonHugePages']}")
         stop(p)
 
     # keys: 1 worker, 1M x 100 B
-    p = start({"KVNODE_WORKERS": "1", "KVNODE_CAPACITY": "1250000"})
+    p = start({"KVASM_WORKERS": "1", "KVASM_CAPACITY": "1250000"})
     r0 = rollup(p.pid)
     kvbench(["--keys", "1000000", "--value-size", "100", "--load-only", "--settle", "1",
              "--threads", "4", "--connections", "16"])
@@ -223,7 +223,7 @@ def main():
 
     # keys with 1 KiB values (100k) and 16 B values (1M) for the per-key model
     for vs, n in ((16, 1000000), (1024, 200000)):
-        p = start({"KVNODE_WORKERS": "1", "KVNODE_CAPACITY": str(int(n * 1.25))})
+        p = start({"KVASM_WORKERS": "1", "KVASM_CAPACITY": str(int(n * 1.25))})
         r0 = rollup(p.pid)
         kvbench(["--keys", str(n), "--value-size", str(vs), "--load-only", "--settle", "1",
                  "--threads", "4", "--connections", "16"])
@@ -233,7 +233,7 @@ def main():
         stop(p)
 
     # connections: 1 worker, 1000 idle, then one Get each
-    p = start({"KVNODE_WORKERS": "1", "KVNODE_CAPACITY": "1000"})
+    p = start({"KVASM_WORKERS": "1", "KVASM_CAPACITY": "1000"})
     kvbench(["--keys", "100", "--value-size", "100", "--load-only", "--settle", "0.5",
              "--threads", "1", "--connections", "1"])
     time.sleep(0.5)
@@ -261,7 +261,7 @@ def main():
     stop(p)
 
     # under load: 1 worker, 1M keys, 64 x 16
-    p = start({"KVNODE_WORKERS": "1", "KVNODE_CAPACITY": "1250000"})
+    p = start({"KVASM_WORKERS": "1", "KVASM_CAPACITY": "1250000"})
     kvbench(["--keys", "1000000", "--value-size", "100", "--load-only", "--settle", "0.5",
              "--threads", "4", "--connections", "16"])
     r0 = rollup(p.pid)

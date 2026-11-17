@@ -1,4 +1,4 @@
-# profile_set.sh /tmp/kvnode-A 1 10 -- the original server (0.2.0), 1 worker, 100% SET
+# profile_set.sh /tmp/kvasm-A 1 10 -- the original server (0.2.0), 1 worker, 100% SET
 # perf cpu-clock samples of user time only (WSL2: no PMU, no kernel symbols); the
 # second line is the user/kernel split from /proc. Head of the symbol list.
 SET/s: 388835

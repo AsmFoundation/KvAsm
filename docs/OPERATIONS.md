@@ -1,10 +1,10 @@
-# Operating KvNode
+# Operating KvAsm
 
 ## Configuration
 
 Every setting is an environment variable. Numeric values are strict decimal
-integers: no sign, no spaces, no units. Named choices (`KVNODE_SCAN`,
-`KVNODE_CRC32C`, `KVNODE_HASH`) must be one of the listed lowercase words
+integers: no sign, no spaces, no units. Named choices (`KVASM_SCAN`,
+`KVASM_CRC32C`, `KVASM_HASH`) must be one of the listed lowercase words
 exactly.
 Out-of-range, malformed or unknown values stop startup with exit code **2**
 and a log line naming the variable, the value and what is allowed. A typo
@@ -12,29 +12,29 @@ never silently falls back to a default.
 
 | Variable | Range | Default | Meaning |
 |---|---|---|---|
-| `KVNODE_PORT` | 1–65535 | 50051 | h2c listen port (all interfaces) |
-| `KVNODE_WORKERS` | 0–256 | 0 | event-loop threads; 0 = CPUs in the affinity mask. This honors `--cpuset-cpus` but not a `--cpus` quota, so set it explicitly under quotas |
-| `KVNODE_CAPACITY` | 1–2³⁶ | 1000000 | maximum number of keys; sizes the table once, resident from startup (see [Memory](#memory)) |
-| `KVNODE_MAX_KEY_BYTES` | 1–65536 | 1024 | longest accepted key |
-| `KVNODE_MAX_VALUE_BYTES` | 0–67108864 | 1048576 | largest value Put accepts and Get returns (larger ones only through Upload/Download) |
-| `KVNODE_MAX_UPLOAD_BYTES` | 0–2147483647 | 67108864 | largest value Upload stores; must not exceed `KVNODE_CONN_BUFFER_MB` (checked: exit 2 — such an upload could never fit one connection's budget) |
-| `KVNODE_MAX_MEMORY_MB` | 0–16777216 | 0 | cap on record memory, uploads in progress and records pinned by downloads included; 0 = unlimited |
-| `KVNODE_MAX_STREAMS` | 1–1000 | 100 | concurrent requests per connection (HTTP/2 SETTINGS) |
-| `KVNODE_MAX_CONNECTIONS` | 1–1000000 | 10000 | connections per worker; beyond it, accepting pauses |
-| `KVNODE_IDLE_TIMEOUT_SEC` | 0–86400 | 300 | connections with no byte received or sent get GOAWAY and are closed; one whose peer does not even read that is dropped at the next expiry; 0 = never |
-| `KVNODE_SHUTDOWN_GRACE_SEC` | 0–3600 | 10 | time in-flight requests get after SIGTERM |
-| `KVNODE_CONN_BUFFER_MB` | 1–4096 | 64 | request bytes one connection may buffer (the excess stream is reset with `ENHANCE_YOUR_CALM`), and the total declared size of one connection's uploads in progress (the excess upload is refused, `RESOURCE_EXHAUSTED`) |
-| `KVNODE_CRC32C` | `auto` \| `vpclmul` \| `pclmul` \| `sse42` \| `table` | `auto` | CRC-32C of Upload/Download: `auto` takes the fastest path the CPU has — `vpclmul` (256-bit carry-less folding, AVX2 + VPCLMULQDQ: Ice Lake, Zen 3 and later; ~88 GB/s fused with a 16 KiB copy in cache), `pclmul` (128-bit folding, any x86-64 since 2010; ~45 GB/s), `sse42` (the `crc32` instruction, one dependency chain; ~15 GB/s), `table` (slicing-by-8; ~3.2 GB/s). Forcing a mode the CPU lacks refuses to start (exit 2). All give identical checksums |
-| `KVNODE_SNAPSHOT` | path | unset | snapshot to load at startup (see Snapshots) |
-| `KVNODE_SCAN` | `swar` \| `sse2` | `sse2` | how lookups match tags. `sse2` matches both candidate buckets in one compare: 2–6% faster per batched lookup, and SSE2 is part of every x86-64 CPU. `swar` is the scalar path. Results are identical ([ADR 0006](adr/0006-store-memory-levels-simd-and-private-caches.md)) |
-| `KVNODE_HASH` | `auto` \| `siphash` \| `aes` | `auto` | the keyed hash that places keys, under a per-process secret either way: `auto` takes `aes` (AES-128 through AES-NI: ten instructions per key of up to 16 bytes) where the CPU has AES-NI, and `siphash` (SipHash-2-4) elsewhere. Forcing `aes` on a CPU without AES-NI refuses to start (exit 2). Stored data, the wire protocol and snapshots do not depend on it ([ADR 0004](adr/0004-exact-keys-and-client-compaction.md)) |
-| `KVNODE_CACHE_L1_BITS` | 0–24 | 0 | per-worker private L1 record cache of 2^bits entries (32 bytes each); 0 = off. Measured slower than the CPU's own caches except for tiny hot sets, so off by default (ADR 0006) |
-| `KVNODE_CACHE_L2_BITS` | 0–24 | 0 | the same for a second, larger private level |
+| `KVASM_PORT` | 1–65535 | 50051 | h2c listen port (all interfaces) |
+| `KVASM_WORKERS` | 0–256 | 0 | event-loop threads; 0 = CPUs in the affinity mask. This honors `--cpuset-cpus` but not a `--cpus` quota, so set it explicitly under quotas |
+| `KVASM_CAPACITY` | 1–2³⁶ | 1000000 | maximum number of keys; sizes the table once, resident from startup (see [Memory](#memory)) |
+| `KVASM_MAX_KEY_BYTES` | 1–65536 | 1024 | longest accepted key |
+| `KVASM_MAX_VALUE_BYTES` | 0–67108864 | 1048576 | largest value Put accepts and Get returns (larger ones only through Upload/Download) |
+| `KVASM_MAX_UPLOAD_BYTES` | 0–2147483647 | 67108864 | largest value Upload stores; must not exceed `KVASM_CONN_BUFFER_MB` (checked: exit 2 — such an upload could never fit one connection's budget) |
+| `KVASM_MAX_MEMORY_MB` | 0–16777216 | 0 | cap on record memory, uploads in progress and records pinned by downloads included; 0 = unlimited |
+| `KVASM_MAX_STREAMS` | 1–1000 | 100 | concurrent requests per connection (HTTP/2 SETTINGS) |
+| `KVASM_MAX_CONNECTIONS` | 1–1000000 | 10000 | connections per worker; beyond it, accepting pauses |
+| `KVASM_IDLE_TIMEOUT_SEC` | 0–86400 | 300 | connections with no byte received or sent get GOAWAY and are closed; one whose peer does not even read that is dropped at the next expiry; 0 = never |
+| `KVASM_SHUTDOWN_GRACE_SEC` | 0–3600 | 10 | time in-flight requests get after SIGTERM |
+| `KVASM_CONN_BUFFER_MB` | 1–4096 | 64 | request bytes one connection may buffer (the excess stream is reset with `ENHANCE_YOUR_CALM`), and the total declared size of one connection's uploads in progress (the excess upload is refused, `RESOURCE_EXHAUSTED`) |
+| `KVASM_CRC32C` | `auto` \| `vpclmul` \| `pclmul` \| `sse42` \| `table` | `auto` | CRC-32C of Upload/Download: `auto` takes the fastest path the CPU has — `vpclmul` (256-bit carry-less folding, AVX2 + VPCLMULQDQ: Ice Lake, Zen 3 and later; ~88 GB/s fused with a 16 KiB copy in cache), `pclmul` (128-bit folding, any x86-64 since 2010; ~45 GB/s), `sse42` (the `crc32` instruction, one dependency chain; ~15 GB/s), `table` (slicing-by-8; ~3.2 GB/s). Forcing a mode the CPU lacks refuses to start (exit 2). All give identical checksums |
+| `KVASM_SNAPSHOT` | path | unset | snapshot to load at startup (see Snapshots) |
+| `KVASM_SCAN` | `swar` \| `sse2` | `sse2` | how lookups match tags. `sse2` matches both candidate buckets in one compare: 2–6% faster per batched lookup, and SSE2 is part of every x86-64 CPU. `swar` is the scalar path. Results are identical ([ADR 0006](adr/0006-store-memory-levels-simd-and-private-caches.md)) |
+| `KVASM_HASH` | `auto` \| `siphash` \| `aes` | `auto` | the keyed hash that places keys, under a per-process secret either way: `auto` takes `aes` (AES-128 through AES-NI: ten instructions per key of up to 16 bytes) where the CPU has AES-NI, and `siphash` (SipHash-2-4) elsewhere. Forcing `aes` on a CPU without AES-NI refuses to start (exit 2). Stored data, the wire protocol and snapshots do not depend on it ([ADR 0004](adr/0004-exact-keys-and-client-compaction.md)) |
+| `KVASM_CACHE_L1_BITS` | 0–24 | 0 | per-worker private L1 record cache of 2^bits entries (32 bytes each); 0 = off. Measured slower than the CPU's own caches except for tiny hot sets, so off by default (ADR 0006) |
+| `KVASM_CACHE_L2_BITS` | 0–24 | 0 | the same for a second, larger private level |
 
-`KVNODE_H2_ENGINE` no longer exists. HTTP/2 is always KvNode's own engine
+`KVASM_H2_ENGINE` no longer exists. HTTP/2 is always KvAsm's own engine
 (`h2n.asm`, h2spec 146/146), and nghttp2 was removed from the server
 ([ADR 0008](adr/0008-remove-nghttp2-from-the-server.md)). Like any variable
-KvNode does not read, a leftover `KVNODE_H2_ENGINE` is ignored.
+KvAsm does not read, a leftover `KVASM_H2_ENGINE` is ignored.
 
 ## Exit codes and signals
 
@@ -47,12 +47,12 @@ KvNode does not read, a leftover `KVNODE_H2_ENGINE` is ignored.
 On **SIGTERM** or **SIGINT**, listeners close and every connection gets
 GOAWAY. In-flight requests finish — an Upload still sending, a Download
 still streaming — and health checks answer `NOT_SERVING`. The process exits
-0 within `KVNODE_SHUTDOWN_GRACE_SEC`: size the grace period for your largest
+0 within `KVASM_SHUTDOWN_GRACE_SEC`: size the grace period for your largest
 transfers, since what is still open then is cut. Signals are consumed
-with `sigwaitinfo`, so this works when kvnode runs as PID 1 (the normal case
+with `sigwaitinfo`, so this works when kvasm runs as PID 1 (the normal case
 in a container). `docker stop` needs no `--init`.
 
-**Port ownership.** Workers bind with `SO_REUSEPORT`. Before that, kvnode
+**Port ownership.** Workers bind with `SO_REUSEPORT`. Before that, kvasm
 probes the port *without* it and exits 1 with
 `msg="port already in use, refusing to share it"` if anything holds the port.
 Without the probe, a second instance on the same host network would silently
@@ -64,7 +64,7 @@ One line per event on stderr, written with a single `write(2)`, so lines from
 different threads never interleave:
 
 ```
-ts=1790373017.207 level=INFO msg="starting" version=0.2.0 port=50051 workers=2 capacity=1000000 ... max_upload_bytes=67108864 crc32c=vpclmul snapshot=none
+ts=1790373017.207 level=INFO msg="starting" version=0.3.0 port=50051 workers=2 capacity=1000000 ... max_upload_bytes=67108864 crc32c=vpclmul snapshot=none hash=aes
 ts=1790373017.208 level=INFO msg="listening" transport=h2c port=50051 workers=2
 ts=1790373019.575 level=INFO msg="shutdown requested" signal=15
 ts=1790373019.575 level=INFO msg="stopped" connections=2 requests=1 errors=0 keys=0 pinned=0 deferred=0
@@ -92,17 +92,17 @@ livenessProbe:
   grpc: { port: 50051 }
   periodSeconds: 10
   failureThreshold: 3
-terminationGracePeriodSeconds: 15   # > KVNODE_SHUTDOWN_GRACE_SEC
+terminationGracePeriodSeconds: 15   # > KVASM_SHUTDOWN_GRACE_SEC
 ```
 
 ## Snapshots
 
-A snapshot is the bulk data source: `KVNSNAP1` format (docs/PROTOCOL.md),
+A snapshot is the bulk data source: `KVASNAP1` format (docs/PROTOCOL.md),
 written for example by the .NET `SnapshotFile.WriteAsync`, which replaces
 the file atomically. Mount it read-only:
 
 ```sh
-docker run -p 50051:50051 -v "$PWD/data:/data:ro" -e KVNODE_SNAPSHOT=/data/seed.kvs ghcr.io/nucs/kvnode:0.2.0
+docker run -p 50051:50051 -v "$PWD/data:/data:ro" -e KVASM_SNAPSHOT=/data/seed.kvs ghcr.io/asmfoundation/kvasm:0.3.0
 ```
 
 The whole file is verified before any record is stored: size, magic,
@@ -111,7 +111,7 @@ data bounds and the key/value limits. Any problem exits 1 with the reason,
 for example `reason="checksum mismatch"` or
 `reason="value too large" record=42`. Serving a silently truncated dataset
 would be worse than not starting. Duplicate keys are fine; the last one
-wins. `KVNODE_CAPACITY` must cover the number of distinct keys.
+wins. `KVASM_CAPACITY` must cover the number of distinct keys.
 
 The loaded data is served exactly as if it had been Put: it can then be
 modified through gRPC. The server never writes the file back. After a
@@ -126,8 +126,8 @@ Measured resident memory (`/proc/PID/smaps_rollup`; `VmRSS` in
 | Part | Resident | Grows with |
 |---|---|---|
 | Process baseline: code, glibc, stacks, heap | ~0.7 MiB (a server with capacity 1,000 is 740 KiB in total, 536 KiB of it the binary's code pages, which the page cache shares) | nothing |
-| Store table | 64 bytes × the power of two ≥ ⌈capacity / 5⌉: **16 MiB for the default 1,000,000 keys**, 128 MiB for 10M, 2 GiB for 100M (12.8–25.6 bytes per key of capacity) | `KVNODE_CAPACITY`, resident from startup |
-| Per worker, idle | ~15 KiB, including its 1.4 KiB QSBR slot (32 workers add ~490 KiB) | `KVNODE_WORKERS` |
+| Store table | 64 bytes × the power of two ≥ ⌈capacity / 5⌉: **16 MiB for the default 1,000,000 keys**, 128 MiB for 10M, 2 GiB for 100M (12.8–25.6 bytes per key of capacity) | `KVASM_CAPACITY`, resident from startup |
+| Per worker, idle | ~15 KiB, including its 1.4 KiB QSBR slot (32 workers add ~490 KiB) | `KVASM_WORKERS` |
 | Per worker, after writes | plus up to 256 KiB of freed records kept in its record cache for its next Puts (ADR 0011; records up to 1,032 bytes, at most 256 per size class) | write traffic |
 | Per key | `24 + key rounded up to 8 + value` bytes, in malloc chunks (16-byte steps, 8-byte header): **162 bytes** for a 16-byte key and a 100-byte value, 66 for a 16-byte value, 1,083 for a 1 KiB value | keys × value size |
 | Per idle connection | ~9.1 KiB: the 848-byte connection record (HTTP/2 state embedded), the first touched page of its 64 KiB output buffer, a 4 KiB HPACK entry ring and a 16-slot stream map from the worker's pool | connections |
@@ -142,9 +142,9 @@ Measured resident memory (`/proc/PID/smaps_rollup`; `VmRSS` in
 - **The table is resident from startup.** With transparent huge pages
   enabled (`always` or `madvise`), every whole 2 MiB region is faulted in
   at startup as one huge page, so every lookup hits the TLB; without THP it
-  is touched lazily as keys arrive. Size `KVNODE_CAPACITY` to the keys you
+  is touched lazily as keys arrive. Size `KVASM_CAPACITY` to the keys you
   expect: an empty 100M-key table costs 2 GiB.
-- **Records:** `KVNODE_MAX_MEMORY_MB` caps the sum of their exact sizes
+- **Records:** `KVASM_MAX_MEMORY_MB` caps the sum of their exact sizes
   (the malloc overhead above is not counted). Replaced and deleted records
   stay counted until reclamation frees them, typically within milliseconds:
   each worker frees the records its own writes replaced, after the next
@@ -152,10 +152,10 @@ Measured resident memory (`/proc/PID/smaps_rollup`; `VmRSS` in
   when it stopped writing (ADR 0011). Freed memory is not returned to the
   system: each worker keeps up to 256 KiB of freed records for its next
   Puts (its record cache), and glibc keeps the rest for later Puts. Neither
-  counts against `KVNODE_MAX_MEMORY_MB`.
+  counts against `KVASM_MAX_MEMORY_MB`.
 - **Uploads** reserve their whole declared size when the first message
-  arrives — counted against `KVNODE_MAX_MEMORY_MB` and against the
-  connection's `KVNODE_CONN_BUFFER_MB` — and fill it as data comes; the
+  arrives — counted against `KVASM_MAX_MEMORY_MB` and against the
+  connection's `KVASM_CONN_BUFFER_MB` — and fill it as data comes; the
   record *is* the buffer, so an upload costs its value once, never twice.
   A cancelled, refused, reset or timed-out upload gives it all back at once.
 - **Downloads** cost no buffer: the response is generated frame by frame
@@ -164,14 +164,14 @@ Measured resident memory (`/proc/PID/smaps_rollup`; `VmRSS` in
   record: replaced or deleted meanwhile, it stays in memory (and counted)
   until the download ends. Long downloads of hot, often-replaced large
   values therefore hold one extra version each; budget
-  `KVNODE_MAX_MEMORY_MB` for the concurrent downloads you allow.
+  `KVASM_MAX_MEMORY_MB` for the concurrent downloads you allow.
 - **Stalled transfers** end with the idle timeout: a peer that sends and
-  receives nothing for `KVNODE_IDLE_TIMEOUT_SEC` (default 300 s) gets
+  receives nothing for `KVASM_IDLE_TIMEOUT_SEC` (default 300 s) gets
   GOAWAY and loses its connection, and with it its reservations and pins.
   A peer that stopped reading its socket altogether cannot even receive the
   GOAWAY; it is dropped at the next expiry (about 2 s later).
 - **Connections:** buffered request bytes are bounded per connection by
-  `KVNODE_CONN_BUFFER_MB`; the peer's HPACK entries add at most 4 KiB. The
+  `KVASM_CONN_BUFFER_MB`; the peer's HPACK entries add at most 4 KiB. The
   worker's pool keeps its chunks until the worker exits, so its size
   follows the peak of concurrent connections and streams, not the traffic:
   after 1,000 connections closed, 4.2 MiB of pool stayed for reuse.
@@ -183,11 +183,11 @@ Measured resident memory (`/proc/PID/smaps_rollup`; `VmRSS` in
 
 ## Security notes
 
-- **Plaintext.** KvNode speaks h2c. Put it behind a TLS-terminating proxy
+- **Plaintext.** KvAsm speaks h2c. Put it behind a TLS-terminating proxy
   or a service mesh whenever traffic leaves a trusted network. It has no
   authentication: restrict who can reach the port.
 - **Hash flooding** is prevented: bucket placement uses a keyed hash
-  (AES-128, or SipHash-2-4 on a CPU without AES-NI; `KVNODE_HASH`) under a
+  (AES-128, or SipHash-2-4 on a CPU without AES-NI; `KVASM_HASH`) under a
   per-process secret from `getrandom`, and clients cannot influence it
   (ADR 0004).
 - **Resource limits:** key and value sizes, request size, upload size,
@@ -200,7 +200,7 @@ Measured resident memory (`/proc/PID/smaps_rollup`; `VmRSS` in
   oversized frame (it is rejected from its header). Every build fuzzes it
   and runs h2spec against it.
 - **Container:** the image contains only the static binary and its license
-  texts (`/usr/share/doc/kvnode`: KvNode's Apache-2.0 license and notices,
+  texts (`/usr/share/doc/kvasm`: KvAsm's Apache-2.0 license and notices,
   and those of the glibc and libgcc code linked into the binary, with their
   exact versions; see THIRD_PARTY_NOTICES.md). It runs as
   uid/gid 10001 and needs no capabilities and no writable file system:

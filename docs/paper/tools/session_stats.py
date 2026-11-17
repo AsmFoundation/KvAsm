@@ -1,4 +1,4 @@
-"""Content-free statistics over the Claude Code transcripts that built KvNode.
+"""Content-free statistics over the Claude Code transcripts that built KvAsm.
 
 The paper reports the *shape* of the agentic development effort: how many sessions,
 human prompts and tool calls there were, which model ran, how much assembly was

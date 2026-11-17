@@ -3,18 +3,18 @@
 
 Usage:
     python benchmarks/run.py [--profile standard|quick|writes] [--out DIR] [--only E1,E2]
-                             [--systems kvnode] [--e4-rates 418000,836000,1254000]
+                             [--systems kvasm] [--e4-rates 418000,836000,1254000]
     python benchmarks/run.py --out benchmarks/results/<existing>   # resume
 
---systems re-measures some systems alone (e.g. KvNode after a change) to set
+--systems re-measures some systems alone (e.g. KvAsm after a change) to set
 against an earlier session's results for the others; such comparisons are
 unpaired across sessions, so the host must be as quiet as it was then.
 --e4-rates gives E4 explicit offered loads, e.g. that earlier session's, which
 a subset could not derive (E4 normally takes 25/50/75% of the slowest
 system's E1 median, and the slowest system may not be in the subset).
---control-image adds a second KvNode, system "kvnode-control" running that
-image, to every experiment that has kvnode, in the same blocks: run the image
-an earlier session measured, and each cell's kvnode ÷ kvnode-control ratio is
+--control-image adds a second KvAsm, system "kvasm-control" running that
+image, to every experiment that has kvasm, in the same blocks: run the image
+an earlier session measured, and each cell's kvasm ÷ kvasm-control ratio is
 paired within this session while the control's own numbers show how far the
 host moved since then (2026-11-15: the 2026-09-27 image itself ran 1.5x
 slower per GET than it did that day).
@@ -57,9 +57,9 @@ import suite
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
 SERVER = "kvb-srv"
-KVBENCH_IMAGE = "kvnode-kvbench:dev"
-CONTROL = "kvnode-control"
-"""System name of --control-image's KvNode (a variant; never in suite.ALL)."""
+KVBENCH_IMAGE = "kvasm-kvbench:dev"
+CONTROL = "kvasm-control"
+"""System name of --control-image's KvAsm (a variant; never in suite.ALL)."""
 SEED = 20260926
 
 
@@ -151,7 +151,7 @@ def calibrate_cpu_clock(cg: Cgroups) -> dict:
         cpu_file, _ = cg.paths(cid)
         script = (f"f={cpu_file}; for i in 1 2 3; do a=$(cat $f); t0=$(date +%s%N); sleep 4; "
                   "b=$(cat $f); t1=$(date +%s%N); echo $a $b $t0 $t1; done")
-        out = docker("run", "--rm", "-v", "/sys/fs/cgroup:/host-cgroup:ro", "kvnode-toolchain",
+        out = docker("run", "--rm", "-v", "/sys/fs/cgroup:/host-cgroup:ro", "kvasm-toolchain",
                      "bash", "-c", script, timeout=120)
         samples = []
         for line in out.splitlines():
@@ -489,7 +489,7 @@ def run_validation_cell(cell: dict, cg: Cgroups) -> dict:
       keys: redis-benchmark's -r keys are kvbench's key format),
       redis/memtier-random (memtier preloads its own keys),
       redis/kvbench-onekey vs redis/redis-benchmark-onekey, and
-      kvnode/kvbench-onekey vs kvnode/h2load-onekey (h2load cannot vary the
+      kvasm/kvbench-onekey vs kvasm/h2load-onekey (h2load cannot vary the
       request body, so the comparison uses a single key for both).
 
     Args:
@@ -537,10 +537,10 @@ def run_validation_cell(cell: dict, cg: Cgroups) -> dict:
                        "--csv", "-q")
             m = re.search(r'^"GET","([\d.]+)"', p.stdout, re.M)
             return {"tool_ops_per_sec": float(m.group(1)) if m else None, "raw": p.stdout[-800:]}
-        # h2load against KvNode, single key
+        # h2load against KvAsm, single key
         script = (f"printf '{H2_GET_ONE_KEY}' > /tmp/body && h2load -n 20000000 -c 64 -m 16 -t 16 "
                   "-d /tmp/body -H 'content-type: application/grpc' -H 'te: trailers' "
-                  "http://127.0.0.1:50051/kvnode.v1.KvNode/Get")
+                  "http://127.0.0.1:50051/kvasm.v1.KvAsm/Get")
         p = client(suite.VALIDATION_IMAGES["h2load"], "bash", "-c", script, timeout=900)
         m = re.search(r"finished in [\d.]+m?s, ([\d.]+) req/s", p.stdout)
         failed = re.search(r"(\d+) failed", p.stdout)
@@ -553,7 +553,7 @@ def run_validation_cell(cell: dict, cg: Cgroups) -> dict:
 VALIDATION_TOOLS = {
     "redis": ["kvbench-random", "redis-benchmark-random", "memtier-random", "kvbench-onekey",
               "redis-benchmark-onekey"],
-    "kvnode": ["kvbench-onekey", "h2load-onekey"],
+    "kvasm": ["kvbench-onekey", "h2load-onekey"],
 }
 
 # ---------------------------------------------------------------------------
@@ -720,11 +720,11 @@ def main() -> int:
     ap.add_argument("--out", help="results directory (existing = resume)")
     ap.add_argument("--only", help="comma-separated experiment ids")
     ap.add_argument("--systems", help="comma-separated systems to run, of each experiment's own "
-                    "(default: all); e.g. kvnode to re-measure KvNode alone")
+                    "(default: all); e.g. kvasm to re-measure KvAsm alone")
     ap.add_argument("--e4-rates", help="comma-separated E4 offered loads in ops/s, instead of "
                     "25/50/75%% of the slowest system's E1 median (e.g. an earlier session's)")
-    ap.add_argument("--control-image", help="also run this KvNode image as system 'kvnode-control' "
-                    "wherever kvnode runs, in the same blocks (e.g. the image an earlier session measured)")
+    ap.add_argument("--control-image", help="also run this KvAsm image as system 'kvasm-control' "
+                    "wherever kvasm runs, in the same blocks (e.g. the image an earlier session measured)")
     args = ap.parse_args()
 
     experiments = suite.PROFILES[args.profile]
@@ -749,15 +749,15 @@ def main() -> int:
         if any(r <= 0 for r in e4_override):
             ap.error("--e4-rates must be positive")
     if args.control_image:
-        # Identical to the kvnode system in every setting but the image, so a
-        # cell's kvnode ÷ kvnode-control ratio isolates the build. Registered
+        # Identical to the kvasm system in every setting but the image, so a
+        # cell's kvasm ÷ kvasm-control ratio isolates the build. Registered
         # before environment() records every system's image identity, and
-        # with kvnode's E8 tools, which plan() looks up by system name.
-        suite.SYSTEMS[CONTROL] = replace(suite.SYSTEMS["kvnode"], name=CONTROL,
-                                         title=f"KvNode control ({args.control_image})",
+        # with kvasm's E8 tools, which plan() looks up by system name.
+        suite.SYSTEMS[CONTROL] = replace(suite.SYSTEMS["kvasm"], name=CONTROL,
+                                         title=f"KvAsm control ({args.control_image})",
                                          image=args.control_image)
-        VALIDATION_TOOLS[CONTROL] = VALIDATION_TOOLS["kvnode"]
-        experiments = [replace(e, systems=e.systems + (CONTROL,)) if "kvnode" in e.systems else e
+        VALIDATION_TOOLS[CONTROL] = VALIDATION_TOOLS["kvasm"]
+        experiments = [replace(e, systems=e.systems + (CONTROL,)) if "kvasm" in e.systems else e
                        for e in experiments]
     stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H%M")
     out = pathlib.Path(args.out) if args.out else HERE / "results" / f"{stamp}-{args.profile}"

@@ -1,6 +1,6 @@
 # Control: the golden probe's own bar (committed golden_probe.c, --bar-only),
 # 10M keys, cpu 4, reps 5, run twice by control_golden_bar.sh between the two
-# certified services runs (2026-10-01 ~17:17Z; kvnode-dev idle, not wrapped
+# certified services runs (2026-10-01 ~17:17Z; kvasm-dev idle, not wrapped
 # in docker-events certification).
 #
 # Purpose: separate "the machine is slower today" from "the new probe

@@ -22,7 +22,7 @@ global kv_tag_match
 ; @param  rsi  const uint8_t *b
 ; @param  rdx  size_t len (0 compares equal)
 ; @returns eax = 1 if the first len bytes are identical, else 0.
-; @remarks Exactness is the point: KvNode identifies keys by their bytes, not
+; @remarks Exactness is the point: KvAsm identifies keys by their bytes, not
 ;          by hashes, so no hash collision can ever return another key's
 ;          value. Reads never go outside [a, a+len) or [b, b+len): lengths
 ;          >= 8 compare 8-byte words and finish with an overlapping word that

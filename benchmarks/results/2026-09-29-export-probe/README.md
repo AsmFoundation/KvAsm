@@ -6,7 +6,7 @@ It measures, on the server's real store code, the numbers that decide how an
 Export gets a consistent view and what a pattern-filtered scan costs.
 
 - **What:** [`export_probe.c`](export_probe.c), built and run by
-  [`run.sh`](run.sh) in the `kvnode-dev` container. The store modules are
+  [`run.sh`](run.sh) in the `kvasm-dev` container. The store modules are
   assembled fresh from `server/src` into a scratch directory.
 - **Revision:** 0aa7f65. **Host:** i9-13900K, WSL2, THP `always`, one pinned
   vCPU (4), 5 repetitions, medians.

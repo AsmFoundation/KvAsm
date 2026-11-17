@@ -1,5 +1,5 @@
 # =============================================================================
-# CI — every test suite KvNode has, on every push to main and every pull
+# CI — every test suite KvAsm has, on every push to main and every pull
 # request. release.yml calls this same workflow (workflow_call) before it
 # publishes anything, so a release can never skip a gate CI enforces.
 #
@@ -43,10 +43,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      # KvNodeServer (the .NET test fixture) starts this tag, i.e. the image
+      # KvAsmServer (the .NET test fixture) starts this tag, i.e. the image
       # this job just built and tested, never a stale local one.
-      KVNODE_IMAGE: kvnode:ci
-      KVNODE_REQUIRE_DOCKER: "1"
+      KVASM_IMAGE: kvasm:ci
+      KVASM_REQUIRE_DOCKER: "1"
       DOTNET_NOLOGO: "1"
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
     steps:
@@ -68,10 +68,10 @@ jobs:
         with:
           context: .
           target: runtime
-          tags: kvnode:ci
+          tags: kvasm:ci
           load: true
-          cache-from: type=gha,scope=kvnode
-          cache-to: type=gha,scope=kvnode,mode=max
+          cache-from: type=gha,scope=kvasm
+          cache-to: type=gha,scope=kvasm,mode=max
 
       # Only the build matters here (its RUN step runs test_kvbench), so the
       # result stays in the build cache instead of being exported.
@@ -81,12 +81,12 @@ jobs:
           context: .
           target: kvbench
           outputs: type=cacheonly
-          cache-from: type=gha,scope=kvnode
+          cache-from: type=gha,scope=kvasm
 
       - name: Show the image under test
         run: |
-          docker image inspect kvnode:ci --format 'id={{.Id}} size={{.Size}} bytes'
-          docker image inspect kvnode:ci --format '{{json .Config.Labels}}'
+          docker image inspect kvasm:ci --format 'id={{.Id}} size={{.Size}} bytes'
+          docker image inspect kvasm:ci --format '{{json .Config.Labels}}'
 
       # The test project targets net8.0 and net10.0: the 8.0 SDK brings the
       # net8.0 runtime, and global.json pins the 10.0 SDK that builds both.
@@ -101,4 +101,4 @@ jobs:
       # rejected (MSB1001).
       - name: .NET client tests against the image built above
         working-directory: client/dotnet
-        run: dotnet test --solution KvNode.Client.slnx
+        run: dotnet test --solution KvAsm.Client.slnx

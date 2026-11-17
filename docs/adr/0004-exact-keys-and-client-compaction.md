@@ -103,7 +103,7 @@ no other operation may be affected.
   than any hash-table hash. It is all ten rounds: reduced-round "AES-like"
   table hashes are a different thing. AES-NI executes in constant time.
   The key and the masks never leave the process.
-- **Which hash runs:** `KVNODE_HASH=auto` (the default) takes AES when
+- **Which hash runs:** `KVASM_HASH=auto` (the default) takes AES when
   CPUID reports AES-NI and SSSE3, and SipHash-2-4 (one 64-bit word, the
   amendment above) otherwise. `siphash` and `aes` force one; forcing `aes`
   on a CPU without AES-NI refuses to start (exit 2). The startup line names

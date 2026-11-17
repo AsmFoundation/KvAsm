@@ -1,4 +1,4 @@
-# Plan: KvNode functions — design, usage and rollout
+# Plan: KvAsm functions — design, usage and rollout
 
 - **Status:** proposed plan, 2026-10-01; Group J merged in on 2026-10-02.
   Nothing here is implemented or decided. Each phase would land with its
@@ -8,7 +8,7 @@
   behind it (Part II §3) live only here. The companions below are the
   measurement and design records the plan cites, and the benchmark READMEs
   hold the evidence.
-- **What it covers:** the 58 functions KvNode could offer beyond Get, Put,
+- **What it covers:** the 58 functions KvAsm could offer beyond Get, Put,
   Delete, Upload and Download. They were chosen from the measured catalogs
   for the business value customers get from them:
   - 38 in groups A-G;
@@ -170,7 +170,7 @@
 | G3 | Export | a consistent copy of matching keys | `Export` | cut O(1); 25-40 ns per key streamed | cuts | 3 | X |
 | G4 | Reconcile | sync by the difference only | `Reconcile` | O(difference) | per-scope tables | 6 | C |
 | G5 | StatsByPrefix | keys and bytes per prefix | `Stats` (prefix) | O(1) | directories | 4 | E |
-| H1 | Compact keys | get, put or increment a ≤ 8-byte value at one cache miss | Get, GetMany, Mutate, Increment (on compact prefixes) | 28.1 ns batched (ordinary keys: 53.1); 189.9 ns alone | a compact table; `KVNODE_COMPACT_PREFIXES` | 6 | V |
+| H1 | Compact keys | get, put or increment a ≤ 8-byte value at one cache miss | Get, GetMany, Mutate, Increment (on compact prefixes) | 28.1 ns batched (ordinary keys: 53.1); 189.9 ns alone | a compact table; `KVASM_COMPACT_PREFIXES` | 6 | V |
 | H2 | Struct fields | read or update one field of a structured value | `Fields` | read 59.6 ns, increment 62.5 ns (the whole 440-byte value: 102.0) | typed value | 5 | V |
 | H3 | Bitmaps | set, test, find and count bits | `Bits` | set 10.1 ns; range count 67.6 ns; whole count one load | typed value + block counts | 5 | V |
 | H4 | Small sets | membership and overlap of id sets | `Sets` | membership 2.1 ns (64 ids); overlap 552.8 ns (1,024 × 1,024) | typed value | 5 | V |
@@ -263,7 +263,7 @@
   their building blocks, not the feature.
 - **Durable persistence.** That is the persistence proposal; §V.6 covers
   how these functions interact with it.
-- **Authentication.** KvNode trusts its network and puts TLS and identity
+- **Authentication.** KvAsm trusts its network and puts TLS and identity
   in a proxy. §1.10 proposes how a proxy can scope tenants.
 
 ---
@@ -274,14 +274,14 @@
 
 ### 1.1 Additive, and safe against older servers
 
-- Every function is a **new RPC** in the existing `kvnode.v1.KvNode`
+- Every function is a **new RPC** in the existing `kvasm.v1.KvAsm`
   service. Get, Put, Delete, Upload and Download keep their exact behavior.
 - Old clients never call the new methods. A new client talking to an older
   server gets `UNIMPLEMENTED` and fails safely. A condition or TTL is never
   silently dropped (decision 1).
 - A function whose feature is disabled answers `UNIMPLEMENTED`, with the
   setting to change in the message (e.g. "Scan needs
-  KVNODE_INDEX_ORDER=on").
+  KVASM_INDEX_ORDER=on").
 - Messages only ever gain fields: new numbers, never reused; removed ones
   become `reserved`. Every enum keeps `…_UNSPECIFIED = 0`.
 
@@ -340,13 +340,13 @@ asked.
 ### 1.4 Batches
 
 - **One request message per call**, never a stream.
-  - Reads take 1..`KVNODE_MAX_READ_BATCH` items (default 1,024).
-  - Writes take 1..`KVNODE_MAX_WRITE_BATCH` (default 256).
-  - Atomic batches take 1..`KVNODE_MAX_ATOMIC` (default 64).
+  - Reads take 1..`KVASM_MAX_READ_BATCH` items (default 1,024).
+  - Writes take 1..`KVASM_MAX_WRITE_BATCH` (default 256).
+  - Atomic batches take 1..`KVASM_MAX_ATOMIC` (default 64).
 - **Every item is validated before any item is applied.** A malformed or
   oversized item fails the whole call with `INVALID_ARGUMENT`, and nothing
   changes.
-- **Responses stop before `KVNODE_MAX_RESPONSE_KB`** (default 1024). The
+- **Responses stop before `KVASM_MAX_RESPONSE_KB`** (default 1024). The
   .NET client's default receive limit is 1 MiB + 1 KiB. A read batch that
   would exceed it returns the items so far plus `next_index`; the client
   library continues automatically.
@@ -416,8 +416,8 @@ asked.
 - **Not types:** JSON documents (J9) and blobs (J10) are plain bytes.
   JsonGet parses on every call, and a blob's key is its digest.
 - **Some prefixes fix the start of the value.** Under
-  `KVNODE_NEAR_PREFIXES` a value starts with its 8-byte fingerprint (H5),
-  and under `KVNODE_GEO_INDEXES` with its 16-byte point (H6). Compact keys
+  `KVASM_NEAR_PREFIXES` a value starts with its 8-byte fingerprint (H5),
+  and under `KVASM_GEO_INDEXES` with its 16-byte point (H6). Compact keys
   (H1) are not a value type: they are a key space whose values are at most
   8 bytes.
 
@@ -478,12 +478,12 @@ The examples in this document write fixed-width numbers with a helper
 
 ### 1.10 Scopes for multi-tenant deployments (proposal)
 
-KvNode has no authentication; TLS and identity live in a proxy. To host
+KvAsm has no authentication; TLS and identity live in a proxy. To host
 several tenants safely, **the proxy can scope each connection**:
 
-- **Setup.** `KVNODE_SCOPE_HEADER=kvnode-scope` names a request header that
+- **Setup.** `KVASM_SCOPE_HEADER=kvasm-scope` names a request header that
   a *trusted* proxy sets after it authenticates the caller, for example
-  `kvnode-scope: t42:`.
+  `kvasm-scope: t42:`.
 - **Effect.** The server prepends the scope to every key in the request
   and strips it from every key in the answer. A tenant cannot name another
   tenant's key at all.
@@ -499,7 +499,7 @@ This is open decision 5.
 
 ### 1.11 Memory and opt-ins
 
-Every structure counts toward `KVNODE_MAX_MEMORY_MB`. A create that would
+Every structure counts toward `KVASM_MAX_MEMORY_MB`. A create that would
 cross it is refused before any structure is touched. The full picture at
 10M keys of 20 bytes with 100-byte values:
 
@@ -519,8 +519,8 @@ cross it is refused before any structure is touched. The full picture at
 | near-duplicate index (H5) | 48 B per indexed key (V) | ~0.48 GB if all are indexed | off (per prefix) |
 | geo index (H6) | 28 B per point + 4 MiB (V) | ~0.28 GB if all are points | off (per index) |
 | typed values (H2-H4, H9, H10, J8) | their own size; structs +56 B of directory, bitmaps +0.1% of counts | — | on |
-| relocation log (J5) | — | 512 KiB fixed (`KVNODE_RELOCATION_LOG`) | on |
-| history ring | fixed size (`KVNODE_WATCH_HISTORY`) | — | export-watch.md |
+| relocation log (J5) | — | 512 KiB fixed (`KVASM_RELOCATION_LOG`) | on |
+| history ring | fixed size (`KVASM_WATCH_HISTORY`) | — | export-watch.md |
 | sketches | they are values: 4-16 KB per HLL, sized Count-Mins | — | — |
 
 With every opt-in enabled the store needs about 5× its base memory. That is
@@ -581,7 +581,7 @@ window in which the word was odd or moved.
 | assignment | `LOCK XADD` on one cache line: 3 ns single-threaded, 136.6 M/s across 7 threads (S) |
 | seed | `unix_ms × 2^20` at startup (§1.5) |
 | visibility | the lazy stable watermark of export-watch.md §6 (+3.3 ns per write under today's mutex, S) |
-| cost when nothing consumes it | in-place updates skip it when Watch and Export are disabled (`KVNODE_WATCH_HISTORY=0`); Put-class writes always take one, since versions need it |
+| cost when nothing consumes it | in-place updates skip it when Watch and Export are disabled (`KVASM_WATCH_HISTORY=0`); Put-class writes always take one, since versions need it |
 
 **The shared line is a ceiling.** With Watch enabled, every in-place update
 also takes a revision: one more `LOCK XADD` on that shared line. That puts
@@ -681,10 +681,10 @@ record header (§1.5).
   - The cost is one flag test, perfectly predicted when no TTLs are in use.
   - Leases and one-time tokens depend on this exactness.
 - **Active expiry: bounded work.**
-  - A hashed timing wheel (Varghese and Lauck, C): `KVNODE_EXPIRE_TICK_MS`
+  - A hashed timing wheel (Varghese and Lauck, C): `KVASM_EXPIRE_TICK_MS`
     slots (default 1 s), plus an overflow tier for distant deadlines.
   - One worker's housekeeping tick removes due records, at most
-    `KVNODE_EXPIRE_BATCH` per tick, through the Mutate engine in chunks.
+    `KVASM_EXPIRE_BATCH` per tick, through the Mutate engine in chunks.
   - Each removal is an `EXPIRE` event. Reads already treat the keys as
     gone, so a burst of expiries only spreads memory reclamation over a few
     ticks.
@@ -709,7 +709,7 @@ record header (§1.5).
 | values | each record header points to its leaf. A replace moves the pointer to the new record in O(1), with no tree walk, so Scan reads values directly (11.6 ns per item in the pinned-record measurement, M) |
 | maintenance | inside creates and deletes (synchronous), so queues, pagination and claims read their own writes. Replaces cost nothing: the key set is unchanged |
 | cost | +0.76-0.85 µs per create or delete for the measured rival (libart, K): the gate. About 93 B per key with counts; +8 B per record for the leaf pointer |
-| reversed index | a second tree over reversed keys for suffix listing (`KVNODE_INDEX_ORDER=both`): +0.55-0.58 µs per create or delete and 69 B per key (K) |
+| reversed index | a second tree over reversed keys for suffix listing (`KVASM_INDEX_ORDER=both`): +0.55-0.58 µs per create or delete and 69 B per key (K) |
 | optional accelerator | the Eytzinger sorted snapshot (golden-operations §2.3) answers Seek, Count, Rank and Select at 71-75 ns batched, for read-mostly data loaded from a snapshot. 344 MB and a 0.7 s rebuild at 10M keys; kept fresh by a delta overlay. Phase 6, opt-in |
 
 ### 2.6 Directories (opt-in)
@@ -722,7 +722,7 @@ prefixes: `t42:`, `t42:user7:`.
 - **Bytes:** a running sum of value sizes, for StatsByPrefix.
 - **Sampling:** a uniform member in O(1), for Sample within a prefix.
 - **Cost (K):** +221 ns per delete and +321 ns per create, 110 B per key.
-- **Enabled by** `KVNODE_INDEX_DELIMITERS`.
+- **Enabled by** `KVASM_INDEX_DELIMITERS`.
 
 ### 2.7 Background builders
 
@@ -791,7 +791,7 @@ are the endpoints probe's (N).
 
 ### 3.2 Storage
 
-- **The table** ([server/include/kvnode.inc](../../server/include/kvnode.inc),
+- **The table** ([server/include/kvasm.inc](../../server/include/kvasm.inc),
   `struc Table`, line 100):
   - a 64-byte-aligned bucket array in an anonymous NORESERVE mapping, with
     transparent huge pages, prefaulted at creation (store.asm line 117);
@@ -985,7 +985,7 @@ Code samples use the *proposed* .NET client API (§V.7).
 **API.**
 ```proto
 rpc Exists(ExistsRequest) returns (ExistsResponse);
-message ExistsRequest  { repeated bytes keys = 1; }   // 1 .. KVNODE_MAX_READ_BATCH
+message ExistsRequest  { repeated bytes keys = 1; }   // 1 .. KVASM_MAX_READ_BATCH
 message ExistsResponse { repeated bool found = 1; }   // packed, request order
 ```
 
@@ -1029,7 +1029,7 @@ writers unless it goes through a condition.
 ```proto
 rpc GetMany(GetManyRequest) returns (GetManyResponse);
 message GetManyRequest {
-  repeated bytes keys = 1;        // 1 .. KVNODE_MAX_READ_BATCH
+  repeated bytes keys = 1;        // 1 .. KVASM_MAX_READ_BATCH
   bool keys_only = 2;             // found, version and ttl only: no values
   bool with_versions = 3;
   bool with_ttl = 4;
@@ -1044,7 +1044,7 @@ message Item {
   bytes value = 2;
   uint64 version = 3;             // with_versions
   optional uint64 ttl_ms = 4;     // with_ttl: remaining; absent = no expiry
-  bool too_large = 5;             // value above KVNODE_MAX_VALUE_BYTES: use Download
+  bool too_large = 5;             // value above KVASM_MAX_VALUE_BYTES: use Download
 }
 ```
 PutMany and DeleteMany are `Mutate` (§2.1, full messages in A3) with one
@@ -1105,7 +1105,7 @@ PutMany. When keys must change together, use an atomic batch (A8).
 rpc Mutate(MutateRequest) returns (MutateResponse);
 
 message MutateRequest {
-  repeated Mutation mutations = 1;   // 1 .. KVNODE_MAX_WRITE_BATCH (atomic: KVNODE_MAX_ATOMIC)
+  repeated Mutation mutations = 1;   // 1 .. KVASM_MAX_WRITE_BATCH (atomic: KVASM_MAX_ATOMIC)
   bool atomic = 2;                    // all or nothing, one revision (A8)
 }
 message Mutation {
@@ -1385,7 +1385,7 @@ guarantee. Don't choose a TTL shorter than a few round trips.
 - **Invariants across keys:** keep a record and its own index entry
   (`email:<addr>` → user) consistent, all or nothing.
 
-**API.** `Mutate(atomic = true)` with up to `KVNODE_MAX_ATOMIC` mutations
+**API.** `Mutate(atomic = true)` with up to `KVASM_MAX_ATOMIC` mutations
 (default 64). The `move` op moves a value and its TTL to `to_key`.
 
 **Semantics.**
@@ -1407,7 +1407,7 @@ guarantee. Don't choose a TTL shorter than a few round trips.
 revision; release (§2.1).
 
 **Cost (E).** The sum of its writes, 126-450 ns each, within one lock
-hold. That hold is bounded by `KVNODE_MAX_ATOMIC`: about 30 µs, or about
+hold. That hold is bounded by `KVASM_MAX_ATOMIC`: about 30 µs, or about
 60 µs with the ordered index.
 
 **Usage.**
@@ -1443,7 +1443,7 @@ await kv.MoveAsync("draft:42", "post:42", overwrite: false);    // rename: never
 **API.**
 ```proto
 rpc Increment(IncrementRequest) returns (IncrementResponse);
-message IncrementRequest { repeated CounterUpdate updates = 1; }   // 1 .. KVNODE_MAX_WRITE_BATCH
+message IncrementRequest { repeated CounterUpdate updates = 1; }   // 1 .. KVASM_MAX_WRITE_BATCH
 message CounterUpdate {
   bytes key = 1;
   sint64 delta = 2;              // negative to decrement; 0 = read
@@ -1748,7 +1748,7 @@ message FilterHeader {
   table, or a prefix through the ordered index.
 - It hashes each key with the filter's seed and builds the filter.
 - The filter is cached per (scope, revision) and streamed in chunks.
-- Builds are rate-limited per scope (`KVNODE_FILTER_MIN_INTERVAL_SEC`) and
+- Builds are rate-limited per scope (`KVASM_FILTER_MIN_INTERVAL_SEC`) and
   size-capped.
 
 **Cost (M).**
@@ -1769,7 +1769,7 @@ _ = coupons.RefreshEvery(TimeSpan.FromMinutes(5));                   // if_newer
   can test candidate keys offline, without rate limits. Export filters only
   for key sets that are not sensitive: never usernames or emails of a
   private service. The server can restrict it to configured prefixes
-  (`KVNODE_FILTER_PREFIXES`).
+  (`KVASM_FILTER_PREFIXES`).
 - **Stale by design:** new keys answer "no" until the next refresh.
 
 ### C3. Sample / RandomKey
@@ -1787,7 +1787,7 @@ _ = coupons.RefreshEvery(TimeSpan.FromMinutes(5));                   // if_newer
 ```proto
 rpc Sample(SampleRequest) returns (SampleResponse);
 message SampleRequest {
-  uint32 count = 1;       // 1 .. KVNODE_MAX_READ_BATCH
+  uint32 count = 1;       // 1 .. KVASM_MAX_READ_BATCH
   bytes prefix = 2;       // empty: the whole store; else needs the ordered index or a directory
   bool keys_only = 3;
   bool distinct = 4;      // no key twice in one answer
@@ -1861,7 +1861,7 @@ plus Phase 0's revision and the TTL count.
 ## Group D — Ordered queries
 
 All of these run on the ordered index (§2.5), enabled with
-`KVNODE_INDEX_ORDER=on`; without it they answer `UNIMPLEMENTED`.
+`KVASM_INDEX_ORDER=on`; without it they answer `UNIMPLEMENTED`.
 
 - **Order** is byte order: `memcmp`, a prefix first.
 - **Long keys:** keys longer than 64 bytes are digests (§1.9).
@@ -1885,7 +1885,7 @@ message KeyRange {
   oneof kind {
     bytes prefix = 1;             // keys starting with these bytes
     Bounds bounds = 2;            // start <= key < end
-    bytes suffix = 3;             // keys ending with these bytes (needs KVNODE_INDEX_ORDER=both)
+    bytes suffix = 3;             // keys ending with these bytes (needs KVASM_INDEX_ORDER=both)
   }
 }
 message Bounds {
@@ -1896,7 +1896,7 @@ message Bounds {
 }
 message ScanRequest {
   KeyRange range = 1;
-  uint32 limit = 2;               // keys per page; 0 = 100; at most KVNODE_MAX_SCAN_PAGE (1,000)
+  uint32 limit = 2;               // keys per page; 0 = 100; at most KVASM_MAX_SCAN_PAGE (1,000)
   bool keys_only = 3;
   bool reverse = 4;               // descending
   bytes cursor = 5;               // the previous page's next_cursor
@@ -2202,7 +2202,7 @@ var cfg  = await kv.LongestPrefixAsync($"cfg:{path}", withinPrefix: "cfg:");
   suffix index.
 
 **API.** `Scan` with `range.prefix` or `range.suffix`. Suffix listing
-needs `KVNODE_INDEX_ORDER=both`, a second radix tree over reversed keys.
+needs `KVASM_INDEX_ORDER=both`, a second radix tree over reversed keys.
 
 **Semantics.**
 - Suffix listing returns keys in reversed-key order (sorted by suffix), not
@@ -2292,7 +2292,7 @@ if (lookalike.Count > 0) return RejectHandle();              // one edit from a 
 ```
 
 **Pitfalls.** At 2.19 GB per 10M keys, index only the prefixes that need
-it (`KVNODE_INDEX_FUZZY=sku:,protected:`).
+it (`KVASM_INDEX_FUZZY=sku:,protected:`).
 
 ### E2. FindSimilar, two edits
 
@@ -2365,7 +2365,7 @@ message FindContainingResponse { uint64 count = 1; repeated Entry entries = 2; b
 - **Cheap segments:** an Export of a segment, or an alert when matching
   keys appear (with Watch).
 
-**API.** Patterns are registered in configuration (`KVNODE_PATTERNS`,
+**API.** Patterns are registered in configuration (`KVASM_PATTERNS`,
 key-indexes.md §2.3).
 ```proto
 rpc Matching(MatchingRequest) returns (MatchingResponse);
@@ -2683,7 +2683,7 @@ processed + 1.
   began. The .NET client's `ChangesSinceAsync` does exactly that.
 
 **Semantics.**
-- Complete back to the retained history (`KVNODE_WATCH_HISTORY`).
+- Complete back to the retained history (`KVASM_WATCH_HISTORY`).
 - Older than that, `OUT_OF_RANGE`: fall back to Export (G3), or later to
   Reconcile (G4).
 
@@ -2752,7 +2752,7 @@ write per maintained scope.
 
 **API.** `Stats` with a prefix.
 - **Exact and O(1)** for delimiter-aligned prefixes with directories
-  (`KVNODE_INDEX_DELIMITERS`, §2.6).
+  (`KVASM_INDEX_DELIMITERS`, §2.6).
 - **Other prefixes:** the count comes from the ordered index (D2); bytes
   need a per-node byte sum (an open measurement) or a scan.
 
@@ -2826,7 +2826,7 @@ var usage = await kv.StatsAsync(prefix: $"t:{tenant}:");    // keys and value by
 
 **API.** No new RPC: a configured key space.
 ```text
-KVNODE_COMPACT_PREFIXES=c:      # keys under these prefixes live in the compact table
+KVASM_COMPACT_PREFIXES=c:       # keys under these prefixes live in the compact table
 ```
 - **These work on compact keys as on any key:** Get, GetMany, Exists,
   Increment, and Mutate (put, delete, and the conditions `absent`,
@@ -2874,7 +2874,7 @@ Design and thread safety: golden-services.md H1.
 
 **Usage.**
 ```csharp
-// server: KVNODE_COMPACT_PREFIXES=c:
+// server: KVASM_COMPACT_PREFIXES=c:
 await kv.IncrementAsync($"c:views:{postId:x8}");                 // 16 bytes: "c:views:" + 8 hex digits
 await kv.PutAsync($"c:seen:{userId:x8}", BitConverter.GetBytes(nowUnixMs));
 var flag = await kv.GetAsync($"c:ff:{accountId:x8}");             // a feature flag at one cache miss
@@ -2903,7 +2903,7 @@ var flag = await kv.GetAsync($"c:ff:{accountId:x8}");             // a feature f
 **API.**
 ```proto
 rpc Fields(FieldsRequest) returns (FieldsResponse);
-message FieldsRequest { repeated FieldOp ops = 1; }   // 1 .. KVNODE_MAX_WRITE_BATCH
+message FieldsRequest { repeated FieldOp ops = 1; }   // 1 .. KVASM_MAX_WRITE_BATCH
 message FieldOp {
   bytes key = 1;
   FieldOpKind kind = 2;
@@ -3003,7 +3003,7 @@ var whole = await kv.GetStructAsync("profile:9");                    // every fi
 **API.**
 ```proto
 rpc Bits(BitsRequest) returns (BitsResponse);
-message BitsRequest { repeated BitOp ops = 1; }      // 1 .. KVNODE_MAX_WRITE_BATCH
+message BitsRequest { repeated BitOp ops = 1; }      // 1 .. KVASM_MAX_WRITE_BATCH
 message BitOp {
   bytes key = 1;
   BitOpKind kind = 2;
@@ -3026,7 +3026,7 @@ message BitResult {
 **Semantics.**
 - **A fixed size,** set at creation:
   - rounded up to 4 KiB;
-  - at most `KVNODE_MAX_BITMAP_MB` (default 128: about 10^9 bits);
+  - at most `KVASM_MAX_BITMAP_MB` (default 128: about 10^9 bits);
   - a bit beyond it is `OUT_OF_RANGE`.
 - **SET and CLEAR** return the previous bit, and are linearizable per bit.
 - **COUNT** relies on per-4 KiB counts and a total, updated only when a
@@ -3088,7 +3088,7 @@ long seat = await kv.FindBitAsync($"taken:{showId}", value: false);             
 **API.**
 ```proto
 rpc Sets(SetsRequest) returns (SetsResponse);
-message SetsRequest { repeated SetOp ops = 1; }      // 1 .. KVNODE_MAX_WRITE_BATCH
+message SetsRequest { repeated SetOp ops = 1; }      // 1 .. KVASM_MAX_WRITE_BATCH
 message SetOp {
   bytes key = 1;
   SetOpKind kind = 2;
@@ -3106,7 +3106,7 @@ message SetResult {
 ```
 
 **Semantics.**
-- **Members are unsigned 64-bit ids,** at most `KVNODE_MAX_SET_MEMBERS`
+- **Members are unsigned 64-bit ids,** at most `KVASM_MAX_SET_MEMBERS`
   (default 65,536) per set.
 - **ADD and REMOVE** write a new sorted array through the writer path: a
   replace, with a new version. Concurrent ADDs to one set serialize there.
@@ -3157,7 +3157,7 @@ long size = await kv.SetCountAsync($"members:{roomId}");
 ```proto
 rpc FindNear(FindNearRequest) returns (FindNearResponse);
 message FindNearRequest {
-  bytes prefix = 1;                // a prefix listed in KVNODE_NEAR_PREFIXES
+  bytes prefix = 1;                // a prefix listed in KVASM_NEAR_PREFIXES
   fixed64 fingerprint = 2;         // a 64-bit SimHash or perceptual hash, computed by the client
   uint32 max_distance = 3;         // 0 .. 3 bits
   uint32 limit = 4;                // 1 .. 1,000
@@ -3219,13 +3219,13 @@ if (dups.Count == 0) await kv.PutWithFingerprintAsync($"listing:{id}", fp, listi
 ```proto
 rpc GeoAdd(GeoAddRequest) returns (GeoAddResponse);
 rpc GeoRadius(GeoRadiusRequest) returns (GeoRadiusResponse);
-message GeoAddRequest { bytes index = 1; repeated GeoPoint points = 2; }      // 1 .. KVNODE_MAX_WRITE_BATCH
+message GeoAddRequest { bytes index = 1; repeated GeoPoint points = 2; }      // 1 .. KVASM_MAX_WRITE_BATCH
 message GeoPoint { bytes member = 1; double lat = 2; double lon = 3; }
 message GeoAddResponse { uint32 created = 1; uint32 moved = 2; }
 message GeoRadiusRequest {
-  bytes index = 1;                 // a prefix listed in KVNODE_GEO_INDEXES
+  bytes index = 1;                 // a prefix listed in KVASM_GEO_INDEXES
   double lat = 2; double lon = 3;
-  double radius_m = 4;             // at most KVNODE_GEO_MAX_RADIUS_M (default 50 km)
+  double radius_m = 4;             // at most KVASM_GEO_MAX_RADIUS_M (default 50 km)
   uint32 limit = 5;                // 1 .. 10,000
   bool sorted = 6;                 // nearest first
   bytes cursor = 7;                // continues a truncated answer
@@ -3289,7 +3289,7 @@ var near = await kv.GeoRadiusAsync("drivers:", riderLat, riderLon, radiusMeters:
 **API.**
 ```proto
 rpc WindowAdd(WindowAddRequest) returns (WindowAddResponse);
-message WindowAddRequest { repeated WindowUpdate updates = 1; }    // 1 .. KVNODE_MAX_WRITE_BATCH
+message WindowAddRequest { repeated WindowUpdate updates = 1; }    // 1 .. KVASM_MAX_WRITE_BATCH
 message WindowUpdate {
   bytes key = 1;
   sint64 delta = 2;                // 0 = read
@@ -3344,7 +3344,7 @@ rpc Score(ScoreRequest) returns (ScoreResponse);
 message ScoreRequest {
   ScoreKind kind = 1;              // INT8_DOT, FP32_DOT, MINHASH
   bytes query = 2;                 // the query vector or signature, in the kind's encoding
-  repeated bytes keys = 3;         // 1 .. KVNODE_MAX_READ_BATCH
+  repeated bytes keys = 3;         // 1 .. KVASM_MAX_READ_BATCH
 }
 message ScoreResponse { repeated ScoreResult results = 1; }
 message ScoreResult { ScoreOutcome outcome = 1; double score = 2; }     // OK, NO_KEY, MISMATCH
@@ -3407,7 +3407,7 @@ var top = candidateKeys.Zip(scores).OrderByDescending(p => p.Second).Take(20);
     on every call. Nothing is indexed, and no type is attached.
   - Arrays (J8) are a typed value (§1.6).
 - **Value work is bounded per call.** JsonGet, value filters and PutBlob
-  stop after `KVNODE_MAX_SCAN_KB` of values scanned or hashed (default
+  stop after `KVASM_MAX_SCAN_KB` of values scanned or hashed (default
   512), with at least one value per call. They continue from `next_index`
   or a cursor (§1.2).
 - **Every SIMD kernel has a scalar twin,** chosen at startup by CPUID (ADR
@@ -3560,7 +3560,7 @@ message Item {
 - **0 is never a tag:** CRC tags set bit 63, and versions start above 0.
 
 **How it works.** The batched pipeline, then the folding CRC-32C
-(`crc32c.asm`, the mode `KVNODE_CRC32C` picks) over the value in the
+(`crc32c.asm`, the mode `KVASM_CRC32C` picks) over the value in the
 record. A match frames `unchanged` instead of the value.
 
 **Cost (N).**
@@ -3574,7 +3574,7 @@ record. A match frames `unchanged` instead of the value.
 
 **Usage.**
 ```csharp
-// An HTTP endpoint backed by KvNode: 304 while the client's ETag still matches.
+// An HTTP endpoint backed by KvAsm: 304 while the client's ETag still matches.
 var r = await kv.GetIfChangedAsync(key, etag: ParseETag(Request.Headers.IfNoneMatch));
 if (r.Unchanged) return StatusCode(304);
 Response.Headers.ETag = FormatETag(r.Tag);
@@ -3628,7 +3628,7 @@ message GetManyResponse {
 2. Run the batched lookups.
 3. Re-read the versions and the word.
 4. **Unchanged:** answer. **Changed:** retry, up to
-   `KVNODE_SNAPSHOT_ATTEMPTS` (default 4), then read under the writer
+   `KVASM_SNAPSHOT_ATTEMPTS` (default 4), then read under the writer
    lock, which no writer can hold at the same time.
 
 - **Why it is correct (a double collect, Afek et al., C).** Every write
@@ -3683,7 +3683,7 @@ message IterateRequest {
   uint32 shard = 1;                // 0 .. shards-1
   uint32 shards = 2;               // 1 .. 1,024 (0 = 1): contiguous bucket ranges
   bytes cursor = 3;                // the previous page's next_cursor; empty: the shard's start
-  uint32 limit = 4;                // entries per page; 0 = 100; at most KVNODE_MAX_ITERATE_PAGE (1,000)
+  uint32 limit = 4;                // entries per page; 0 = 100; at most KVASM_MAX_ITERATE_PAGE (1,000)
   bool keys_only = 5;
   bool with_versions = 6;
   bool with_ttl = 7;
@@ -3707,9 +3707,9 @@ message IterateResponse {
   copy, use Export (G3).
 - **Bounded pages.** A page stops at the first of:
   - `limit` entries;
-  - `KVNODE_ITERATE_BUCKETS` buckets visited (default 2,048, about 10k
+  - `KVASM_ITERATE_BUCKETS` buckets visited (default 2,048, about 10k
     keys);
-  - `KVNODE_MAX_SCAN_KB` of values filtered;
+  - `KVASM_MAX_SCAN_KB` of values filtered;
   - the response cap.
 
   A page can hold fewer entries than `limit`, even none, and still return a
@@ -3727,7 +3727,7 @@ message IterateResponse {
   are prefetched.
 - **Only a cuckoo relocation moves an existing key,** and it can move one
   behind the cursor. Each move therefore appends its destination (bucket,
-  slot) to a ring of `KVNODE_RELOCATION_LOG` entries (default 65,536, 512
+  slot) to a ring of `KVASM_RELOCATION_LOG` entries (default 65,536, 512
   KiB). The ring is indexed by `Table.st_moves`, which every move already
   increments: one 8-byte store per move.
 - **After its scan,** a page re-reads every slot that a move since the
@@ -3888,7 +3888,7 @@ if ((r.Previous & TrialUsed) != 0) return TrialAlreadyUsed();      // the trial 
 **API.**
 ```proto
 rpc Arrays(ArraysRequest) returns (ArraysResponse);
-message ArraysRequest { repeated ArrayOp ops = 1; }      // 1 .. KVNODE_MAX_WRITE_BATCH
+message ArraysRequest { repeated ArrayOp ops = 1; }      // 1 .. KVASM_MAX_WRITE_BATCH
 message ArrayOp {
   bytes key = 1;
   ArrayOpKind kind = 2;
@@ -3917,7 +3917,7 @@ message ArrayResult {
 **Semantics.**
 - **A typed value** (§1.6): a magic `KVAR`, the cell count, then int64
   cells.
-- **The size is fixed at creation,** 1 .. `KVNODE_MAX_ARRAY_CELLS`
+- **The size is fixed at creation,** 1 .. `KVASM_MAX_ARRAY_CELLS`
   (default 65,536: 512 KiB). An index beyond it is `OUT_OF_RANGE`; a Put
   of a bigger encoding grows the array.
 - **ADD** is linearizable per cell and exact under contention, like a
@@ -3973,7 +3973,7 @@ long[] byHour = await kv.ArrayGetAsync($"calls:{cust}:{week}");
 ```proto
 rpc JsonGet(JsonGetRequest) returns (JsonGetResponse);
 message JsonGetRequest {
-  repeated bytes keys = 1;         // 1 .. KVNODE_MAX_READ_BATCH
+  repeated bytes keys = 1;         // 1 .. KVASM_MAX_READ_BATCH
   repeated string paths = 2;       // 1 .. 16, applied to every key: "title", "address.zip", "items[2].sku"
 }
 message JsonGetResponse {
@@ -3997,10 +3997,10 @@ message JsonResult {
   - One broken before it answers `NOT_JSON`.
 - **Duplicate member names:** the first wins. RFC 8259 leaves the case
   open.
-- **Depth:** at most `KVNODE_JSON_MAX_DEPTH` levels (default 64); deeper is
+- **Depth:** at most `KVASM_JSON_MAX_DEPTH` levels (default 64); deeper is
   `TOO_DEEP`.
 - **Bounded work:** a call stops before the next document once
-  `KVNODE_MAX_SCAN_KB` have been scanned, after at least one document. The
+  `KVASM_MAX_SCAN_KB` have been scanned, after at least one document. The
   client library continues from `next_index`.
 
 **How it works.**
@@ -4056,7 +4056,7 @@ foreach (var r in rows)
 **API.**
 ```proto
 rpc PutBlob(PutBlobRequest) returns (PutBlobResponse);
-message PutBlobRequest { repeated Blob blobs = 1; }      // ≤ KVNODE_MAX_WRITE_BATCH, ≤ KVNODE_MAX_SCAN_KB in all
+message PutBlobRequest { repeated Blob blobs = 1; }      // ≤ KVASM_MAX_WRITE_BATCH, ≤ KVASM_MAX_SCAN_KB in all
 message Blob {
   bytes data = 1;
   bytes expected_sha256 = 2;       // optional: the client's digest (32 bytes)
@@ -4064,13 +4064,13 @@ message Blob {
 }
 message PutBlobResponse { repeated BlobResult results = 1; }
 message BlobResult {
-  bytes sha256 = 1;                // the digest; the key is KVNODE_CAS_PREFIX ‖ these 32 bytes
+  bytes sha256 = 1;                // the digest; the key is KVASM_CAS_PREFIX ‖ these 32 bytes
   bool existed = 2;                // already stored: nothing written
 }
 ```
-- **Missing blobs:** Exists (A1) on `KVNODE_CAS_PREFIX ‖ digest`.
+- **Missing blobs:** Exists (A1) on `KVASM_CAS_PREFIX ‖ digest`.
 - **Reads:** Get, GetMany or Download.
-- **Bazel's cache services** (opt-in `KVNODE_REAPI=on`, Phase 6):
+- **Bazel's cache services** (opt-in `KVASM_REAPI=on`, Phase 6):
   Capabilities, ActionCache, ContentAddressableStorage and ByteStream, on
   the same port, mapped onto these calls. Blobs above the per-call limit
   stream through ByteStream, which hashes on the way.
@@ -4079,11 +4079,11 @@ message BlobResult {
 - **The server computes every digest.** A blob whose digest differs from
   its `expected_sha256` fails the whole call with `INVALID_ARGUMENT`, and
   nothing is stored (§1.4).
-- **Opt-in by prefix.** PutBlob works once `KVNODE_CAS_PREFIX` is set (for
+- **Opt-in by prefix.** PutBlob works once `KVASM_CAS_PREFIX` is set (for
   example `cas:`). Unset, it answers `UNIMPLEMENTED`, and no key is ever
   refused.
 - **The prefix holds only verified content.** Put, Mutate puts and moves,
-  and Upload under `KVNODE_CAS_PREFIX` are `INVALID_ARGUMENT`, with
+  and Upload under `KVASM_CAS_PREFIX` are `INVALID_ARGUMENT`, with
   `reason = "cas-prefix"`. Delete and `touch` stay allowed: a deleted blob
   is simply uploaded again.
 - **Deduplication** is a PutIfAbsent (A3). Of two concurrent PutBlobs of
@@ -4156,7 +4156,7 @@ It appears as `IterateRequest.value_filter` (J5) and
     only, so an escaped spelling does not match an unescaped one;
   - a value that is not JSON up to the path does not match.
 - **`int64_at`** never matches a value too short for its offset.
-- **Bounded pages:** Iterate's page limits, `KVNODE_MAX_SCAN_KB` of values
+- **Bounded pages:** Iterate's page limits, `KVASM_MAX_SCAN_KB` of values
   per page (J5); Export is streamed.
 
 **How it works.**
@@ -4419,7 +4419,7 @@ Each recipe states the **problem**, the **keys**, the **calls**, what is
     2. `DeletePrefix(u:id:)` in a loop;
     3. confirm with `Count(prefix u:id:) == 0`.
 - **Watch out:** backups and snapshots taken earlier still contain the
-  data. Erasure in backups is a retention policy, not a KvNode call.
+  data. Erasure in backups is a retention policy, not a KvAsm call.
 
 ### R11. Cache invalidation across services
 
@@ -4537,7 +4537,7 @@ Each recipe states the **problem**, the **keys**, the **calls**, what is
 - **Problem:** stop sellers from re-posting a listing with small edits,
   and group near-identical tickets.
 - **Keys:**
-  - `listing:<id>` under `KVNODE_NEAR_PREFIXES=listing:`. Its value is the
+  - `listing:<id>` under `KVASM_NEAR_PREFIXES=listing:`. Its value is the
     8-byte SimHash, then the listing.
   - `mh:<id>`: a 128 × u32 MinHash signature (a vector value, H10).
 - **Calls, on create:**
@@ -4618,7 +4618,7 @@ Each recipe states the **problem**, the **keys**, the **calls**, what is
 
 ### R24. HTTP caching and revalidation with ETags
 
-- **Problem:** an API serves JSON documents from KvNode to browsers, CDNs
+- **Problem:** an API serves JSON documents from KvAsm to browsers, CDNs
   and edge caches. It should answer `If-None-Match` with 304 without
   sending the body.
 - **Keys:** `doc:<id>` → the JSON.
@@ -4646,10 +4646,10 @@ Each recipe states the **problem**, the **keys**, the **calls**, what is
   - `cas:` ‖ the 32-byte SHA-256 → the blob (PutBlob, J10);
   - `ac:` ‖ the action digest → the action result: a plain Put, with a TTL
     of 30 days.
-- **Calls,** with `KVNODE_REAPI=on` (Phase 6). Bazel talks to KvNode
+- **Calls,** with `KVASM_REAPI=on` (Phase 6). Bazel talks to KvAsm
   directly (`--remote_cache=grpc://host:port`):
 
-  | Bazel's call | KvNode |
+  | Bazel's call | KvAsm |
   |---|---|
   | FindMissingBlobs | a batched Exists on the digest keys |
   | BatchUpdateBlobs | PutBlob |
@@ -4780,7 +4780,7 @@ Each recipe states the **problem**, the **keys**, the **calls**, what is
 
 ## V.1 Protocol
 
-- **New RPCs in `kvnode.v1.KvNode`:**
+- **New RPCs in `kvasm.v1.KvAsm`:**
 
   | Phase | RPCs |
   |---|---|
@@ -4845,43 +4845,43 @@ Each recipe states the **problem**, the **keys**, the **calls**, what is
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KVNODE_MAX_READ_BATCH` | 1024 | keys per Exists, GetMany and Sample call |
-| `KVNODE_MAX_WRITE_BATCH` | 256 | mutations per Mutate or Increment call |
-| `KVNODE_MAX_ATOMIC` | 64 | mutations per atomic batch (bounds the writer-lock hold) |
-| `KVNODE_MAX_RESPONSE_KB` | 1024 | bytes per unary response before it stops early |
-| `KVNODE_MAX_SCAN_PAGE` | 1000 | keys per Scan page |
-| `KVNODE_TTL` | on | expiry support; `off` removes even the flag test |
-| `KVNODE_EXPIRE_TICK_MS` | 1000 | timing-wheel slot width |
-| `KVNODE_EXPIRE_BATCH` | 1024 | removals per sweeper tick |
-| `KVNODE_INDEX_ORDER` | off | `off` \| `on` \| `both` (also a reversed tree, for suffixes) |
-| `KVNODE_INDEX_DELIMITERS` and the other `KVNODE_INDEX_*`, `KVNODE_PATTERNS` | — | key-indexes.md §7 |
-| `KVNODE_INDEX_FUZZY` | (unset) | key prefixes indexed for FindSimilar |
-| `KVNODE_INDEX_SUBSTR` | (unset) | key prefixes indexed for FindContaining |
-| `KVNODE_SKETCHES` | on | sketch RPCs |
-| `KVNODE_FILTERS` | on | GetFilter |
-| `KVNODE_FILTER_PREFIXES` | (unset: any) | prefixes GetFilter may export |
-| `KVNODE_FILTER_MIN_INTERVAL_SEC` | 60 | minimum time between rebuilds of one scope |
-| `KVNODE_SCOPE_HEADER` | (unset) | multi-tenant scopes (§1.10) |
-| `KVNODE_WATCH_HISTORY`, `KVNODE_EXPORT*` | — | export-watch.md §9 |
-| `KVNODE_COMPACT_PREFIXES` | (unset) | key prefixes stored in the compact table (H1) |
-| `KVNODE_TYPED_VALUES` | on | Fields, Bits, Sets, WindowAdd, Score and Arrays |
-| `KVNODE_MAX_BITMAP_MB` | 128 | the largest bitmap (H3) |
-| `KVNODE_MAX_SET_MEMBERS` | 65536 | the largest set (H4) |
-| `KVNODE_NEAR_PREFIXES` | (unset) | prefixes indexed for FindNear (H5) |
-| `KVNODE_GEO_INDEXES` | (unset) | prefixes indexed for GeoRadius (H6) |
-| `KVNODE_GEO_MAX_RADIUS_M` | 50000 | the largest radius GeoRadius accepts |
-| `KVNODE_HASH_LANES` | auto | Track S: `auto` (8 lanes with AVX2) \| `1` |
-| `KVNODE_WRITE_COMBINING` | on | Track S: flat combining for writers |
-| `KVNODE_WAIT` | auto | Track S: `auto` (UMWAIT when the CPU and the hypervisor allow it) \| `pause` |
-| `KVNODE_MAX_ITERATE_PAGE` | 1000 | entries per Iterate page (J5) |
-| `KVNODE_ITERATE_BUCKETS` | 2048 | buckets one Iterate page visits at most (J5) |
-| `KVNODE_RELOCATION_LOG` | 65536 | relocation-log entries, 8 bytes each (J5) |
-| `KVNODE_SNAPSHOT_ATTEMPTS` | 4 | optimistic attempts of a consistent read before it reads under the writer lock (J4) |
-| `KVNODE_MAX_SCAN_KB` | 512 | value bytes one call or page may scan or hash: JsonGet, value filters, PutBlob (J9-J11) |
-| `KVNODE_MAX_ARRAY_CELLS` | 65536 | the largest array (J8) |
-| `KVNODE_JSON_MAX_DEPTH` | 64 | the deepest nesting JsonGet and JSON filters accept (J9, J11) |
-| `KVNODE_CAS_PREFIX` | (unset) | the content-addressed key space, e.g. `cas:`. Unset: PutBlob answers `UNIMPLEMENTED`, so existing keys are never refused after an upgrade. Set: other writes under it are refused (J10) |
-| `KVNODE_REAPI` | off | Bazel's cache services on the same port (J10, Phase 6) |
+| `KVASM_MAX_READ_BATCH` | 1024 | keys per Exists, GetMany and Sample call |
+| `KVASM_MAX_WRITE_BATCH` | 256 | mutations per Mutate or Increment call |
+| `KVASM_MAX_ATOMIC` | 64 | mutations per atomic batch (bounds the writer-lock hold) |
+| `KVASM_MAX_RESPONSE_KB` | 1024 | bytes per unary response before it stops early |
+| `KVASM_MAX_SCAN_PAGE` | 1000 | keys per Scan page |
+| `KVASM_TTL` | on | expiry support; `off` removes even the flag test |
+| `KVASM_EXPIRE_TICK_MS` | 1000 | timing-wheel slot width |
+| `KVASM_EXPIRE_BATCH` | 1024 | removals per sweeper tick |
+| `KVASM_INDEX_ORDER` | off | `off` \| `on` \| `both` (also a reversed tree, for suffixes) |
+| `KVASM_INDEX_DELIMITERS` and the other `KVASM_INDEX_*`, `KVASM_PATTERNS` | — | key-indexes.md §7 |
+| `KVASM_INDEX_FUZZY` | (unset) | key prefixes indexed for FindSimilar |
+| `KVASM_INDEX_SUBSTR` | (unset) | key prefixes indexed for FindContaining |
+| `KVASM_SKETCHES` | on | sketch RPCs |
+| `KVASM_FILTERS` | on | GetFilter |
+| `KVASM_FILTER_PREFIXES` | (unset: any) | prefixes GetFilter may export |
+| `KVASM_FILTER_MIN_INTERVAL_SEC` | 60 | minimum time between rebuilds of one scope |
+| `KVASM_SCOPE_HEADER` | (unset) | multi-tenant scopes (§1.10) |
+| `KVASM_WATCH_HISTORY`, `KVASM_EXPORT*` | — | export-watch.md §9 |
+| `KVASM_COMPACT_PREFIXES` | (unset) | key prefixes stored in the compact table (H1) |
+| `KVASM_TYPED_VALUES` | on | Fields, Bits, Sets, WindowAdd, Score and Arrays |
+| `KVASM_MAX_BITMAP_MB` | 128 | the largest bitmap (H3) |
+| `KVASM_MAX_SET_MEMBERS` | 65536 | the largest set (H4) |
+| `KVASM_NEAR_PREFIXES` | (unset) | prefixes indexed for FindNear (H5) |
+| `KVASM_GEO_INDEXES` | (unset) | prefixes indexed for GeoRadius (H6) |
+| `KVASM_GEO_MAX_RADIUS_M` | 50000 | the largest radius GeoRadius accepts |
+| `KVASM_HASH_LANES` | auto | Track S: `auto` (8 lanes with AVX2) \| `1` |
+| `KVASM_WRITE_COMBINING` | on | Track S: flat combining for writers |
+| `KVASM_WAIT` | auto | Track S: `auto` (UMWAIT when the CPU and the hypervisor allow it) \| `pause` |
+| `KVASM_MAX_ITERATE_PAGE` | 1000 | entries per Iterate page (J5) |
+| `KVASM_ITERATE_BUCKETS` | 2048 | buckets one Iterate page visits at most (J5) |
+| `KVASM_RELOCATION_LOG` | 65536 | relocation-log entries, 8 bytes each (J5) |
+| `KVASM_SNAPSHOT_ATTEMPTS` | 4 | optimistic attempts of a consistent read before it reads under the writer lock (J4) |
+| `KVASM_MAX_SCAN_KB` | 512 | value bytes one call or page may scan or hash: JsonGet, value filters, PutBlob (J9-J11) |
+| `KVASM_MAX_ARRAY_CELLS` | 65536 | the largest array (J8) |
+| `KVASM_JSON_MAX_DEPTH` | 64 | the deepest nesting JsonGet and JSON filters accept (J9, J11) |
+| `KVASM_CAS_PREFIX` | (unset) | the content-addressed key space, e.g. `cas:`. Unset: PutBlob answers `UNIMPLEMENTED`, so existing keys are never refused after an upgrade. Set: other writes under it are refused (J10) |
+| `KVASM_REAPI` | off | Bazel's cache services on the same port (J10, Phase 6) |
 
 Every setting follows today's strict rules: validated at startup, logged,
 and refused with the allowed range when invalid.
@@ -4918,7 +4918,7 @@ and refused with the allowed range when invalid.
     GeoRadius's radius and limit, the members INTER_CARD may compare per
     call, bitmap and set sizes, and the keys per Score call.
   - Group J adds: the value bytes scanned or hashed per call
-    (`KVNODE_MAX_SCAN_KB`), the buckets per Iterate page, JSON depth and
+    (`KVASM_MAX_SCAN_KB`), the buckets per Iterate page, JSON depth and
     path count, needle length (≤ 256 bytes), and array size.
 - **Content addressing (J10):**
   - The server computes every digest, and other writes under the CAS
@@ -4934,12 +4934,12 @@ and refused with the allowed range when invalid.
   - The ordered index has no hash to flood: its depth is bounded by key
     length.
 - **Filters leak membership** (C2): they are exportable only for
-  configured prefixes when `KVNODE_FILTER_PREFIXES` is set.
+  configured prefixes when `KVASM_FILTER_PREFIXES` is set.
 
 ## V.6 Persistence and snapshots
 
 - **Values persist unchanged.** Counters, sketches and rate-limit state
-  are values: today's `KVNSNAP1` stores them as they are.
+  are values: today's `KVASNAP1` stores them as they are.
 - **TTL needs a format change.** Version 1 cannot carry deadlines. The
   proposal:
   - flags bit 0 means "records carry an expiry";
@@ -5131,7 +5131,7 @@ container, `docker events` for the window).
 |---|---|---|---|---|
 | 0 Foundations | revisions and versions (clock seed, `Rec.aux`); the Mutate engine with Put and Delete as its fast paths; batch and response limits; Stats | — | its ADR; PROTOCOL.md; store tests; a .NET client skeleton | M |
 | 1 No new structures | Exists, GetMany, Mutate (batches, conditions, return_previous, atomic batches, Move), Increment with bounds, RateLimit, Sample (whole store); the batched write pipeline; Group J: GetMany's lengths, slices, tags and consistent reads (J1-J4), Iterate with the relocation log (J5), Increment's MAX, MIN and flag ops (J6, J7), BulkLoad in the client (J12) | 0 | its ADR; the client methods; example programs for conditional writes and bounded counters; R24, R26-R28 | L |
-| 2 Time | TTL (record extension, lazy checks, wheel, sweeper); leases in the client; KVNSNAP expiry | 1 | its ADR; R1, R2, R3 and R5 as example programs | M |
+| 2 Time | TTL (record extension, lazy checks, wheel, sweeper); leases in the client; KVASNAP expiry | 1 | its ADR; R1, R2, R3 and R5 as example programs | M |
 | 3 Streams | export-watch.md's phases, plus ADD and EXPIRE events and exact counter exports | 0 | export-watch.md §13; R4 (hold release), R11, R12 | XL |
 | 4 Order | the radix tree with counts and back-pointers; the order RPCs; directories; prefix sampling; StatsByPrefix | 0 | its ADR; R6-R10 | XL |
 | 5 Analytics and typed values | the sketch RPCs; GetFilter; the internal filter experiment; Fields, Bits, Sets, WindowAdd and Score (Group H); Arrays, JsonGet, PutBlob and value filters (Group J) | 1 | its ADR; R16, R17, R19, R22, R23; R25 through a proxy, R29-R31 | L |
@@ -5173,13 +5173,13 @@ work takes numbers in between.
 |---|---|
 | Write-path creep: every index adds work to creates and deletes | per-feature switches; gates per index; replaces stay free |
 | The single writer mutex becomes the bottleneck as more work moves into writes (per-write locking fell from 3.35 to 2.25 M puts/s at 7 writers; since ADR 0011, batched writes rise from 5.42 M at 1 thread to 12.58 M at 4, and fall back to 6.89 M at 7) | first, flat combining (Track S): measured 1.91× at 7 writers against per-write locking (V), which restores the single-writer rate and keeps the one-writer invariant. Its gate must now be measured against ADR 0011's batched writes. Only if that is not enough, lock striping with optimistic cuckoo paths (libcuckoo, C); atomic batches would then lock their stripes in order |
-| Typed-value sprawl (structs, bitmaps, sets, windows, vectors) | one typed-value header and one module (`typed.asm`); each type behind `KVNODE_TYPED_VALUES` and its own gate |
+| Typed-value sprawl (structs, bitmaps, sets, windows, vectors) | one typed-value header and one module (`typed.asm`); each type behind `KVASM_TYPED_VALUES` and its own gate |
 | Real data clusters, unlike the probe's uniform data (FindNear, GeoRadius) | gates on the customer's data before enabling; per-call limits bound the worst case |
 | The combiner's tail latency: one thread applies other threads' writes | cap the writes per combining pass; p99 put latency is part of the gate |
 | Memory growth from opt-ins | per-prefix enablement; stated costs (§1.11); refusal at the memory limit |
 | Assembly complexity: the radix tree with optimistic locking and counts is the hardest part | prototype in C beside the store first (as the probes did); a reference model; mutation checks |
 | In-place updates versus cuts | rule 4 (§2.3) needs the history ring: counters in exports wait for Phase 3; until then, exports aren't offered at all |
-| Value work moves CPU into the server: JsonGet, value filters, digests (Group J) | per-call byte budgets (`KVNODE_MAX_SCAN_KB`); paged scans; gates on the byte rates |
+| Value work moves CPU into the server: JsonGet, value filters, digests (Group J) | per-call byte budgets (`KVASM_MAX_SCAN_KB`); paged scans; gates on the byte rates |
 | Iterate's guarantee rests on the relocation log keeping up | a 65,536-entry ring; `restart` past its reach; relocations happen only on inserts into two full buckets |
 | Consistent reads starve under hot writes | a bounded number of optimistic attempts, then a read under the writer lock |
 | API sprawl | orthogonal RPCs that share `Entry`, `KeyRange` and `Condition`; every function maps to an existing need (Part IV) |
@@ -5214,7 +5214,7 @@ work takes numbers in between.
    text.
 3. **The ordered index:** a synchronous radix tree (proposed) or a
    snapshot + delta first.
-4. **TTL in snapshots:** the flags-bit format (§V.6) or a `KVNSNAP2`.
+4. **TTL in snapshots:** the flags-bit format (§V.6) or a `KVASNAP2`.
 5. **Multi-tenant scopes:** server-side prefixing through a trusted proxy
    (proposed) or client-side prefixes with checks only.
 6. **Which opt-ins ship at all:** FindSimilar (measured) and
@@ -5258,7 +5258,7 @@ work takes numbers in between.
 
 # Appendix A — The same functions in Redis terms
 
-| Redis | KvNode |
+| Redis | KvAsm |
 |---|---|
 | `EXISTS` | Exists |
 | `MGET`, `MSET`, `DEL k1 k2 …` | GetMany, Mutate |
@@ -5278,7 +5278,7 @@ work takes numbers in between.
 | `CMS.*`, `TOPK.*`, `TDIGEST.*` (RedisBloom) | the sketches (FREQUENCY, TOP_K, QUANTILES) |
 | `BF.EXISTS` (RedisBloom) | GetFilter, checked on the client |
 | keyspace notifications, `XREAD` | Watch, ChangesSince |
-| `BGSAVE`, RDB files | Export (streamed, point in time), KVNSNAP |
+| `BGSAVE`, RDB files | Export (streamed, point in time), KVASNAP |
 | `FT.SEARCH` fuzzy and wildcard (RediSearch) | FindSimilar, FindContaining |
 | `INCR`, `GET`, `SET` on small keys | the same calls on compact keys (H1), at one cache miss |
 | `HGET`, `HMGET`, `HSET`, `HINCRBY`, `HDEL`, `HGETALL` | Fields (GET, SET, INCR, DEL); Get for the whole struct (H2) |

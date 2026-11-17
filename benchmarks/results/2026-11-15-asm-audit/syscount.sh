@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
-# syscount.sh — syscalls one kvnode worker makes per request, by name, counted
+# syscount.sh — syscalls one kvasm worker makes per request, by name, counted
 # with `strace -c -f` under an open-loop load slow enough that the worker
 # sleeps between requests (so the count is the per-wakeup pattern, not a
 # property of how saturated the traced server happens to be).
 #
-# Usage (inside kvnode-dev):
+# Usage (inside kvasm-dev):
 #   syscount.sh BINARY LABEL [RATE] [SECONDS] [SRV_CPU] [CLI_CPUS] [PORT]
 # Defaults: 2,000 requests/s for 4 s, server on vCPU 12, client on 13-15.
 # Why strace: it counts exactly; its slowdown does not matter at this rate.
@@ -16,7 +16,7 @@ SCPU=${5:-12}; CCPUS=${6:-13-15}; PORT=${7:-50353}
 KVB=/src/benchmarks/kvbench/build/kvbench
 OUT=/tmp/syscount.$PORT
 
-KVNODE_PORT=$PORT KVNODE_WORKERS=1 KVNODE_CAPACITY=50000 \
+KVASM_PORT=$PORT KVASM_WORKERS=1 KVASM_CAPACITY=50000 \
     taskset -c "$SCPU" strace -f -c -o "$OUT.strace" "$BIN" 2> "$OUT.log" &
 SPID=$!
 trap 'pkill -TERM -P $SPID 2>/dev/null || true; kill -TERM $SPID 2>/dev/null || true; wait $SPID 2>/dev/null || true' EXIT

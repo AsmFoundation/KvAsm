@@ -2,7 +2,7 @@
  * kvbench.h — shared declarations of kvbench, the single load generator used
  * for every system in benchmarks/.
  *
- * Why one tool: comparing KvNode measured with h2load against Redis measured
+ * Why one tool: comparing KvAsm measured with h2load against Redis measured
  * with redis-benchmark would fold the tools' own efficiency into the result.
  * kvbench drives every system with the same threads, event loop, workload
  * generator, pipelining rule, latency histogram and response validation; only
@@ -33,7 +33,7 @@ enum { PROTO_RESP, PROTO_MEMCACHE, PROTO_GRPC };
 
 /* Operations. PING is each protocol's cheapest round trip: RESP PING,
  * memcached meta no-op, gRPC health check — the per-request floor. UPLOAD
- * and DOWNLOAD are KvNode's streaming calls (gRPC only): a whole value moved
+ * and DOWNLOAD are KvAsm's streaming calls (gRPC only): a whole value moved
  * as a stream of chunks, one transfer per request. */
 enum { OP_GET, OP_SET, OP_PING, OP_UPLOAD, OP_DOWNLOAD, OP_COUNT };
 
@@ -148,7 +148,7 @@ typedef struct {
    * Diagnostic only (it burns every client CPU): on one machine over
    * loopback the server's sendto runs the client's TCP receive and wakes the
    * client thread from the server's own CPU — measured at about half of a
-   * KvNode core under WSL2, where that wakeup is a VM-exiting IPI. A remote
+   * KvAsm core under WSL2, where that wakeup is a VM-exiting IPI. A remote
    * client is woken by its own NIC instead, so busy-polling approximates the
    * server's cost in production. Never mix busy-poll and blocking runs in
    * one comparison.

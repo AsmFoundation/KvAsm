@@ -210,15 +210,15 @@ in the same probe, and about 162 bytes per key.
 
 | Variable | Values | Default | Meaning |
 |---|---|---|---|
-| `KVNODE_INDEX_DELIMITERS` | bytes | (unset: no directories) | delimiters that end a directory prefix |
-| `KVNODE_INDEX_DEPTH` | 0-8 | 2 | prefix levels indexed |
-| `KVNODE_INDEX_SUFFIX` | `off` \| `on` | `on` | also index the last segment |
-| `KVNODE_INDEX_TRIE` | `off` \| `prefix` \| `suffix` \| `both` | `off` | radix tries |
-| `KVNODE_INDEX_MODE` | `sync` \| `async` | `sync` for directories, `async` for tries and patterns | where index work runs (§4) |
-| `KVNODE_PATTERNS` | path | (unset) | registered patterns, one `name = glob:…` or `name = regex:…` per line |
+| `KVASM_INDEX_DELIMITERS` | bytes | (unset: no directories) | delimiters that end a directory prefix |
+| `KVASM_INDEX_DEPTH` | 0-8 | 2 | prefix levels indexed |
+| `KVASM_INDEX_SUFFIX` | `off` \| `on` | `on` | also index the last segment |
+| `KVASM_INDEX_TRIE` | `off` \| `prefix` \| `suffix` \| `both` | `off` | radix tries |
+| `KVASM_INDEX_MODE` | `sync` \| `async` | `sync` for directories, `async` for tries and patterns | where index work runs (§4) |
+| `KVASM_PATTERNS` | path | (unset) | registered patterns, one `name = glob:…` or `name = regex:…` per line |
 
 Index memory is data-proportional, so it counts toward
-`KVNODE_MAX_MEMORY_MB`. When the cap is reached, a create is refused before
+`KVASM_MAX_MEMORY_MB`. When the cap is reached, a create is refused before
 any index is touched (open decision 3).
 
 ## 8. Alternatives considered
@@ -274,8 +274,8 @@ cuts, history):
    patterns, then tries.
 2. **Where tries are maintained:** asynchronously from the history
    (proposed) or inside the write.
-3. **Memory.** Does index memory count toward `KVNODE_MAX_MEMORY_MB`
+3. **Memory.** Does index memory count toward `KVASM_MAX_MEMORY_MB`
    (proposed: yes)?
 4. **How patterns are registered:** a config file read at startup
    (proposed), or an admin RPC that registers them at runtime (needs an
-   authorization story KvNode does not have).
+   authorization story KvAsm does not have).

@@ -1,5 +1,5 @@
 /*
- * endpoints_probe.c — endpoints derived from how KvNode hashes and stores,
+ * endpoints_probe.c — endpoints derived from how KvAsm hashes and stores,
  * and the SIMD work they let the server do on values. Evidence for
  * docs/proposals/functions-plan.md: Part II §3 (the store as built, and
  * where SIMD pays) and Group J (the functions measured here).
@@ -62,7 +62,7 @@
 #include <unistd.h>
 #include <x86intrin.h>          /* __rdtsc */
 
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 
 /* The server's CRC-32C (crc32c.asm), as declared in tests/test_crc32c.c. */
 uint32_t kv_crc32c(uint32_t crc, const void *buf, size_t len);
@@ -77,7 +77,7 @@ enum {
   MAX_REPS = 16,
   MAX_THREADS = 7,       /* CPUs 1-7: distinct P-cores on this host */
   NQ = 1 << 20,          /* lookups per timed pass */
-  SLOTS = 6,             /* record slots per bucket (kvnode.inc BK_SLOTS) */
+  SLOTS = 6,             /* record slots per bucket (kvasm.inc BK_SLOTS) */
 };
 
 static const char *const kSyl[20] = {"ka", "lo", "mi", "nu", "ra", "se", "ti", "vo", "ze", "ba",
@@ -317,16 +317,16 @@ static void print_memory(void) {
 #define SCALAR __attribute__((noinline, optimize("no-tree-vectorize")))
 
 /* ========================================================================= */
-/* The table's layout, read directly (kvnode.inc)                             */
+/* The table's layout, read directly (kvasm.inc)                              */
 /* ========================================================================= */
 
-/** kvnode.inc Bucket: version, 8 tag bytes (6 used), 6 record slots: one 64-byte line. */
+/** kvasm.inc Bucket: version, 8 tag bytes (6 used), 6 record slots: one 64-byte line. */
 typedef struct {
   uint64_t ver, tags;
   const KvRec *slot[SLOTS];
 } Bucket;
 
-/** The first fields of kvnode.inc Table (line 0, immutable after creation). */
+/** The first fields of kvasm.inc Table (line 0, immutable after creation). */
 typedef struct {
   Bucket *buckets;
   uint64_t mask;

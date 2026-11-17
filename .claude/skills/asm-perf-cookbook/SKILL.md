@@ -1,11 +1,11 @@
 ---
 name: asm-perf-cookbook
-description: Cookbook of x86-64 CPU, assembly and Linux-systems optimization techniques for KvNode's hot paths (memory latency hiding, branches, SWAR, allocation, syscalls, concurrency, protocol parsing, code layout, measurement), each with why/when/KvNode status. Use when optimizing KvNode or any low-level x86-64 code, when a profile needs interpreting, or when planning performance work. It is a lead of ideas, never the limit of what to try.
-keywords: kvnode performance, assembly optimization, x86-64 optimization, cpu optimization, nasm performance, prefetch, swar, cache miss, perf profile
-keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce cache misses, cpu tricks, low level optimization, hot path
+description: Cookbook of x86-64 CPU, assembly and Linux-systems optimization techniques for KvAsm's hot paths (memory latency hiding, branches, SWAR, allocation, syscalls, concurrency, protocol parsing, code layout, measurement), each with why/when/KvAsm status. Use when optimizing KvAsm or any low-level x86-64 code, when a profile needs interpreting, or when planning performance work. It is a lead of ideas, never the limit of what to try.
+keywords: kvasm performance, assembly optimization, x86-64 optimization, cpu optimization, nasm performance, prefetch, swar, cache miss, perf profile
+keywords-sparse: make kvasm faster, optimize assembly, speed up server, reduce cache misses, cpu tricks, low level optimization, hot path
 ---
 
-# x86-64 performance cookbook (KvNode)
+# x86-64 performance cookbook (KvAsm)
 
 > **A lead, not a limit.** Everything here is a *starting point*. The list is
 > not exhaustive and never a reason to stop looking. Profile first, trust
@@ -54,7 +54,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Syscalls:** ~100–300 ns round trip with mitigations and virtualization.
   Batch them.
 - **TLB:** reach with 4 KiB pages is a few MiB; 2 MiB pages cover GBs.
-- **KvNode's measured budget** (1 core, GET, 1M keys, before optimizing):
+- **KvAsm's measured budget** (1 core, GET, 1M keys, before optimizing):
   ~2.2 µs/request.
   - Kernel TCP 31%.
   - nghttp2 ~35% of user time.
@@ -98,7 +98,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     serializing.
   - *When:* the working set exceeds the LLC and requests arrive in batches
     (pipelining, HTTP/2 multiplexing).
-  - *KvNode:* ✅ `kv_store_prefetch` at parse time, then
+  - *KvAsm:* ✅ `kv_store_prefetch` at parse time, then
     `kv_store_prefetch_records`, then execution in `kv_grpc_run_batch`.
     **Paired median +28% at 4 cores, +35% at 1 core, faster in 8 of 8
     rotated repetitions at both budgets** (ADR 0005). The standard benchmark
@@ -106,7 +106,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **One cache line per probe**
   - *What:* size and align a hash bucket to 64 bytes. Keep its tags in one
     word next to the pointers.
-  - *KvNode:* ✅ 64-byte cuckoo buckets: at most 2 lines per lookup.
+  - *KvAsm:* ✅ 64-byte cuckoo buckets: at most 2 lines per lookup.
 - **Keep hot and cold data apart**
   - *What:* move fields the fast path reads into one line; move rare ones
     elsewhere.
@@ -118,7 +118,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *Verify, don't assume:* read `AnonHugePages` in `/proc/PID/smaps` (not
     `VmRSS` in `/proc/PID/status`, which the 5.15 WSL2 kernel updates
     lazily per thread) and the `thp_*` counters in `/proc/vmstat`.
-  - *KvNode:* ✅ the cuckoo table — but only since it is prefaulted. With
+  - *KvAsm:* ✅ the cuckoo table — but only since it is prefaulted. With
     `MADV_HUGEPAGE` alone a full 16 MiB table had **0 KiB** of huge pages:
     its first touches were lookups (reads → huge zero page) and the inserts
     that followed split them (`thp_split_pmd` +9). Writing one byte per
@@ -130,7 +130,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     `mprotect` steps and no 2 MiB region is whole at fault time. A record
     slab carved from prefaulted 2 MiB chunks would cut a page walk per GET
     *and* memory per key.
-  - *Measured (E1, 100-byte values, 116 raw bytes):* KvNode 178 B/key,
+  - *Measured (E1, 100-byte values, 116 raw bytes):* KvAsm 178 B/key,
     Dragonfly 159, Redis 174.
   - *Measured (E6, 16 KiB values):* 19.5 KB/key, about 3 KB above the
     payload plus headers, against Dragonfly's 16.7 KB. Worth investigating
@@ -138,7 +138,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Prefault what you will touch**
   - *What:* `MAP_POPULATE` or touch at startup, so first requests don't pay
     page faults.
-  - *KvNode:* ✅ the table: one write per whole 2 MiB region at creation,
+  - *KvAsm:* ✅ the table: one write per whole 2 MiB region at creation,
     mainly to get real huge pages (see above); the table is resident from
     startup (16 MiB at the default capacity).
 - **Avoid pointer chasing**
@@ -147,7 +147,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **No false sharing**
   - *What:* pad per-thread or frequently written data to 64 B, or 128 B
     because the L2 prefetcher pulls line pairs.
-  - *KvNode:* ✅ QSBR reader slots, per-worker structs.
+  - *KvAsm:* ✅ QSBR reader slots, per-worker structs.
 - **Non-temporal stores** (`movnti`, `movntdq`)
   - *When:* large copies that won't be read again soon (bulk loads,
     snapshots). They skip cache pollution.
@@ -160,7 +160,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *Catch:* the hardware caches already keep hot lines close. A software
     level adds a probe, a validation load and fills. It wins only when the
     whole hot set fits in L1d.
-  - *KvNode:* ✗ as a default. `hcache.asm`, generation-validated, measured
+  - *KvAsm:* ✗ as a default. `hcache.asm`, generation-validated, measured
     7–46% slower from the L2 working set up (`bench_store`, ADR 0006). It
     stays available and off.
 - **Prefetch every line the consumer touches**
@@ -175,30 +175,30 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     line being fetched), so a small record wastes the third prefetch, and
     each prefetch holds a fill buffer. The prefetch stage's own share rose
     from 8.2% to 9.5%.
-  - *KvNode:* 🧪 three lines (ADR 0005 amendment). Paired concurrent A/B,
+  - *KvAsm:* 🧪 three lines (ADR 0005 amendment). Paired concurrent A/B,
     6 blocks: 1.001× with a blocking client, 1.025× busy-polling (4/6
     blocks), 0.993× with 16-byte values. Within noise; kept for the stall
     it removes. 🔜 exact coverage: carry a size class in the slot's unused
     pointer bits, so pass 1 prefetches exactly the record's lines.
 - **Batch depth:** beyond about 16 independent misses, deeper batches buy
   nothing. The fill buffers are already busy.
-  - *KvNode:* ✗ measured: b64 ≈ b16 at every working set (ADR 0006).
+  - *KvAsm:* ✗ measured: b64 ≈ b16 at every working set (ADR 0006).
 
 ## 2. Branches and control flow
 
 - **Branchless selection**
   - *What:* `cmov`, `setcc`, and `sbb reg,reg` masks instead of
     unpredictable branches.
-  - *KvNode:* ✅ tag-0 fixup (`cmovz`), bake-off trie descent (`bt`/`sbb`).
+  - *KvAsm:* ✅ tag-0 fixup (`cmovz`), bake-off trie descent (`bt`/`sbb`).
 - **Order checks by probability**
   - *What:* the common case falls through; errors and rare paths jump away.
 - **Tail calls**
   - *What:* `jmp` into the final callee (it keeps the caller's stack
     alignment).
-  - *KvNode:* ✅ `kv_store_get` → `kv_cuckoo_get`, `stream_unlink_free`.
+  - *KvAsm:* ✅ `kv_store_get` → `kv_cuckoo_get`, `stream_unlink_free`.
 - **Direct calls**
   - *What:* static linking removes PLT indirection.
-  - *KvNode:* ✅ static-PIE. No function-pointer callbacks left in the
+  - *KvAsm:* ✅ static-PIE. No function-pointer callbacks left in the
     request path since nghttp2 left the server (ADR 0008); hpack.asm's
     per-field handler is a direct call.
 - **Macro-fusion**
@@ -215,17 +215,17 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     false positives.
   - *Avoid:* the popular `(x - 0x01…) & ~x & 0x80…` gives borrow false
     positives (measured 5.6%).
-  - *KvNode:* ✅ cuckoo tags, record prefetch stage.
+  - *KvAsm:* ✅ cuckoo tags, record prefetch stage.
 - **Clear the lowest set bit without BMI:** `lea t, [x-1]; and x, t`.
-  *KvNode:* ✅.
+  *KvAsm:* ✅.
 - **Multiply-shift (Fibonacci) mixing:** `x * 0x9E3779B97F4A7C15 >> k`.
-  *KvNode:* ✅ alternate-bucket offset.
+  *KvAsm:* ✅ alternate-bucket offset.
 - **Power-of-two tables:** `and mask` instead of `div`. Division by
   constants becomes a multiply by a magic reciprocal.
 - **Overlapping loads**
   - *What:* compare or copy 9–16 bytes with two overlapping 8-byte loads,
     with no byte loop and no overread.
-  - *KvNode:* ✅ `kv_keyeq`, SipHash tail.
+  - *KvAsm:* ✅ `kv_keyeq`, SipHash tail.
 - **Carry-flag tricks:** `sbb reg,reg` gives a 0/-1 mask; `adc` fuses a
   counter into a compare.
 - **Zero-extension:** 32-bit writes zero the upper half. Use `xor r32,r32`
@@ -237,21 +237,21 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     decoder can match that whole shape (tag, one-byte length, key, tag,
     a 1–3-byte length, value, end) before entering the generic field
     loop.
-  - *KvNode:* ✅ `kv_pb_decode_kv` (`dc59368`): a Get's decode 72 → 20
+  - *KvAsm:* ✅ `kv_pb_decode_kv` (`dc59368`): a Get's decode 72 → 20
     instructions. Everything else falls to the field loop unchanged, and
     `test_proto` decodes every canonical shape, cut at every byte, with
     both decoders at a guard page.
 - **bsf/bsr with a zero check** instead of `tzcnt`/`lzcnt` (BMI1/LZCNT are
   not baseline x86-64).
 
-## 4. SIMD (optional, never required: KvNode's rule is "no SIMD requirement")
+## 4. SIMD (optional, never required: KvAsm's rule is "no SIMD requirement")
 
 - **SSE2 is part of baseline x86-64.** `pcmpeqb` + `pmovmskb` compare 16
   bytes at once without raising the requirement.
-  - *KvNode:* ✅ both buckets' tag words in one XMM register: one compare
+  - *KvAsm:* ✅ both buckets' tag words in one XMM register: one compare
     for 12 slots. That is 2–5% faster per lookup in the batched pipeline
     from L2 to DRAM, but 4–10% slower for lone unprefetched lookups (it
-    always reads both lines). Default via `KVNODE_SCAN=sse2`; SWAR stays
+    always reads both lines). Default via `KVASM_SCAN=sse2`; SWAR stays
     selectable (ADR 0006).
   - Measure the pattern that matters: the winner flips between batched and
     lone lookups.
@@ -261,7 +261,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   hybrid CPU's E-cores lack it, so it is fused off.
 - **Copies:** `rep movsb` is fast with ERMS/FSRM for medium copies; small
   fixed sizes are best as plain moves.
-  - *KvNode:* ✅ glibc's IFUNC picks `__memmove_avx_unaligned_erms` and
+  - *KvAsm:* ✅ glibc's IFUNC picks `__memmove_avx_unaligned_erms` and
     `__memset_avx2_unaligned_erms` here; the response head (5-13 bytes)
     and the precomputed header blocks are inline overlapping moves.
 - **First find out whether the time is SIMD-shaped at all** (measured
@@ -306,7 +306,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     the NASM preprocessor (bit-reflected x^(D+63), x^(D-1) mod P for fold
     distance D); prove the math in a scripting language first (the
     2026-09-30 Python prototype had it right before any assembly).
-  - *KvNode:* ✅ `crc32c.asm` (Upload/Download, ADR 0010), dispatch
+  - *KvAsm:* ✅ `crc32c.asm` (Upload/Download, ADR 0010), dispatch
     vpclmul > pclmul > sse42 > table by CPUID + XGETBV. On a 16 KiB chunk
     in cache, fused with the copy: 88 GB/s (vpclmul), 45 (pclmul), 14.8
     (crc32 chain), 3.2 (tables); memcpy 70-210. **Server A/B, 6/6 blocks
@@ -322,7 +322,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     first. `sfence` before publishing (NT stores are weakly ordered).
   - *Why:* a copy into cold lines is bounded by those reads, not by the
     copy: memcpy 16K hot → 64 MiB span measured 16-18 GB/s.
-  - *KvNode:* ✅ `kv_crc32c_copy_nt` for uploads of ≥ 64 KiB (the record
+  - *KvAsm:* ✅ `kv_crc32c_copy_nt` for uploads of ≥ 64 KiB (the record
     is cold and nobody reads it until a later Get/Download). Microbench
     (16 KiB calls, hot source, 64 MiB of destinations): **40-44 GB/s vs
     16-18 temporal (2.4x)**; server A/B 6/6, p=0.031: **uploads +13%
@@ -339,7 +339,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Per-thread size-class pools**
   - *What:* LIFO free lists (a freed block is reused while still cached),
     bump-carved chunks, no locks (single owner).
-  - *KvNode:* ✅ `pool.asm`: Streams, request buffers, stream maps, HPACK
+  - *KvAsm:* ✅ `pool.asm`: Streams, request buffers, stream maps, HPACK
     rings and entries (it first served nghttp2 through its `nghttp2_mem`
     hook). Rotated ablation: paired median +16% at 1 core and +10% at 4
     cores, faster in 6 of 8 repetitions at both. Probably positive, not
@@ -347,14 +347,14 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     each worker full control of allocation locality. Profiled 2026-09-26:
     ~2% of a core (8 ns per GET).
 - **Slabs for fixed-size records:** lower overhead, no fragmentation, can
-  sit on huge pages. *KvNode:* 🔜 records (see §1: glibc arenas never got
+  sit on huge pages. *KvAsm:* 🔜 records (see §1: glibc arenas never got
   a huge page here).
 - **Keep cross-thread frees off the allocator's locks**
   - *What:* when thread A allocates and thread B frees (B's write replaced
     A's record), glibc's `free()` takes A's arena lock. Give each thread a
     bounded cache of the blocks it frees, reused by its own next
     allocations.
-  - *KvNode:* ✅ ADR 0011, the per-slot record cache: LIFO per glibc chunk
+  - *KvAsm:* ✅ ADR 0011, the per-slot record cache: LIFO per glibc chunk
     class, up to 1,032-byte records, 256 per class, 256 KiB per worker.
     - Before it: 44% of a worker's user time at 4 workers in malloc/free,
       including `__lll_lock_wait_private`.
@@ -371,14 +371,14 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     it, and it caches every size class of every thread without bound.
 - **Borrow instead of copy:** a request body that arrives whole in one
   frame can be used in place while the read buffer is still live.
-  *KvNode:* ✅ native engine (`ST_BORROWED`): no request buffer, no copy
+  *KvAsm:* ✅ native engine (`ST_BORROWED`): no request buffer, no copy
   for a unary call whose DATA frame carries END_STREAM — valid because
   dispatch and the GET batch both finish before the next read.
 - **Request-scoped arenas:** bump-allocate everything one request needs and
   drop it in one step.
 - **Skip zeroing:** `calloc` zeroes every byte. Initialize fields explicitly
   when all of them are set anyway.
-  - *KvNode:* ✗ for the Stream. Inline SSE2 zeroing (12 × 16 bytes)
+  - *KvAsm:* ✗ for the Stream. Inline SSE2 zeroing (12 × 16 bytes)
     instead of `kv_pool_calloc`'s glibc `memset` saved nothing, measured
     exactly with callgrind: 1,424 vs 1,428 instructions per GET. glibc's
     AVX2 memset is already cheap for 184 bytes.
@@ -392,7 +392,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *Why now, when inlining only the memset saved nothing (above):* the
     cost was never the zeroing but the calls around it — `calloc`,
     `malloc` with its size-class `bsr`, `memset`, the map insert's frame.
-  - *KvNode:* ✅ `stream_open`, `stream_close`, `stream_free` (`dc59368`).
+  - *KvAsm:* ✅ `stream_open`, `stream_close`, `stream_free` (`dc59368`).
     With the protobuf fast path and the located buckets: a GET
     88.3 → 76.1 ns in process (−13.8%), 1,134 → 973 instructions.
     `%error` guards keep the assembly-time class and the 16-byte zeroing
@@ -400,20 +400,20 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **No buffer for a reply that fits on the stack**
   - *What:* build a tiny message on the stack and let the framer copy it,
     instead of allocating a buffer the stream frees later.
-  - *KvNode:* ✅ Put, Delete and health replies are 5–7 bytes and now go
+  - *KvAsm:* ✅ Put, Delete and health replies are 5–7 bytes and now go
     through `kv_h2n_reply_parts` like a GET miss. Callgrind: SET 1,812 →
     1,789 and health check 867 → 846 instructions per request (−2.4%),
     one pool allocation and one free fewer each
     (`benchmarks/results/2026-09-27-second-pass`).
 - **Size to the class:** a 240-byte first buffer plus a 16-byte header fills
-  a 256-byte block exactly. *KvNode:* ✅ `MIN_REQ_CAP`.
+  a 256-byte block exactly. *KvAsm:* ✅ `MIN_REQ_CAP`.
 
 ## 6. System calls and I/O (Linux)
 
 - **Batch syscalls**
   - *What:* one `send` per connection per loop pass (coalesced frames), big
     `recv` chunks.
-  - *KvNode:* ✅ output coalescing; 256 KiB reads (`READ_CHUNK`, was 64
+  - *KvAsm:* ✅ output coalescing; 256 KiB reads (`READ_CHUNK`, was 64
     KiB). A read that completes several uploads sends their responses in
     one `sendto` (one client wakeup) instead of one each, and the
     partial-frame carry is copied 4x less per byte: **uploads of 64 KiB
@@ -434,7 +434,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     (bounded by the epoll batch size). Destroyed connections must be
     dropped from the batch before phase 2, and anything that can destroy
     *other* connections (a drain) must wait until after phase 2.
-  - *KvNode:* ✅ `worker_main` (ADR 0009). Concurrent paired A/B, idle
+  - *KvAsm:* ✅ `worker_main` (ADR 0009). Concurrent paired A/B, idle
     VM, 6/6 blocks each. **The gain scales with the connections a client
     thread owns:**
     - 8 per thread: **+25.7% GET/s** [1.217–1.338]; p50 −20%, p99 −21%;
@@ -455,7 +455,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     95 ns per empty `epoll_wait` against 8.4 ns for the offline/online
     pair; `strace -c` under an open-loop unpipelined load: `epoll_wait`
     calls 1.46 → 0.85 per request, all syscalls 3.58 → 2.97.
-  - *KvNode:* ✅ `8111e66` (ADR 0009, amendment). Where the worker never
+  - *KvAsm:* ✅ `8111e66` (ADR 0009, amendment). Where the worker never
     sleeps only the added `xchg` could show, and it does not: 1.008×
     server CPU per GET at saturation (3/6 blocks), 0.995× unpipelined
     under busy-polling clients (5/8). Not shown: the end-to-end gain when
@@ -465,26 +465,26 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Gather instead of copy**
   - *What:* `writev`/`sendmsg` over the library's frame buffers instead of
     `memcpy` into one buffer.
-  - *KvNode:* ✅ moot: h2n.asm frames responses straight into the output
+  - *KvAsm:* ✅ moot: h2n.asm frames responses straight into the output
     buffer (a GET's value is the one copy, record → DATA frame), so the
     nghttp2-era `mem_send2` copy loop is gone.
 - **Accept and steering**
   - *What:* `SO_REUSEPORT` listeners per worker.
-  - *KvNode:* ✅, plus 🔜 BPF steering (`SO_ATTACH_REUSEPORT_CBPF`) to
+  - *KvAsm:* ✅, plus 🔜 BPF steering (`SO_ATTACH_REUSEPORT_CBPF`) to
     balance by CPU instead of by hash.
 - **io_uring** (batched submission, multishot recv, registered buffers)
   - *Catch:* blocked by Docker's default seccomp (≥ 25).
-  - *KvNode:* ✗ as the default (portability); 🔜 as an opt-in backend.
+  - *KvAsm:* ✗ as the default (portability); 🔜 as an opt-in backend.
 - **Busy polling** (`SO_BUSY_POLL`, epoll busy-poll): lower latency, higher
   CPU. Useful for latency-SLO deployments.
   - *Measured (2026-09-26), the mirror image:* over loopback, whoever
-    sends wakes the peer. KvNode's `sendto` ran the client's TCP receive in
+    sends wakes the peer. KvAsm's `sendto` ran the client's TCP receive in
     softirq and woke the kvbench thread asleep in `epoll_wait`, via a
     cross-vCPU IPI under WSL2. That was **48% of the server's core**
     (`__wake_up_common_lock` ← `sock_def_readable`, call graph verified),
     ~280 of 582 ns per GET. A busy-polling client (`kvbench --busy-poll`)
     removes it: 1.72M → **2.62M GET/s on one core**.
-  - *KvNode:* ✅ partly removed at the source. Flushing once per batch
+  - *KvAsm:* ✅ partly removed at the source. Flushing once per batch
     (§6 above, ADR 0009) cut client wakeups by up to a third: +12–26% GET/s
     by client shape. What remains (~22 wakeups per 1k requests with 8
     connections per thread, 125–210 ns/request against a busy-polling
@@ -494,9 +494,9 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - 🔜 server-side busy-poll as an opt-in for latency SLOs. It would remove
     the server's own wakeups, which the clients pay on their CPUs here.
 - **Timekeeping and CPU id:** vDSO `clock_gettime`, coarse clocks, `rdpid`
-  for the CPU id. Never a syscall per request. *KvNode:* ✅ once per loop
+  for the CPU id. Never a syscall per request. *KvAsm:* ✅ once per loop
   pass.
-- **TCP knobs:** `TCP_NODELAY` (*KvNode:* ✅), `MSG_MORE`/`TCP_CORK` when
+- **TCP knobs:** `TCP_NODELAY` (*KvAsm:* ✅), `MSG_MORE`/`TCP_CORK` when
   batching, larger socket buffers for big values.
 - **Placement (bare metal):**
   - pin workers (`pthread_setaffinity_np`);
@@ -507,23 +507,23 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 
 - **Readers that write nothing**
   - *What:* seqlocks (odd = writing), validated only when needed.
-  - *KvNode:* ✅ bucket versions, re-checked on a miss only.
+  - *KvAsm:* ✅ bucket versions, re-checked on a miss only.
 - **Deferred reclamation:** QSBR/epochs/RCU instead of reference counts on
-  the read path. *KvNode:* ✅ QSBR.
+  the read path. *KvAsm:* ✅ QSBR.
 - **x86-TSO**
   - Loads are acquire and stores are release for free.
-  - Only StoreLoad needs `mfence` or a locked op. *KvNode:* ✅ `xchg` in
+  - Only StoreLoad needs `mfence` or a locked op. *KvAsm:* ✅ `xchg` in
     QSBR online.
 - **Spin, then sleep:** a futex mutex with a PAUSE spin before parking.
-  *KvNode:* ✅ writer lock.
+  *KvAsm:* ✅ writer lock.
 - **No shared counters on hot paths**
   - *What:* per-thread counters summed on read; relaxed atomic stores are
     plain `mov`s.
-  - *KvNode:* ✅ worker stats; kvbench progress.
+  - *KvAsm:* ✅ worker stats; kvbench progress.
 - **Amortize the lock**
   - *What:* group commit (apply a read batch's Puts under one mutex hold),
     or flat combining.
-  - *KvNode:* ✅ ADR 0011 (2026-11-15). A read's Puts and Deletes are
+  - *KvAsm:* ✅ ADR 0011 (2026-11-15). A read's Puts and Deletes are
     prefetched at parse time and applied under one hold (at most 64 writes).
   - *Evidence (2026-09-27):* a SET runs only 26% more instructions than a
     GET (1,789 vs 1,425, callgrind), yet it took ~4× the time on the same
@@ -539,7 +539,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *What:* the lock covers the publication only. Retiring and freeing what
     the lock unlinked happens afterwards, per thread, like per-CPU RCU
     callback lists.
-  - *KvNode:* ✅ ADR 0011. The records a hold replaces go to the writer's
+  - *KvAsm:* ✅ ADR 0011. The records a hold replaces go to the writer's
     QSBR slot. After the unlock come ONE epoch LOCK XADD per hold (it was
     an XCHG per record) and the worker's own limbo, freed outside the
     mutex. Result: 4 workers 1.45× SET/s and 50/50 1.35× (from 0.85×),
@@ -549,19 +549,19 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     housekeeping path (`itest`'s stalled-download memory checks caught
     it).
 - **Share nothing where possible:** per-worker sessions, pools and loops.
-  *KvNode:* ✅.
+  *KvAsm:* ✅.
 
-## 8. Protocol and parsing (was KvNode's largest lever; now owned by h2n.asm alone)
+## 8. Protocol and parsing (was KvAsm's largest lever; now owned by h2n.asm alone)
 
-- **Zero-copy decode:** fields point into the receive buffer. *KvNode:* ✅
+- **Zero-copy decode:** fields point into the receive buffer. *KvAsm:* ✅
   protobuf keys and values.
 - **Deferred, batched execution:** parse everything first, then execute (it
-  enables §1). *KvNode:* ✅ per read.
+  enables §1). *KvAsm:* ✅ per read.
   - Across all readable connections: ✗ for pipelined clients, since b64 ≈
     b16 (ADR 0006). Possibly still worth it for unpipelined clients, whose
     batches are 1.
 - **Precomputed responses:** static HPACK blocks and ready-made frame
-  headers for the fixed parts of a gRPC reply. *KvNode:* ✅ native engine:
+  headers for the fixed parts of a gRPC reply. *KvAsm:* ✅ native engine:
   the first response on a connection inserts content-type and
   grpc-status into the peer's table, then every response is `88 BF`
   (HEADERS) + `BE` (trailers); a GET hit's value is copied from the store
@@ -588,7 +588,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     16,000-byte values lost the fast path after the first 64 KiB of each
     read's output. This matches the 16 KiB regression of the 2026-09-27
     suite.
-  - *KvNode:* ✅ `8111e66` (ADR 0007, amendment), for replies of ANY
+  - *KvAsm:* ✅ `8111e66` (ADR 0007, amendment), for replies of ANY
     length: the queue is handed to the socket before a reply that would
     pass the mark, and a reply longer than the mark is sent as it is
     framed; only what a full socket refuses is buffered, and one refusal
@@ -618,7 +618,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     content-length, not a streaming call), take those steps in the same
     order, and leave every other frame untouched for the loop. One
     behaviour, two routes.
-  - *KvNode:* ✅ `913c234` (ADR 0007, second amendment). The frame loop
+  - *KvAsm:* ✅ `913c234` (ADR 0007, second amendment). The frame loop
     184 → 138 instructions per request, two map lookups and
     `request_end` gone; in process a GET −9.9% (76.1 → 68.6 ns), a
     health check −15.2%.
@@ -633,11 +633,11 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     about 40 of its 110 instructions, counted from the listing.
 - **Skip a lookup the protocol already answered:** an HTTP/2 stream id
   above every id the connection has opened cannot be in the stream map.
-  *KvNode:* ✅ `header_block` compares with `last_id` first (`913c234`):
+  *KvAsm:* ✅ `header_block` compares with `last_id` first (`913c234`):
   one `map_find` less per request.
 - **Check a cache before building a frame:** when a function's common
   case is a cache hit that needs no callee-saved state, test for it with
-  the arguments still in their registers and `ret` from there. *KvNode:*
+  the arguments still in their registers and `ret` from there. *KvAsm:*
   ✅ `decode_fields` (`913c234`): 45 → 29 instructions on a hit.
 - **Own the HTTP/2 hot path**
   - *What:* a gRPC-subset HTTP/2 engine removes nghttp2's generic
@@ -648,7 +648,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *Cost:* a security-critical rewrite. It needed h2spec (146/146), an
     HPACK decoder differential-tested against nghttp2, a black-box fuzzer
     and an independent client (grpc-dotnet) before shipping; ADR 0007.
-  - *KvNode:* ✅ `h2n.asm`, the only engine since ADR 0008 removed nghttp2
+  - *KvAsm:* ✅ `h2n.asm`, the only engine since ADR 0008 removed nghttp2
     from the server (binary −162 KB of text, one code path, no fallback).
     Measured, paired (N1-N3,
     `benchmarks/results/2026-09-26-native-final`): 1 core 1.51M GET/s,
@@ -666,21 +666,21 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *Catch:* the generation must move on every insertion and size update,
     and only blocks whose own decode left the table unchanged are
     recorded.
-  - *KvNode:* ✅ per connection, one entry (up to 128 bytes). nghttp2-based
+  - *KvAsm:* ✅ per connection, one entry (up to 128 bytes). nghttp2-based
     clients never index `:path`, so without it every request Huffman-
     decoded its path (~23% of user time, ~113 ns); with it the whole
     HTTP/2 layer fell from ~122 to ~18 ns per request.
 - **O(1) removal from linear probing:** count displaced entries; while
   the count is 0 no entry can move back, so backward-shift deletion skips
-  its scan. *KvNode:* ✅ stream map (client ids are consecutive odd numbers
+  its scan. *KvAsm:* ✅ stream map (client ids are consecutive odd numbers
   and land in their home slots).
 - **Cache lookups the library repeats**
-  - *KvNode:* 🧪 → removed. The one-entry stream cache existed only for
+  - *KvAsm:* 🧪 → removed. The one-entry stream cache existed only for
     nghttp2's callbacks (within noise: paired median 0.99 at 1 core, 0.98
     at 4) and left with it (ADR 0008). h2n.asm's stream map is already one
     load per lookup.
 - **Keyed hash choice**
-  - SipHash-2-4 is the conservative HashDoS defense (*KvNode:* ✅).
+  - SipHash-2-4 is the conservative HashDoS defense (*KvAsm:* ✅).
     Profiled 2026-09-26 with a busy-polling client: 4.9% of the core,
     ~19 ns per GET, mostly the 128-bit finalization. Scalar SipHash is
     latency-bound (one dependency chain). Callgrind (2026-09-27): 254
@@ -700,7 +700,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     key and the same HashDoS argument. −7.7% of a GET's user-space time.
     It is now the fallback hash.
   - ✅ *AES-NI as the keyed hash* (`1c3f20b`, ADR 0004 second amendment;
-    the default where the CPU has AES-NI, `KVNODE_HASH=auto|siphash|aes`):
+    the default where the CPU has AES-NI, `KVASM_HASH=auto|siphash|aes`):
     one AES-128 encryption of the padded key under a secret length mask
     (CMAC-shaped; chained for keys over 16 bytes; 17 masks, one per final
     length). CPUID dispatch, a 448-byte key block per table, SipHash-2-4
@@ -718,7 +718,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   same hash-table key several times (prefetch, second prefetch, lookup),
   return the bucket addresses from the first visit and keep them with
   the request. Valid only while the table cannot move.
-  *KvNode:* ✅ `kv_store_locate` / `_prefetch_records_at` / `_get_at`
+  *KvAsm:* ✅ `kv_store_locate` / `_prefetch_records_at` / `_get_at`
   (`dc59368`): two of three derivations (a multiply and ~17 instructions
   each) gone. The `_at` functions trust their addresses — the footgun is
   documented at each, and `test_store` checks them against the plain
@@ -775,7 +775,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
   - *Gotchas:* NASM's DWARF has no function entries, so callgrind shows
     addresses; map them with `nm -n`. A tail-`jmp` target is charged to
     its caller.
-  - *KvNode's GET* (1,425 user instructions):
+  - *KvAsm's GET* (1,425 user instructions):
     - SipHash 18%;
     - frame parsing 20%;
     - response framing 16%;
@@ -785,14 +785,14 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 - **Profile the kernel too, and read call chains.** `perf` in the dev
   container cannot sample kernel symbols (`perf_event_paranoid=2`). Run it
   from a privileged helper container that shares the dev container's PID
-  namespace (`--privileged --pid=container:kvnode-dev`), sampling the
+  namespace (`--privileged --pid=container:kvasm-dev`), sampling the
   server's vCPU system-wide (`-a -C <cpu>`). WSL2 has no PMU, so
   `cpu-clock` is the event. Samples cannot land while interrupts are off,
   so a hot `…_irqrestore`/`__wake_up_common_lock` is the cost of the whole
   IRQs-off region; use `-g` to see what that region is.
 - **Account for the benchmark topology.** On one machine, the server's
   send wakes the client (and the client's send wakes the server): 48% of
-  a KvNode core under WSL2. Profile with `kvbench --busy-poll` to see the
+  a KvAsm core under WSL2. Profile with `kvbench --busy-poll` to see the
   server's own cost; never mix busy-poll and blocking runs in one
   comparison.
 - **Pair concurrently when the order matters.** A sequential A/B (fresh
@@ -841,7 +841,7 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
     1 MiB values but 1.07x on 16 MiB. Read the peer's flow-control code
     before tuning your own send path.
   - *One connection is one lane on both ends:* a .NET HTTP/2 connection
-    has one reader and one writer loop, and KvNode serves a connection
+    has one reader and one writer loop, and KvAsm serves a connection
     from the worker that accepted it, for life — so a client multiplexing
     everything over one connection is capped by both. Four connections
     that calls take in turn (`Connections`, an `Interlocked` round-robin
@@ -901,8 +901,9 @@ keywords-sparse: make kvnode faster, optimize assembly, speed up server, reduce 
 
 - **Lessons of applying it (2026-11-15):**
   - *Write the test from the specification, prove it on the old code,
-    then mutate the new code.* `fuzz_h2`'s request matrix has 506
-    conversations whose expected answers come from RFC 9113, not from
+    then mutate the new code.* `fuzz_h2`'s request matrix had 506
+    conversations then (500 since 0.3.0's two-byte-shorter gRPC route),
+    and their expected answers come from RFC 9113, not from
     the engine. It passed on the engine without the fused path first
     (so the test is right), then on the engine with it (so the change
     is invisible), and then thirteen deliberate breaks of the new path
@@ -942,5 +943,5 @@ Keep looking. Useful sources:
   and hash index), Seastar (shard-per-core), and the Linux kernel's
   networking fast paths.
 
-Every idea that survives a measured ablation in KvNode belongs back in these
+Every idea that survives a measured ablation in KvAsm belongs back in these
 lists, with its number.

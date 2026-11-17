@@ -1,5 +1,5 @@
 /*
- * itest_grpc.c — end-to-end tests of a running kvnode over real HTTP/2.
+ * itest_grpc.c — end-to-end tests of a running kvasm over real HTTP/2.
  *
  * Built on nghttp2's *client* API: an HTTP/2 implementation that shares no
  * code with the server (whose engine is its own h2n.asm/hpack.asm, ADR
@@ -44,7 +44,7 @@
  *
  * Usage:
  *   itest_grpc HOST PORT MAX_KEY MAX_VALUE [MAX_UPLOAD]   run the suite
- *       (exit 0 = pass); MAX_UPLOAD = the server's KVNODE_MAX_UPLOAD_BYTES
+ *       (exit 0 = pass); MAX_UPLOAD = the server's KVASM_MAX_UPLOAD_BYTES
  *       (default 64 MiB), at least 3145735
  *   itest_grpc --wait-goaway HOST PORT SECS    hold an idle connection until
  *       the server sends GOAWAY(NO_ERROR) and then closes it (exit 0), or
@@ -59,19 +59,19 @@
  *   itest_grpc --drain-transfers HOST PORT SECS   the same for an Upload and
  *       a Download in flight: both must complete exactly after the GOAWAY.
  *   itest_grpc --stream-limits HOST PORT   limits of streaming calls; the
- *       server runs with KVNODE_MAX_MEMORY_MB=24 KVNODE_CONN_BUFFER_MB=16
- *       KVNODE_MAX_UPLOAD_BYTES=16777216 KVNODE_CAPACITY=64.
+ *       server runs with KVASM_MAX_MEMORY_MB=24 KVASM_CONN_BUFFER_MB=16
+ *       KVASM_MAX_UPLOAD_BYTES=16777216 KVASM_CAPACITY=64.
  *   itest_grpc --stall HOST PORT   idle timeout against transfers; the server
- *       runs with KVNODE_IDLE_TIMEOUT_SEC=1 KVNODE_MAX_MEMORY_MB=24
- *       KVNODE_CONN_BUFFER_MB=16 KVNODE_MAX_UPLOAD_BYTES=16777216.
- *   itest_grpc --fairness HOST PORT   one worker (KVNODE_WORKERS=1) serving
+ *       runs with KVASM_IDLE_TIMEOUT_SEC=1 KVASM_MAX_MEMORY_MB=24
+ *       KVASM_CONN_BUFFER_MB=16 KVASM_MAX_UPLOAD_BYTES=16777216.
+ *   itest_grpc --fairness HOST PORT   one worker (KVASM_WORKERS=1) serving
  *       unary calls beside 32 MiB downloads.
  *   itest_grpc --bench-transfer HOST PORT PID   not a test: Upload/Download
  *       throughput against unary Put/Get on one connection, and the server's
  *       memory (PID's RSS) while a 64 MiB value is stored and downloaded.
  *
- * MAX_KEY/MAX_VALUE must equal the server's KVNODE_MAX_KEY_BYTES and
- * KVNODE_MAX_VALUE_BYTES: the boundary cases are computed from them.
+ * MAX_KEY/MAX_VALUE must equal the server's KVASM_MAX_KEY_BYTES and
+ * KVASM_MAX_VALUE_BYTES: the boundary cases are computed from them.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -87,9 +87,9 @@
 #include "snapgen.h"
 #include "test_common.h"
 
-#define PATH_GET    "/kvnode.v1.KvNode/Get"
-#define PATH_PUT    "/kvnode.v1.KvNode/Put"
-#define PATH_DELETE "/kvnode.v1.KvNode/Delete"
+#define PATH_GET    "/kvasm.v1.KvAsm/Get"
+#define PATH_PUT    "/kvasm.v1.KvAsm/Put"
+#define PATH_DELETE "/kvasm.v1.KvAsm/Delete"
 #define PATH_HEALTH "/grpc.health.v1.Health/Check"
 #define GRPC_CT     "application/grpc"
 #define CALL_TIMEOUT_MS 20000
@@ -671,7 +671,7 @@ static int call_submit(Client *cl, Call *c, const char *method, const char *path
   size_t n = 0;
   nva[n++] = mknv(":method", method);
   nva[n++] = mknv(":scheme", "http");
-  nva[n++] = mknv(":authority", "kvnode");
+  nva[n++] = mknv(":authority", "kvasm");
   nva[n++] = mknv(":path", path);
   if (ctype) nva[n++] = mknv("content-type", ctype);
   nva[n++] = mknv("te", "trailers");
@@ -1213,13 +1213,13 @@ static void test_errors(Client *cl) {
                415, -1, NULL);
 
   /* routing */
-  expect_error("unknown method", cl, "POST", "/kvnode.v1.KvNode/Scan", GRPC_CT, NULL,
+  expect_error("unknown method", cl, "POST", "/kvasm.v1.KvAsm/Scan", GRPC_CT, NULL,
                msg_kv(k, kl, NULL, 0), 200, 12, "unknown method");
   expect_error("unknown service", cl, "POST", "/other.v1.Svc/Get", GRPC_CT, NULL,
                msg_kv(k, kl, NULL, 0), 200, 12, "unknown method");
-  expect_error("service prefix only", cl, "POST", "/kvnode.v1.KvNode/", GRPC_CT, NULL,
+  expect_error("service prefix only", cl, "POST", "/kvasm.v1.KvAsm/", GRPC_CT, NULL,
                msg_kv(k, kl, NULL, 0), 200, 12, "unknown method");
-  expect_error("method case", cl, "POST", "/kvnode.v1.KvNode/get", GRPC_CT, NULL,
+  expect_error("method case", cl, "POST", "/kvasm.v1.KvAsm/get", GRPC_CT, NULL,
                msg_kv(k, kl, NULL, 0), 200, 12, "unknown method");
 
   /* framing: exactly one uncompressed message */
@@ -1499,12 +1499,12 @@ static const uint8_t kNotServing[7] = {0, 0, 0, 0, 2, 0x08, 0x02};
 
 /**
  * grpc.health.v1.Health: Check answers SERVING for the whole server ("" or
- * an empty request) and for kvnode.v1.KvNode, NOT_FOUND for any other
+ * an empty request) and for kvasm.v1.KvAsm, NOT_FOUND for any other
  * service; Watch is not implemented (allowed by the health protocol).
  * @param cl  connection
  */
 static void test_health(Client *cl) {
-  static const char *const services[] = {"", "kvnode.v1.KvNode"};
+  static const char *const services[] = {"", "kvasm.v1.KvAsm"};
   Call c;
   for (int i = 0; i < 3; i++) {
     Msg m = i < 2 ? msg_kv(services[i], strlen(services[i]), NULL, 0)
@@ -1515,7 +1515,7 @@ static void test_health(Client *cl) {
     free(m.p);
   }
   expect_error("unknown health service", cl, "POST", PATH_HEALTH, GRPC_CT, NULL,
-               msg_kv("kvnode.v2.Other", 15, NULL, 0), 200, 5, "unknown service");
+               msg_kv("kvasm.v2.Other", 14, NULL, 0), 200, 5, "unknown service");
   expect_error("health Watch", cl, "POST", "/grpc.health.v1.Health/Watch", GRPC_CT, NULL,
                msg_kv(NULL, 0, NULL, 0), 200, 12, "unknown method");
 }
@@ -1524,13 +1524,13 @@ static void test_health(Client *cl) {
 /* Streaming: Upload / Download                                             */
 /* ========================================================================= */
 
-#define PATH_UPLOAD   "/kvnode.v1.KvNode/Upload"
-#define PATH_DOWNLOAD "/kvnode.v1.KvNode/Download"
+#define PATH_UPLOAD   "/kvasm.v1.KvAsm/Upload"
+#define PATH_DOWNLOAD "/kvasm.v1.KvAsm/Download"
 #define DL_DEFAULT_CHUNK 65536u
 #define DL_MAX_CHUNK     1048576u
 
-static uint64_t g_max_upload;   /* the server's KVNODE_MAX_UPLOAD_BYTES */
-static uint64_t g_conn_budget = 64u << 20; /* its KVNODE_CONN_BUFFER_MB (default) */
+static uint64_t g_max_upload;   /* the server's KVASM_MAX_UPLOAD_BYTES */
+static uint64_t g_conn_budget = 64u << 20; /* its KVASM_CONN_BUFFER_MB (default) */
 
 /* CRC-32C, independent of the server's crc32c.asm: a plain byte table. */
 static uint32_t g_crc_tab[256];
@@ -2481,7 +2481,7 @@ static void test_upload_basic(Client *cl) {
   }
   CHECK_EQ_U64(bad, 0);
 
-  /* the size limit's boundary: exactly KVNODE_MAX_UPLOAD_BYTES is stored */
+  /* the size limit's boundary: exactly KVASM_MAX_UPLOAD_BYTES is stored */
   char k[64];
   size_t kl = mkkey(k, sizeof k, "upmax", 1);
   uint8_t *big = malloc(g_max_upload ? g_max_upload : 1);
@@ -3161,7 +3161,7 @@ static void test_get_too_big(Client *cl) {
   CHECK(op_upload(cl, k, kl, v, n, 65536, CRC_LAST, 1, NULL) == 1);
   expect_error("Get of an uploaded big value", cl, "POST", PATH_GET, GRPC_CT, NULL,
                msg_kv(k, kl, NULL, 0), 200, 8,
-               "value exceeds KVNODE_MAX_VALUE_BYTES: read it with Download");
+               "value exceeds KVASM_MAX_VALUE_BYTES: read it with Download");
   CHECK(download_equals(cl, k, kl, v, n, 0));
   expect_error("Put above max_value", cl, "POST", PATH_PUT, GRPC_CT, NULL,
                msg_kv(k, kl, v, n), 200, 3, "value too large");
@@ -3840,8 +3840,8 @@ static void let_grace_end(Client *cl, Client *m) {
 /**
  * --stream-limits: memory, budget and capacity limits of streaming calls,
  * and that every reservation or pin comes back however its call ends.
- * Server: KVNODE_MAX_MEMORY_MB=24 KVNODE_CONN_BUFFER_MB=16
- * KVNODE_MAX_UPLOAD_BYTES=16777216 KVNODE_CAPACITY=64 (run.sh phase 8).
+ * Server: KVASM_MAX_MEMORY_MB=24 KVASM_CONN_BUFFER_MB=16
+ * KVASM_MAX_UPLOAD_BYTES=16777216 KVASM_CAPACITY=64 (run.sh phase 8).
  * @returns exit code: 0 all checks passed, 1 failures, 2 no connection
  * @remarks Observes the server's memory accounting from outside: a 16 MiB
  *          (or 15 MiB) reservation fits exactly when nothing else big is
@@ -4083,8 +4083,8 @@ static void sleep_ms(int ms) {
 
 /**
  * --stall: the idle timeout against transfers. Server:
- * KVNODE_IDLE_TIMEOUT_SEC=1 KVNODE_MAX_MEMORY_MB=24 KVNODE_CONN_BUFFER_MB=16
- * KVNODE_MAX_UPLOAD_BYTES=16777216 (run.sh phase 3).
+ * KVASM_IDLE_TIMEOUT_SEC=1 KVASM_MAX_MEMORY_MB=24 KVASM_CONN_BUFFER_MB=16
+ * KVASM_MAX_UPLOAD_BYTES=16777216 (run.sh phase 3).
  *   (a) a Download stalled by its reader's HTTP/2 window (the socket is
  *       still read) is ended by GOAWAY(NO_ERROR) after ~1 s, and its pinned
  *       (deleted) record's memory comes back;
@@ -4293,7 +4293,7 @@ static void *bulk_reader_main(void *arg) {
  * --fairness: with ONE worker, a connection streaming large Downloads as
  * fast as it can read must not starve another connection's unary calls:
  * the worker's flush stops at FLUSH_BUDGET and yields.
- * Server: KVNODE_WORKERS=1 (run.sh phase 9).
+ * Server: KVASM_WORKERS=1 (run.sh phase 9).
  * @returns exit code: 0 all checks passed, 1 failures, 2 no connection
  * @remarks A liveness bound, not a benchmark: every Get must be answered
  *          within 500 ms (the host may be shared), at least 20 of them
@@ -4378,7 +4378,7 @@ static int cmp_double(const void *a, const void *b) {
  * from below; the nghttp2 client itself is usually the limit on loopback.
  * @param pid  the server's pid (its RSS is sampled from /proc)
  * @returns exit code: 0 (numbers printed), 1 on a failed transfer, 2 no connection
- * @remarks Medians of 7. Needs KVNODE_MAX_UPLOAD_BYTES >= 64 MiB (the
+ * @remarks Medians of 7. Needs KVASM_MAX_UPLOAD_BYTES >= 64 MiB (the
  *          default) and nothing else loading the host.
  */
 static int bench_transfer(long pid) {
@@ -4542,7 +4542,7 @@ int main(int argc, char **argv) {
   g_port = argv[2];
   g_max_key = strtoull(argv[3], NULL, 10);
   g_max_value = strtoull(argv[4], NULL, 10);
-  /* KVNODE_MAX_UPLOAD_BYTES; the server's default when not given */
+  /* KVASM_MAX_UPLOAD_BYTES; the server's default when not given */
   g_max_upload = argc == 6 ? strtoull(argv[5], NULL, 10) : 67108864;
   if (g_max_key < 32 || g_max_value < 4096 || g_max_upload < 3145735 ||
       g_max_upload > g_conn_budget) {

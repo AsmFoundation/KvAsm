@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""idleprobe.py — does an idle kvnode spend CPU while it waits?
+"""idleprobe.py — does an idle kvasm spend CPU while it waits?
 
-Starts kvnode with 4 workers, opens 1,000 HTTP/2 connections (preface and
+Starts kvasm with 4 workers, opens 1,000 HTTP/2 connections (preface and
 SETTINGS exchanged, then silent), and over 10 s of silence reports:
   * CPU ticks the process used (utime + stime from /proc/PID/stat);
   * voluntary / involuntary context switches summed over its threads;
@@ -15,7 +15,7 @@ import struct
 import subprocess
 import time
 
-SERVER = "/src/server/build/kvnode"
+SERVER = "/src/server/build/kvasm"
 PORT = 50071
 PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 
@@ -44,7 +44,7 @@ def switches(pid):
 
 
 def main():
-    env = dict(os.environ, KVNODE_PORT=str(PORT), KVNODE_WORKERS="4", KVNODE_CAPACITY="1000")
+    env = dict(os.environ, KVASM_PORT=str(PORT), KVASM_WORKERS="4", KVASM_CAPACITY="1000")
     log = open("/tmp/idleprobe.log", "w")
     p = subprocess.Popen([SERVER], env=env, stderr=log)
     while 'msg="listening"' not in open("/tmp/idleprobe.log").read():

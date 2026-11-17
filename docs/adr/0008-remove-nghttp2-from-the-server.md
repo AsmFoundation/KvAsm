@@ -5,11 +5,11 @@
 - **Supersedes:** [ADR 0002](0002-http2-library-nghttp2.md) (HTTP/2 via
   nghttp2)
 - **Amends:** [ADR 0007](0007-native-http2-engine.md): the nghttp2
-  alternative and `KVNODE_H2_ENGINE` are gone
+  alternative and `KVASM_H2_ENGINE` are gone
 
 ## Context
 
-ADR 0007 made KvNode's own HTTP/2 engine (`h2n.asm`, with the HPACK decoder
+ADR 0007 made KvAsm's own HTTP/2 engine (`h2n.asm`, with the HPACK decoder
 `hpack.asm`) the default. It kept nghttp2 1.70 one setting away, as a
 fallback and as a reference. The direction since: "So we are discarding
 nghttp fully."
@@ -24,7 +24,7 @@ The native engine no longer needs a fallback:
 - **Hostile input:** `fuzz_h2` runs in every build, with liveness and memory
   bounds, and the full suite must still pass on the fuzzed server.
 - **Interop:** grpc-dotnet (an HTTP/2 stack that shares nothing with
-  nghttp2 or KvNode) passes 190/190.
+  nghttp2 or KvAsm) passes 190/190.
 - **Speed:** 2.03× nghttp2 on one core, 1.96-2.07× at 2 and 4 cores
   (`benchmarks/results/2026-09-26-native-final`).
 
@@ -72,7 +72,7 @@ HTTP/2 implementation.
   `kv_h2n_pump`. Idle timeout and drain both send GOAWAY through
   `kv_h2n_goaway`.
 - **Startup and configuration:** `main.asm`'s callback table and its
-  `h2_engine=` log field, and `config.asm`'s `KVNODE_H2_ENGINE` choice.
+  `h2_engine=` log field, and `config.asm`'s `KVASM_H2_ENGINE` choice.
 - **Structure fields:** `Config.h2_engine`, `Worker.callbacks`,
   `Worker.mem`, `Conn.session`, `CONN_NATIVE`.
 - **Files:** `server/include/nghttp2.inc`, `server/tests/test_nghttp2_abi.c`
@@ -104,21 +104,21 @@ None of them faces untrusted peers.
   146/146 with an empty baseline, the fuzzer, and the differential HPACK
   test. The .NET suite runs against every image.
 - **Smaller binary:** 1,331,448 → 1,125,504 bytes unstripped (−15.5%), and
-  text 1,014,804 → 852,272 bytes (−162,532). KvNode's own code is 49 KB of
+  text 1,014,804 → 852,272 bytes (−162,532). KvAsm's own code is 49 KB of
   text; the rest is static glibc. The image's binary is 1,105,104 bytes.
 - **Less state per connection:** the connection record went from 872 to
   848 bytes, and there is no session object or callback table.
 - **One code path:** every connection takes the same branch-free route
   through `conn_event` and `conn_flush`.
-- **Operations:** `KVNODE_H2_ENGINE` is ignored like any unknown variable.
+- **Operations:** `KVASM_H2_ENGINE` is ignored like any unknown variable.
   It lived for less than a day and was never released. The startup log no
   longer prints `h2_engine=`.
 - **Security:** nghttp2 advisories no longer concern the server. They still
   concern the test clients, which only ever talk to the server under test.
 - **Tests:** `make itest` runs each phase once (the former n-phases are
   phases 1-7) and takes about half as long.
-- **Benchmarks:** the `kvnode-native` and `kvnode-nghttp2` variants are
-  gone. N1 and N3 now run KvNode against Redis and Valkey on one core, as a
+- **Benchmarks:** the `kvasm-native` and `kvasm-nghttp2` variants are
+  gone. N1 and N3 now run KvAsm against Redis and Valkey on one core, as a
   quick re-check of the headline. N2 (engine against engine) is retired.
   `analyze.py` still renders archived sessions exactly as they were
   published.
@@ -134,4 +134,4 @@ None of them faces untrusted peers.
 - `docker build --target runtime`: every suite again inside the build.
   Passed.
 - grpc-dotnet: 190/190 on net8.0 and net10.0 against the new image, with
-  `KVNODE_REQUIRE_DOCKER=1` so that nothing can skip.
+  `KVASM_REQUIRE_DOCKER=1` so that nothing can skip.

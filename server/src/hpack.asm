@@ -29,7 +29,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 %include "server.inc"
 %include "hpack.inc"
 
@@ -157,7 +157,7 @@ CSTR v_grpc,        "application/grpc"
 CSTR v_trailers,    "trailers"
 CSTR v_identity,    "identity"
 CSTR v_health,      "/grpc.health.v1.Health/Check"
-CSTR v_prefix,      "/kvnode.v1.KvNode/"
+CSTR v_prefix,      "/kvasm.v1.KvAsm/"
 CSTR v_get,         "Get"
 CSTR v_put,         "Put"
 CSTR v_delete,      "Delete"
@@ -969,7 +969,7 @@ classify_name:
 ; @returns eax = code | class << 8 | flags. Clobbers rax, rcx, rdi, r8-r11.
 ; @remarks HF_VALUE_BAD: NUL, CR or LF anywhere, or SP/HTAB at either end
 ;          (RFC 9113 §8.2.1). Classes are only computed for the codes whose
-;          values KvNode acts on.
+;          values KvAsm acts on.
 ; =============================================================================
 %macro VALUEIS 1                        ; ZF=1 iff (rsi, rdx) equals `label`
     NAMEIS  %1
@@ -1037,7 +1037,7 @@ classify_value:
     or      r11d, VC_HEAD << 8
     jmp     .ret
 .path:
-    VALUEIS v_health                    ; exact path, before the KvNode prefix
+    VALUEIS v_health                    ; exact path, before the KvAsm prefix
     jne     .kv_path
     or      r11d, M_HEALTH << 8
     jmp     .ret

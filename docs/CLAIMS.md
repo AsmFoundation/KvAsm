@@ -1,6 +1,6 @@
 # Claims and their evidence
 
-Every public claim about KvNode, the exact wording, and the evidence behind
+Every public claim about KvAsm, the exact wording, and the evidence behind
 it. The README, release notes, package descriptions and announcements may
 only make the claims listed here, scoped as they are here.
 
@@ -61,7 +61,7 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
     and cerber-os/HttpAsm.
   - **One pure-assembly key-value store exists:**
     [whispem/asm.kvstore](https://github.com/whispem/asm.kvstore) (created
-    July 2026). It speaks its own TCP protocol. So KvNode is **not** the
+    July 2026). It speaks its own TCP protocol. So KvAsm is **not** the
     first key-value store in assembly, and the claim never says it is.
   - **The nearest gRPC/HTTP/2 projects are written in C:** okba14/NeuroHTTP
     (C, with assembly SIMD kernels) and the HTTP/2 libraries of
@@ -70,7 +70,7 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
 - **Not claimed:**
   - the first key-value store in assembly;
   - the first server in assembly;
-  - a general-purpose gRPC framework. KvNode serves its own service and
+  - a general-purpose gRPC framework. KvAsm serves its own service and
     the health service, over h2c.
 
 ## 3. Outcompetes Redis, Valkey, Dragonfly, Garnet and Memcached on reads of small values
@@ -82,10 +82,10 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
   valid runs
   ([results](../benchmarks/results/2026-09-27-standard/README.md)):
   - **4 cores, 100% GET, 1M keys, 100-byte values (S1):**
-    - KvNode served 8.84M GET/s;
+    - KvAsm served 8.84M GET/s;
     - Redis 2.88M, Valkey 3.20M, Dragonfly 2.40M, Garnet 3.86M and
       Memcached 3.01M;
-    - KvNode was ahead of each in all ten paired blocks (p = 0.002).
+    - KvAsm was ahead of each in all ten paired blocks (p = 0.002).
   - **1 core (N1):** 1.76M GET/s against Redis's 1.40M (1.26×) and
     Valkey's 1.42M (1.24×), in 6 of 6 blocks. Server CPU per GET was
     576 ns against Redis's 722 ns.
@@ -94,27 +94,30 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
     others.
   - **No pipelining (E3):** 815k requests/s, 1.34–2.07×.
   - **Concurrency (E7):** ahead of every server from 64 requests in flight.
-- **Where KvNode is behind or level** (stated wherever this claim
+- **Where KvAsm is behind or level** (stated wherever this claim
   appears):
   - **Writes (E2, 100% SET):** 2.23M SET/s, which is 0.87× Redis, 0.90×
     Dragonfly and 0.60× Garnet.
   - **50/50 mix:** level with Garnet (0.99×).
   - **Both lines describe 0.2.0.**
     [ADR 0011](adr/0011-batched-writes-per-worker-reclamation.md)
-    (unreleased) has since made writes faster. Against 0.2.0, each server
+    made writes faster in 0.3.0. Against 0.2.0, each server
     alone at 4 workers: 2.61× on 100% SET and 1.77× on 50/50
     ([results](../benchmarks/results/2026-11-15-write-batching/README.md)).
     Both lines stay until the comparison with the other stores is re-run
     on a quiet host.
     - A first re-run, W1 on 2026-11-15
       ([results](../benchmarks/results/2026-11-15-writes-w1/README.md)),
-      put KvNode's writes ahead of all five: 1.7× Garnet to 4.2× Memcached
+      put KvAsm's writes ahead of all five: 1.7× Garnet to 4.2× Memcached
       on 100% SET.
     - It does not qualify as evidence. All 72 run windows overlapped other
       work in the VM, and a median 10.3 CPUs were busy outside it.
-    - **Estimated for `main` (850cfd9, unreleased) by a clean paired session**
-      ([results](../benchmarks/results/2026-11-15-kvnode-head/README.md)).
-      - KvNode was re-measured next to the very image the 2026-09-27 suite
+    - **Estimated for 0.3.0 by a clean paired session**
+      ([results](../benchmarks/results/2026-11-15-kvasm-head/README.md)).
+      The session measured 0.3.0's server code at `850cfd9`, before the
+      rename. The rename changed names and constants (the gRPC route, the
+      settings, the snapshot magics, the version), not code.
+      - KvAsm was re-measured next to the very image the 2026-09-27 suite
         measured, in the same blocks: 3.14× on 100% SET and 1.88× on 50/50
         (6/6 blocks each).
       - Carried over through the 2026-09-27 pairings, that makes writes
@@ -124,21 +127,21 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
       - The estimate assumes only that the build's gain over the old image
         is the same on both days' hosts. Today's host runs the old image
         ~1.5× slower than it ran that day.
-    - Wording allowed while the estimate is the evidence: "on `main`, writes
+    - Wording allowed while the estimate is the evidence: "0.3.0's writes
       are estimated ahead of all five stores (1.9× Garnet to 4.6×
       Memcached on 100% SET), from a paired control measurement". The 0.2.0
       lines above stay as the measured comparison.
   - **16 KiB values:** 0.50× Garnet and 0.48× Memcached. This is a known
     regression (CHANGELOG, Known issues).
-    - **The line describes 0.2.0.** The cause is fixed since (unreleased;
-      [ADR 0007](adr/0007-native-http2-engine.md), amendment): replies
+    - **The line describes 0.2.0.** The cause is fixed in 0.3.0
+      ([ADR 0007](adr/0007-native-http2-engine.md), amendment): replies
       longer than one HTTP/2 frame were buffered and copied twice.
     - Against the version before the fix, one worker:
       1.84× the GETs per second at 0.54× the server CPU per GET (paired
       A/B, 3 of 3 quads; the host was shared with another benchmark)
       ([results](../benchmarks/results/2026-11-15-asm-audit/README.md)).
     - The line stays until the comparison with the other stores is re-run.
-    - **Estimated for `main` by the same paired session:**
+    - **Estimated for 0.3.0 by the same paired session:**
       - 1.81× the 2026-09-27 image (3/3 blocks);
       - so 0.90× Garnet and 0.88× Memcached, up from 0.50× and 0.48×;
       - still slightly behind both.
@@ -146,9 +149,9 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
   - **16 requests in flight (E7):** Memcached is ahead (0.90×).
   - **8 cores:** not measured. The benchmark client saturates first
     ([why](../benchmarks/results/2026-09-28-client-ceiling/README.md)).
-    In the loaded-host scaling run KvNode was not clearly ahead of Garnet
+    In the loaded-host scaling run KvAsm was not clearly ahead of Garnet
     at 8 cores (1.21× [0.88–1.29], 5 of 6 blocks).
-- **Not claimed:** that KvNode outcompetes *all* key-value stores,
+- **Not claimed:** that KvAsm outcompetes *all* key-value stores,
   "enterprise" or otherwise.
   - It has no persistence, TLS, authentication, replication, expiry
     (TTL), clustering or data types beyond bytes.
@@ -187,7 +190,7 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
     search of at most 256 nodes.
   - **Delete:** one bucket slot.
   - **Health:** a constant reply.
-  - **The table:** `KVNODE_CAPACITY` sizes it once, resident from startup
+  - **The table:** `KVASM_CAPACITY` sizes it once, resident from startup
     ([OPERATIONS.md](OPERATIONS.md#memory)).
 - **Scope:**
   - "O(1)" is in the number of keys. Comparing and copying a key or value
@@ -209,8 +212,8 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
 - **Evidence:**
   - **Tag matching:** [ADR 0006](adr/0006-store-memory-levels-simd-and-private-caches.md).
     The SSE2 scan is 2–6% faster per batched lookup than the SWAR path,
-    and it is the default (`KVNODE_SCAN`).
-  - **CRC-32C** (`server/src/crc32c.asm`; the `KVNODE_CRC32C` row of
+    and it is the default (`KVASM_SCAN`).
+  - **CRC-32C** (`server/src/crc32c.asm`; the `KVASM_CRC32C` row of
     [OPERATIONS.md](OPERATIONS.md#configuration)):
     - VPCLMULQDQ + AVX2 256-bit folding: ~88 GB/s fused with a 16 KiB
       in-cache copy;
@@ -251,7 +254,7 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
     linearly from 1 to 4 cores here
     ([benchmarks/README.md](../benchmarks/README.md)).
   - **More than 4 cores is unmeasured.** kvbench's gRPC client tops out
-    near 9.3M requests/s. At 8 cores KvNode reached 9.72M GET/s while its
+    near 9.3M requests/s. At 8 cores KvAsm reached 9.72M GET/s while its
     cores were only 69% busy.
 - **Not claimed:** linear scaling, or scaling of writes in the standard
   suite.
@@ -259,7 +262,7 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
   - **Per-write locking (0.2.0):** in a store-level probe, total Put
     throughput fell from 4.51M/s with one writer to 2.07–2.24M/s with four
     to seven ([golden-services P3](proposals/golden-services.md)).
-  - **Batched writes (ADR 0011, unreleased)** take the lock once per batch
+  - **Batched writes (ADR 0011, since 0.3.0)** take the lock once per batch
     of up to 64 writes.
     - At the store level (`bench_write`): 5.42M → 12.58M/s from 1 to 4
       threads (2.32×), falling back to 6.89M at 7.
@@ -290,7 +293,7 @@ and Garnet, and memcached meta for Memcached. Their persistence is off.
 
 ## 9. gRPC from scratch, in assembly
 
-- **Wording:** "gRPC from scratch, in assembly. KvNode's own HTTP/2 engine
+- **Wording:** "gRPC from scratch, in assembly. KvAsm's own HTTP/2 engine
   passes h2spec 146/146, where nghttp2, which it replaced, passes 138. It
   doubled the requests a core serves. There is no gRPC, HTTP/2 or protobuf
   library in the server; glibc provides only libc services."

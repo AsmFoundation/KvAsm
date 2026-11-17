@@ -2,7 +2,7 @@
 version: 1
 creator: callgrind-3.24.0
 pid: 1
-cmd:  /pc/kvnode-all
+cmd:  /pc/kvasm-all
 part: 1
 
 
@@ -18,7 +18,7 @@ events: Ir
 summary: 1063622797
 
 
-ob=(1) /pc/kvnode-all
+ob=(1) /pc/kvasm-all
 fl=(17) /pc/all/server/src//src/wlock.asm
 fn=(2016) 0x000000000000b780
 0xb780 35 10

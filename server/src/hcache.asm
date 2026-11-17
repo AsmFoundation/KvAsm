@@ -9,7 +9,7 @@
 ; which already keep hot buckets and records close, is exactly what
 ; bench_store measures (docs/adr/0006); the cache is off unless configured.
 ;
-; Layout: each level is a direct-mapped array of 32-byte HEntry (kvnode.inc):
+; Layout: each level is a direct-mapped array of 32-byte HEntry (kvasm.inc):
 ;   L1 index = h2 & l1_mask           (low bits of h2)
 ;   L2 index = (h2 >> 20) & l2_mask   (different bits: conflicts decorrelate)
 ; A lookup checks L1, then L2 (a hit is promoted into L1), then the table
@@ -41,7 +41,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 
 %define L2_SHIFT    20                  ; h2 bits skipped by the L2 index
 

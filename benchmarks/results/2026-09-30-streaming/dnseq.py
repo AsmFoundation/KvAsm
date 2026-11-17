@@ -2,13 +2,13 @@
 """dnseq.py — sequential, alternating A/B of two builds of the .NET client
 (or of one build with two flag sets), for when concurrent pairs are too noisy.
 
-Usage (inside kvnode-dev):
+Usage (inside kvasm-dev):
   dnseq.py OUT.jsonl ROUNDS CONFIG...
   CONFIG = MODE:SIZE:CONCURRENCY[:CHUNK[:WINDOW]]   (as abdotnet.py)
 Env: A_BENCH, B_BENCH, A_ARGS, B_ARGS, SERVER, DN_ENV, WARMUP (2), SECONDS (6)
      as abdotnet.py; SERVER_CPUS ("2") and WORKERS ("1") place the server,
      e.g. "2,4,6,8" and 4 to see what spreading connections over server
-     workers buys (KvNode pins each connection to one worker).
+     workers buys (KvAsm pins each connection to one worker).
 MODE get (unary Get of SIZE-byte values) uses at most 10,000 keys, as does
 every mode: the server holds 100,000.
 
@@ -31,7 +31,7 @@ import sys
 import time
 
 ROOT = "/src/.claude/worktrees/upload-download"
-SERVER = os.environ.get("SERVER", ROOT + "/server/build/kvnode")
+SERVER = os.environ.get("SERVER", ROOT + "/server/build/kvasm")
 BENCH = {"A": os.environ["A_BENCH"], "B": os.environ["B_BENCH"]}
 DN_ENV = os.environ.get("DN_ENV", "")
 WARMUP = os.environ.get("WARMUP", "2")
@@ -51,8 +51,8 @@ def parse_cfg(text):
 
 def run(variant, cfg):
     """One run of one variant against a fresh pinned server; returns the bench's JSON."""
-    env = dict(os.environ, KVNODE_PORT=str(PORT), KVNODE_WORKERS=WORKERS, KVNODE_CAPACITY="100000",
-               KVNODE_MAX_UPLOAD_BYTES="67108864")
+    env = dict(os.environ, KVASM_PORT=str(PORT), KVASM_WORKERS=WORKERS, KVASM_CAPACITY="100000",
+               KVASM_MAX_UPLOAD_BYTES="67108864")
     log = open("/tmp/dnseq.server.log", "w")
     server = subprocess.Popen(["taskset", "-c", SERVER_CPU, SERVER], env=env, stderr=log)
     for _ in range(500):

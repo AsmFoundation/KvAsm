@@ -9,13 +9,13 @@ statistics).
 
 Included are **single-node, in-memory key-value servers** that answer
 exact-key GET/SET over the network, run without persistence. That is
-KvNode's class.
+KvAsm's class.
 
 | System | Why it is included |
 |---|---|
 | Redis 8.10.2 | The reference in-memory KV server. |
 | Valkey 9.1.2 | The Linux Foundation fork of Redis, with a reworked I/O threading model. |
-| Dragonfly 2.0.0 | Multi-threaded shared-nothing design, Redis-compatible (closest to KvNode's thread-per-core model). |
+| Dragonfly 2.0.0 | Multi-threaded shared-nothing design, Redis-compatible (closest to KvAsm's thread-per-core model). |
 | Garnet 2.1.8 | Microsoft Research's multi-threaded Redis-compatible server (.NET). |
 | Memcached 1.6.45 | The classic multi-threaded cache, with the simplest protocol. |
 
@@ -49,7 +49,7 @@ Every result records the image ID and digest that produced it.
 
 ## 3. One client for everyone: kvbench
 
-A benchmark measures client and server together. If KvNode were measured
+A benchmark measures client and server together. If KvAsm were measured
 with h2load and Redis with redis-benchmark, part of every difference would
 be tool quality. [`kvbench`](kvbench) is a single C program that drives
 every system with:
@@ -69,12 +69,12 @@ every system with:
 Only the wire encoding differs, because it is part of each system: RESP2
 for Redis, Valkey, Dragonfly and Garnet; the memcached **meta** protocol
 (its current recommended protocol, with the most compact replies); gRPC
-over HTTP/2 for KvNode, via nghttp2's client with large flow-control
+over HTTP/2 for KvAsm, via nghttp2's client with large flow-control
 windows, as an efficient production client would use.
 
 **Validation (E8).** kvbench must be at least as efficient as each
 ecosystem's standard tool on the same server and workload: redis-benchmark
-and memtier_benchmark for Redis, h2load for KvNode. If it is slower than a
+and memtier_benchmark for Redis, h2load for KvAsm. If it is slower than a
 standard tool for one system only, the comparison is biased and the report
 says so.
 
@@ -110,10 +110,10 @@ says so.
 |---|---|
 | Same core budget | `--cpuset-cpus` with N vCPUs for every server |
 | Use the cores given | Thread count tuned per system and N in **E0**: N vs N−1 (Redis and Valkey document leaving a core spare; others recommend one thread per core). The median winner is used by every later experiment. Garnet sizes its .NET thread pool from the cpuset; it has no equivalent knob. |
-| No persistence | Redis/Valkey `--save "" --appendonly no`, Dragonfly `--dbfilename=`, Garnet AOF off (default), KvNode has none |
+| No persistence | Redis/Valkey `--save "" --appendonly no`, Dragonfly `--dbfilename=`, Garnet AOF off (default), KvAsm has none |
 | No eviction | Memcached `-m` sized with 4× headroom; other servers unlimited |
-| No TLS, no auth | Everywhere (KvNode is h2c) |
-| Best I/O engine | Dragonfly uses io_uring: this host's Docker runs seccomp-unconfined. KvNode uses epoll by design. |
+| No TLS, no auth | Everywhere (KvAsm is h2c) |
+| Best I/O engine | Dragonfly uses io_uring: this host's Docker runs seccomp-unconfined. KvAsm uses epoll by design. |
 
 ## 6. Measurement protocol
 
@@ -183,22 +183,22 @@ With 3–10 repetitions, normal-theory confidence intervals would pretend to
 precision the data does not have. The analysis therefore reports:
 
 - per cell, the **median** and the **min–max range**;
-- KvNode against each system *within one experiment* (and, in E8,
+- KvAsm against each system *within one experiment* (and, in E8,
   kvbench against each standard tool), **paired by block**:
   - the **ratio of medians**;
-  - the **min–max of the within-block ratios** (KvNode ÷ other, same
+  - the **min–max of the within-block ratios** (KvAsm ÷ other, same
     block, same configuration);
   - the **exact two-sided sign test** over those ratios. It assumes
     nothing about the size or shape of the differences, only that blocks
     are independent.
 - Comparisons across experiments (S1 against E1), or with fewer than 3
   shared blocks, are **unpaired**: the conservative ratio range
-  [min(KvNode)/max(other), max(KvNode)/min(other)], which contains every
+  [min(KvAsm)/max(other), max(KvAsm)/min(other)], which contains every
   pairwise run ratio, and the **exact Mann–Whitney U p-value** by full
   enumeration.
 - A difference counts as **clear** only if p < 0.05 (unpaired: and the
   range excludes 1); otherwise the report says "no clear difference". With
-  6 blocks that means KvNode was ahead (or behind) in **every** block.
+  6 blocks that means KvAsm was ahead (or behind) in **every** block.
   With 3 repetitions no test can reach p < 0.05 (sign test ≥ 0.25,
   Mann–Whitney ≥ 0.1), so E0, E4, E6, E7 and E8 are read as estimates.
 - Why pairing: on this host the absolute level of every system moves by
@@ -246,7 +246,7 @@ precision the data does not have. The analysis therefore reports:
   - That session's final experiment, S1, ran when the host had quietened.
     There its ten runs per system varied by only 1.1–1.7% (CV), and every
     system ran 1.26–1.87× faster than in the same E1 cell hours earlier.
-  - The earlier KvNode ablation (02:45–03:10) also ran under this load,
+  - The earlier KvAsm ablation (02:45–03:10) also ran under this load,
     unmonitored. Its two runs, minutes apart, had between-run CVs of 2–16%
     and 12–29%, and the same build's median moved by up to 28%.
     Consistent with outside load varying over time.
@@ -273,11 +273,11 @@ precision the data does not have. The analysis therefore reports:
 - **The load generator's ceiling.** kvbench's gRPC client reaches about
   9.3M requests/s on its 16 vCPUs (E8, 2026-09-27: 9.30M on one key, where
   h2load reached 5.89M).
-  - Since the native HTTP/2 engine, KvNode's 8-core cells run into that
+  - Since the native HTTP/2 engine, KvAsm's 8-core cells run into that
     limit: its cores were 0.52–0.70 busy, and runs are flagged
     client-bound.
   - Its 4-core cell comes close: the client was 80% busy in S1.
-  - Where the client is the limit, KvNode's result is a floor, not its
+  - Where the client is the limit, KvAsm's result is a floor, not its
     capacity. This host cannot give the client more CPU next to an 8-core
     server. Its 24 physical cores (8 hyperthreaded P-cores and 16 E-cores)
     are already busy with 8 server and 16 client vCPUs. A client that also
@@ -288,7 +288,7 @@ precision the data does not have. The analysis therefore reports:
   system's E1 median at 4 cores, so an E1 depressed by outside load lowers
   them. On 2026-09-27 they were 418k–1.25M requests/s, against 574k–1.72M
   the day before. Compare E4 across sessions only at equal rates.
-- **Protocol is part of the system.** KvNode's gRPC framing costs more
+- **Protocol is part of the system.** KvAsm's gRPC framing costs more
   bytes and CPU per request than RESP, on both server and client. That
   cost is real for users and is not factored out.
 - **Configuration expertise.** Each system runs its documented defaults,
@@ -296,15 +296,15 @@ precision the data does not have. The analysis therefore reports:
   (kernel, NUMA, allocator) is out of scope and would apply to every
   system alike.
 - **Workload coverage.** The workloads are small-object GET/SET, the
-  operations KvNode offers. Richer data types, where Redis-compatible
+  operations KvAsm offers. Richer data types, where Redis-compatible
   servers do much more, are out of scope by construction.
 
 ## 9. Reproducing
 
 ```sh
-docker build --target runtime -t kvnode:0.2.0 .
-docker build --target kvbench -t kvnode-kvbench:dev .
-docker build --target toolchain -t kvnode-toolchain .
+docker build --target runtime -t kvasm:0.3.0 .
+docker build --target kvbench -t kvasm-kvbench:dev .
+docker build --target toolchain -t kvasm-toolchain .
 docker build -t kvbench/garnet:2.1.8 https://github.com/microsoft/garnet.git#v2.1.8
 python benchmarks/run.py --profile standard     # ≈ 4.5 hours; resumable with --out
 python benchmarks/analyze.py benchmarks/results/<directory>

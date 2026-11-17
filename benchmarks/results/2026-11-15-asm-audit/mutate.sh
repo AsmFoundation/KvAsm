@@ -2,7 +2,7 @@
 # =============================================================================
 # mutate.sh — does fuzz_h2's request matrix notice a broken fused request
 # path? Each mutation changes one thing in a copy of h2n.asm (inside
-# kvnode-dev), rebuilds the server, and runs the matrix alone against it
+# kvasm-dev), rebuilds the server, and runs the matrix alone against it
 # (fuzz_h2 with 0 fuzz iterations: liveness, the matrix, liveness).
 #
 # Usage: mutate.sh VARIANT     (the tree under /pc/VARIANT; its own fuzz_h2 is used)
@@ -28,9 +28,9 @@ run_matrix() {  # server-binary [limits] -> prints "exit <rc> — <last line>"
   # itest phase 7b; otherwise the request matrix against default limits.
   rm -f /tmp/mut-srv.log               # or the wait below reads the previous server's "listening"
   if [ "${2:-}" = limits ]; then
-    KVNODE_PORT=$PORT KVNODE_WORKERS=1 KVNODE_MAX_KEY_BYTES=16 KVNODE_MAX_VALUE_BYTES=64         taskset -c 8-14 "$1" 2> /tmp/mut-srv.log &
+    KVASM_PORT=$PORT KVASM_WORKERS=1 KVASM_MAX_KEY_BYTES=16 KVASM_MAX_VALUE_BYTES=64         taskset -c 8-14 "$1" 2> /tmp/mut-srv.log &
   else
-    KVNODE_PORT=$PORT KVNODE_WORKERS=2 KVNODE_CAPACITY=200000 taskset -c 8-14 "$1" 2> /tmp/mut-srv.log &
+    KVASM_PORT=$PORT KVASM_WORKERS=2 KVASM_CAPACITY=200000 taskset -c 8-14 "$1" 2> /tmp/mut-srv.log &
   fi
   local spid=$!
   for _ in $(seq 1 100); do grep -q 'msg="listening"' /tmp/mut-srv.log 2> /dev/null && break; sleep 0.05; done
@@ -55,21 +55,21 @@ mutate() {  # name, sed expression applied to src/h2n.asm, [limits]
   # copy and the edit can land in the same clock tick (file times are coarse),
   # and make then finds "nothing to be done" and the unmutated server is tested
   # — which is exactly what the first run of this script did for five mutations.
-  rm -f build/obj/h2n.o build/kvnode
+  rm -f build/obj/h2n.o build/kvasm
   if ! taskset -c 8-14 make -j7 all > /tmp/mut-build.log 2>&1; then
     echo "$name: BUILD FAILED — $(grep -m1 -i 'error' /tmp/mut-build.log)"; return
   fi
-  if cmp -s build/kvnode "$SRC/server/build/kvnode"; then echo "$name: BINARY UNCHANGED"; return; fi
+  if cmp -s build/kvasm "$SRC/server/build/kvasm"; then echo "$name: BINARY UNCHANGED"; return; fi
   local res
-  res=$(run_matrix /pc/mut/server/build/kvnode "$mode")
+  res=$(run_matrix /pc/mut/server/build/kvasm "$mode")
   case "$res" in
     "exit 0 "*) echo "$name: MISSED ($res)" ;;
     *)          echo "$name: CAUGHT ($res)" ;;
   esac
 }
 
-echo "control (unmutated $V), request matrix: $(run_matrix "$SRC/server/build/kvnode")"
-echo "control (unmutated $V), --limits:       $(run_matrix "$SRC/server/build/kvnode" limits)"
+echo "control (unmutated $V), request matrix: $(run_matrix "$SRC/server/build/kvasm")"
+echo "control (unmutated $V), --limits:       $(run_matrix "$SRC/server/build/kvasm" limits)"
 
 # 1. the fused DATA frame is not counted against the connection window
 mutate "no connection-window accounting" '/H2.recv_window\], rcx/,+1d'

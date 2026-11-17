@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ab3.py — concurrent paired A/B of two kvnode binaries, with mechanism metrics.
+"""ab3.py — concurrent paired A/B of two kvasm binaries, with mechanism metrics.
 
 Usage: ab3.py BLOCKS CONFIG... with CONFIG = MODE:VALUE_BYTES:THREADS:CONNS
 (MODE blocking|busy), e.g. "blocking:100:8:64" (8 client threads x 8
@@ -30,14 +30,14 @@ import sys
 import time
 
 KVB = "/src/benchmarks/kvbench/build/kvbench"
-BIN = {"A": "/tmp/kvnode-A", "B": "/tmp/kvnode-B"}
+BIN = {"A": "/tmp/kvasm-A", "B": "/tmp/kvasm-B"}
 SLOTS = [("2", "16-23", 50211), ("6", "24-31", 50212)]  # (server vCPU, client vCPUs, port)
 HZ = os.sysconf("SC_CLK_TCK")
 
 
 def start(variant, cpu, port, log):
     """Starts one pinned server; returns its Popen once it listens."""
-    env = dict(os.environ, KVNODE_PORT=str(port), KVNODE_WORKERS="1", KVNODE_CAPACITY="1250000")
+    env = dict(os.environ, KVASM_PORT=str(port), KVASM_WORKERS="1", KVASM_CAPACITY="1250000")
     f = open(log, "w")
     p = subprocess.Popen(["taskset", "-c", cpu, BIN[variant]], env=env, stderr=f)
     for _ in range(500):

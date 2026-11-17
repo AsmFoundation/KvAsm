@@ -7,8 +7,8 @@
  * expression and makes the process exit non-zero, which fails `make test`
  * and therefore the Docker image build.
  */
-#ifndef KVNODE_TEST_COMMON_H
-#define KVNODE_TEST_COMMON_H
+#ifndef KVASM_TEST_COMMON_H
+#define KVASM_TEST_COMMON_H
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE /* the Makefile defines it; standalone builds get it here */

@@ -100,7 +100,7 @@ GREP: substring search over 256 MiB of text values (a value filter for Scan / Ex
 all checks passed
 
 == certification (host side, docker events for the run's window) ==
-1790885778 container exec_create: bash /src/benchmarks/results/2026-10-01-endpoints-probe/run.sh 4 5 kvnode-dev
-1790885778 container exec_start: bash /src/benchmarks/results/2026-10-01-endpoints-probe/run.sh 4 5 kvnode-dev
+1790885778 container exec_create: bash /src/benchmarks/results/2026-10-01-endpoints-probe/run.sh 4 5 kvasm-dev
+1790885778 container exec_start: bash /src/benchmarks/results/2026-10-01-endpoints-probe/run.sh 4 5 kvasm-dev
 attempt 1 window 2026-10-01T20:16:17Z .. 2026-10-01T20:16:49Z rc=0 foreign=0
-idle before the run: kvnode-dev had no process besides pid 1, zombies and the D-state trees stuck since 2026-09-29; VM CPU 0.0% over 2 s; host CPU 14.7%
+idle before the run: kvasm-dev had no process besides pid 1, zombies and the D-state trees stuck since 2026-09-29; VM CPU 0.0% over 2 s; host CPU 14.7%

@@ -5,7 +5,7 @@ hotspots and convert shares to ns per request.
 Usage: prof_report.py PERF_TXT OPS_PER_SEC USER_TICKS SYS_TICKS [NM_TXT]
 PERF_TXT is `perf report --no-children --sort dso,sym --stdio` output of a
 system-wide cpu-clock recording restricted to the server's CPU. NM_TXT
-(`nm -n build/kvnode`) lets NASM macro-local labels such as `..@67.done`
+(`nm -n build/kvasm`) lets NASM macro-local labels such as `..@67.done`
 (which perf reports as symbols of their own) count toward the function that
 contains them.
 """
@@ -30,7 +30,7 @@ if len(sys.argv) > 5:
         elif '.' not in name:
             last_fn = name
 
-# KvNode symbols by module, from the source tree's labels.
+# KvAsm symbols by module, from the source tree's labels.
 H2 = ('kv_h2n', 'h2_process', 'header_block', 'decode_fields', 'decode_discard', 'field_handler',
       'stream_open', 'stream_close', 'stream_error', 'map_find', 'map_insert', 'map_remove',
       'map_grow', 'reply_fast', 'reply_slow', 'put_response_headers', 'put_trailers', 'put_hdr',
@@ -84,20 +84,20 @@ for line in open(txt, errors="replace"):
             g = 'kernel: memory allocation (slab, pages, memcg)'
         else:
             g = 'kernel: other'
-    elif dso.startswith('kvnode'):          # kvnode, or an A/B build such as kvnode-B
+    elif dso.startswith('kvasm'):          # kvasm, or an A/B build such as kvasm-B
         sym = owner.get(sym, sym)
         if sym.startswith(HPACK):
-            g = 'KvNode: HPACK decode (hpack.asm)'
+            g = 'KvAsm: HPACK decode (hpack.asm)'
         elif sym.startswith(H2) or sym in H2:
-            g = 'KvNode: HTTP/2 framing (h2n.asm)'
+            g = 'KvAsm: HTTP/2 framing (h2n.asm)'
         elif sym.startswith(GRPC) or sym in GRPC:
-            g = 'KvNode: gRPC dispatch + protobuf'
+            g = 'KvAsm: gRPC dispatch + protobuf'
         elif sym.startswith(STORE):
-            g = 'KvNode: store lookup (hash, buckets, record)'
+            g = 'KvAsm: store lookup (hash, buckets, record)'
         elif sym.startswith(POOL):
-            g = 'KvNode: pool allocator'
+            g = 'KvAsm: pool allocator'
         elif sym.startswith(LOOP) or sym in LOOP:
-            g = 'KvNode: event loop (worker.asm)'
+            g = 'KvAsm: event loop (worker.asm)'
         elif sym.startswith(('__mem', 'mem', '__libc', 'syscall', 'clock_gettime', '__clock',
                              'malloc', 'free', '_int_', 'realloc', 'calloc', 'pthread', '__GI',
                              '__vdso', 'epoll_wait', '__epoll', 'read', 'write', '__lll',
@@ -105,7 +105,7 @@ for line in open(txt, errors="replace"):
                              '__memset', '__memcmp', '__new_memcpy')):
             g = 'glibc (memcpy/memset/syscall stubs)'
         else:
-            g = 'KvNode: other (' + sym + ')'
+            g = 'KvAsm: other (' + sym + ')'
     elif dso.startswith('[vdso]'):
         g = 'vDSO clock_gettime'
     else:

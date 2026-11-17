@@ -1,6 +1,6 @@
 <Project>
   <!--
-    Shared build policy for every KvNode .NET project.
+    Shared build policy for every KvAsm .NET project.
     Warnings are errors: a client library is a contract, and nullable or
     analyzer warnings in it are latent bugs for every consumer.
   -->

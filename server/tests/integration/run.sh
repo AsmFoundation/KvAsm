@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-# run.sh — end-to-end checks of the real kvnode binary (`make itest`).
+# run.sh — end-to-end checks of the real kvasm binary (`make itest`).
 #
-# Usage: run.sh KVNODE ITEST MKSNAP
-#   KVNODE  server binary (build/kvnode)
+# Usage: run.sh KVASM ITEST MKSNAP
+#   KVASM   server binary (build/kvasm)
 #   ITEST   build/tests/itest_grpc
 #   MKSNAP  build/tests/mksnap
-# Env: KVNODE_ITEST_PORT (default 50151) — the port every phase uses.
+# Env: KVASM_ITEST_PORT (default 50151) — the port every phase uses.
 #
 # Phases (each starts a fresh server; any failure prints the server log and
 # exits non-zero, which fails `make itest` and the Docker build). The server
@@ -47,8 +47,8 @@
 #  7b. the request-size limit at the frame boundary (fuzz_h2 --limits): a
 #      server with a 16-byte key limit and a 64-byte value limit, where one
 #      DATA frame can be over the largest request
-#   8. streaming limits: KVNODE_MAX_MEMORY_MB, the per-connection upload
-#      budget, KVNODE_CAPACITY — and every reservation and pin coming back
+#   8. streaming limits: KVASM_MAX_MEMORY_MB, the per-connection upload
+#      budget, KVASM_CAPACITY — and every reservation and pin coming back
 #      however its call ends (cancel, reset connection, completion)
 #   9. one worker: unary calls stay answered beside bulk downloads
 #      (FLUSH_BUDGET)
@@ -57,10 +57,10 @@
 # =============================================================================
 set -euo pipefail
 
-KVNODE=${1:?usage: run.sh KVNODE ITEST MKSNAP}
-ITEST=${2:?usage: run.sh KVNODE ITEST MKSNAP}
-MKSNAP=${3:?usage: run.sh KVNODE ITEST MKSNAP}
-PORT=${KVNODE_ITEST_PORT:-50151}
+KVASM=${1:?usage: run.sh KVASM ITEST MKSNAP}
+ITEST=${2:?usage: run.sh KVASM ITEST MKSNAP}
+MKSNAP=${3:?usage: run.sh KVASM ITEST MKSNAP}
+PORT=${KVASM_ITEST_PORT:-50151}
 MAX_KEY=1024
 MAX_VALUE=1048576
 # Above MAX_VALUE, so values only Upload can store (and Get must refuse)
@@ -92,14 +92,14 @@ alive() {
   [[ -r /proc/$1/status ]] && ! grep -q '^State:[[:space:]]*Z' "/proc/$1/status"
 }
 
-# start_server NAME [VAR=VALUE...] — start kvnode in the background with the
-# given settings (KVNODE_PORT preset, overridable), set PID and LOG, and wait
+# start_server NAME [VAR=VALUE...] — start kvasm in the background with the
+# given settings (KVASM_PORT preset, overridable), set PID and LOG, and wait
 # until it logs "listening"; fails if it exits first or takes over 10 s.
 start_server() {
   LOG="$WORK/$1.log"
   shift
   : > "$LOG"                               # exists before the first poll below
-  env KVNODE_PORT="$PORT" "$@" "$KVNODE" 2> "$LOG" &
+  env KVASM_PORT="$PORT" "$@" "$KVASM" 2> "$LOG" &
   PID=$!
   local deadline=$((SECONDS + 10))
   while ! grep -q 'msg="listening"' "$LOG"; do
@@ -112,7 +112,7 @@ start_server() {
 # stop_server — SIGTERM, then require exit status 0 within 15 s (the default
 # shutdown grace is 10 s), and a stopped line reporting no pin left: after
 # every connection is gone, a Download pin still held — or a replaced record
-# still deferred to one — would be a leak of up to KVNODE_MAX_UPLOAD_BYTES.
+# still deferred to one — would be a leak of up to KVASM_MAX_UPLOAD_BYTES.
 stop_server() {
   kill -TERM "$PID"
   local deadline=$((SECONDS + 15)) rc=0
@@ -141,14 +141,14 @@ await_ready() {
   done
 }
 
-# crc_mode_refused MODE — true when kvnode refuses KVNODE_CRC32C=MODE at
+# crc_mode_refused MODE — true when kvasm refuses KVASM_CRC32C=MODE at
 # startup the way a CPU without that path must be refused (exit 2 naming the
 # mode and the missing instructions); false when it starts (the probe server
 # is stopped again at once). Any other outcome fails the run.
 crc_mode_refused() {
   local rlog="$WORK/crc-probe.log" pid rc=0 deadline=$((SECONDS + 10))
   : > "$rlog"
-  env KVNODE_PORT="$PORT" KVNODE_WORKERS=1 KVNODE_CRC32C="$1" "$KVNODE" 2> "$rlog" &
+  env KVASM_PORT="$PORT" KVASM_WORKERS=1 KVASM_CRC32C="$1" "$KVASM" 2> "$rlog" &
   pid=$!
   while ! grep -q 'msg="listening"' "$rlog"; do
     if ! alive "$pid"; then
@@ -165,22 +165,22 @@ crc_mode_refused() {
   return 1
 }
 
-# refuse NAME EXPECTED_STATUS LOG_PATTERN [VAR=VALUE...] — run kvnode in the
+# refuse NAME EXPECTED_STATUS LOG_PATTERN [VAR=VALUE...] — run kvasm in the
 # foreground; it must exit by itself with EXPECTED_STATUS and log the pattern.
 # Uses its own log file: LOG keeps pointing at a server that may still be
 # running (phase 5 probes the port while the phase 4 server serves it).
 refuse() {
   local name=$1 want=$2 pattern=$3 rc=0 rlog="$WORK/refuse.log"
   shift 3
-  timeout 20 env KVNODE_PORT="$PORT" "$@" "$KVNODE" 2> "$rlog" || rc=$?
+  timeout 20 env KVASM_PORT="$PORT" "$@" "$KVASM" 2> "$rlog" || rc=$?
   ((rc == want)) || fail "$name: exit status $rc, expected $want" "$rlog"
   grep -qF -- "$pattern" "$rlog" || fail "$name: log lacks: $pattern" "$rlog"
   echo "  refused: $name (exit $rc)"
 }
 
 echo "itest: phase 1 — protocol, limits, pipelining, cancellation, concurrency, streaming"
-start_server main KVNODE_WORKERS=4 KVNODE_CAPACITY=200000 \
-  KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE KVNODE_MAX_UPLOAD_BYTES=$MAX_UPLOAD
+start_server main KVASM_WORKERS=4 KVASM_CAPACITY=200000 \
+  KVASM_MAX_KEY_BYTES=$MAX_KEY KVASM_MAX_VALUE_BYTES=$MAX_VALUE KVASM_MAX_UPLOAD_BYTES=$MAX_UPLOAD
 grep -qF "max_upload_bytes=$MAX_UPLOAD crc32c=" "$LOG" || fail "upload settings not logged"
 "$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" "$MAX_UPLOAD" || fail "itest_grpc suite"
 
@@ -210,9 +210,9 @@ echo "itest: phase 2b — the same suite through private L1/L2 caches, SWAR scan
 # the table CRC-32C because auto picks a hardware path on any CPU this runs
 # on; SipHash because auto picks the AES key hash wherever the CPU has AES-NI,
 # and the fallback must stay proven end to end.
-start_server cached KVNODE_WORKERS=4 KVNODE_CAPACITY=200000 \
-  KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE KVNODE_MAX_UPLOAD_BYTES=$MAX_UPLOAD \
-  KVNODE_CACHE_L1_BITS=8 KVNODE_CACHE_L2_BITS=12 KVNODE_SCAN=swar KVNODE_CRC32C=table KVNODE_HASH=siphash
+start_server cached KVASM_WORKERS=4 KVASM_CAPACITY=200000 \
+  KVASM_MAX_KEY_BYTES=$MAX_KEY KVASM_MAX_VALUE_BYTES=$MAX_VALUE KVASM_MAX_UPLOAD_BYTES=$MAX_UPLOAD \
+  KVASM_CACHE_L1_BITS=8 KVASM_CACHE_L2_BITS=12 KVASM_SCAN=swar KVASM_CRC32C=table KVASM_HASH=siphash
 grep -qF 'scan=swar' "$LOG" || fail "scan mode not logged"
 grep -qF 'cache_l1_bits=8 cache_l2_bits=12' "$LOG" || fail "cache settings not logged"
 grep -qF 'crc32c=table' "$LOG" || fail "crc32c mode not logged"
@@ -230,9 +230,9 @@ for mode in sse42 pclmul vpclmul; do
     echo "  crc32c=$mode: refused at startup (this CPU lacks it)"
     continue
   fi
-  start_server "crc-$mode" KVNODE_WORKERS=2 KVNODE_CAPACITY=200000 \
-    KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE \
-    KVNODE_MAX_UPLOAD_BYTES=$MAX_UPLOAD KVNODE_CRC32C=$mode
+  start_server "crc-$mode" KVASM_WORKERS=2 KVASM_CAPACITY=200000 \
+    KVASM_MAX_KEY_BYTES=$MAX_KEY KVASM_MAX_VALUE_BYTES=$MAX_VALUE \
+    KVASM_MAX_UPLOAD_BYTES=$MAX_UPLOAD KVASM_CRC32C=$mode
   grep -qF "crc32c=$mode snapshot=" "$LOG" || fail "crc32c=$mode not logged as the mode in force"
   "$ITEST" --streaming 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" "$MAX_UPLOAD" \
     || fail "streaming suite with crc32c=$mode"
@@ -243,8 +243,8 @@ echo "itest: phase 3 — idle timeout: idle connections, stalled, slow and froze
 # The memory limit lets --stall observe, from outside, when a stalled call's
 # pinned record or upload reservation is released (a 16 MiB reservation fits
 # again); the budget bounds uploads per connection as in production.
-start_server idle KVNODE_WORKERS=1 KVNODE_IDLE_TIMEOUT_SEC=1 KVNODE_MAX_MEMORY_MB=24 \
-  KVNODE_CONN_BUFFER_MB=16 KVNODE_MAX_UPLOAD_BYTES=16777216
+start_server idle KVASM_WORKERS=1 KVASM_IDLE_TIMEOUT_SEC=1 KVASM_MAX_MEMORY_MB=24 \
+  KVASM_CONN_BUFFER_MB=16 KVASM_MAX_UPLOAD_BYTES=16777216
 t0=$(date +%s%N)
 "$ITEST" --wait-goaway 127.0.0.1 "$PORT" 10 || fail "idle connection not closed with GOAWAY"
 ms=$((($(date +%s%N) - t0) / 1000000))
@@ -255,34 +255,34 @@ stop_server
 
 echo "itest: phase 4 — snapshot as the data source"
 "$MKSNAP" "$WORK/snap.kvs" 20000
-start_server snapshot KVNODE_WORKERS=2 KVNODE_SNAPSHOT="$WORK/snap.kvs"
+start_server snapshot KVASM_WORKERS=2 KVASM_SNAPSHOT="$WORK/snap.kvs"
 grep -qF 'msg="snapshot loaded" records=20000' "$LOG" || fail "snapshot load not logged"
 "$ITEST" --expect-snapshot 127.0.0.1 "$PORT" 20000 || fail "snapshot records not served"
 
 echo "itest: phase 5 — startup refusals"
-refuse "second instance on a served port" 1 'msg="port already in use' KVNODE_WORKERS=1
+refuse "second instance on a served port" 1 'msg="port already in use' KVASM_WORKERS=1
 stop_server                                # the phase 4 server, still running until now
 "$MKSNAP" "$WORK/bad.kvs" 100 corrupt
-refuse "corrupt snapshot" 1 'reason="checksum mismatch"' KVNODE_SNAPSHOT="$WORK/bad.kvs"
+refuse "corrupt snapshot" 1 'reason="checksum mismatch"' KVASM_SNAPSHOT="$WORK/bad.kvs"
 refuse "missing snapshot" 1 'reason="cannot open or map file"' \
-  KVNODE_SNAPSHOT="$WORK/missing.kvs"
-refuse "non-numeric port" 2 'name=KVNODE_PORT value=http' KVNODE_PORT=http
-refuse "zero max streams" 2 'name=KVNODE_MAX_STREAMS value=0' KVNODE_MAX_STREAMS=0
-refuse "negative workers" 2 'name=KVNODE_WORKERS value=-1' KVNODE_WORKERS=-1
-refuse "capacity overflow" 2 'name=KVNODE_CAPACITY' KVNODE_CAPACITY=99999999999999999999
-refuse "unknown scan mode" 2 'name=KVNODE_SCAN value=avx9 allowed=swar|sse2' KVNODE_SCAN=avx9
-refuse "empty scan name" 2 'name=KVNODE_SCAN value= allowed=swar|sse2' KVNODE_SCAN=
-refuse "cache too large" 2 'name=KVNODE_CACHE_L1_BITS value=25' KVNODE_CACHE_L1_BITS=25
-refuse "unknown crc32c mode" 2 'name=KVNODE_CRC32C value=fast allowed=auto|vpclmul|pclmul|sse42|table' \
-  KVNODE_CRC32C=fast
-refuse "crc32c mode case" 2 'name=KVNODE_CRC32C value=SSE42 allowed=auto|vpclmul|pclmul|sse42|table' \
-  KVNODE_CRC32C=SSE42
-refuse "unknown hash" 2 'name=KVNODE_HASH value=md5 allowed=auto|siphash|aes' KVNODE_HASH=md5
+  KVASM_SNAPSHOT="$WORK/missing.kvs"
+refuse "non-numeric port" 2 'name=KVASM_PORT value=http' KVASM_PORT=http
+refuse "zero max streams" 2 'name=KVASM_MAX_STREAMS value=0' KVASM_MAX_STREAMS=0
+refuse "negative workers" 2 'name=KVASM_WORKERS value=-1' KVASM_WORKERS=-1
+refuse "capacity overflow" 2 'name=KVASM_CAPACITY' KVASM_CAPACITY=99999999999999999999
+refuse "unknown scan mode" 2 'name=KVASM_SCAN value=avx9 allowed=swar|sse2' KVASM_SCAN=avx9
+refuse "empty scan name" 2 'name=KVASM_SCAN value= allowed=swar|sse2' KVASM_SCAN=
+refuse "cache too large" 2 'name=KVASM_CACHE_L1_BITS value=25' KVASM_CACHE_L1_BITS=25
+refuse "unknown crc32c mode" 2 'name=KVASM_CRC32C value=fast allowed=auto|vpclmul|pclmul|sse42|table' \
+  KVASM_CRC32C=fast
+refuse "crc32c mode case" 2 'name=KVASM_CRC32C value=SSE42 allowed=auto|vpclmul|pclmul|sse42|table' \
+  KVASM_CRC32C=SSE42
+refuse "unknown hash" 2 'name=KVASM_HASH value=md5 allowed=auto|siphash|aes' KVASM_HASH=md5
 refuse "upload above the budget" 2 \
-  'name=KVNODE_MAX_UPLOAD_BYTES value=2000000 allowed=0..1048576 reason="must not exceed KVNODE_CONN_BUFFER_MB' \
-  KVNODE_CONN_BUFFER_MB=1 KVNODE_MAX_UPLOAD_BYTES=2000000
-refuse "upload limit overflow" 2 'name=KVNODE_MAX_UPLOAD_BYTES value=2147483648 allowed=0..2147483647' \
-  KVNODE_MAX_UPLOAD_BYTES=2147483648
+  'name=KVASM_MAX_UPLOAD_BYTES value=2000000 allowed=0..1048576 reason="must not exceed KVASM_CONN_BUFFER_MB' \
+  KVASM_CONN_BUFFER_MB=1 KVASM_MAX_UPLOAD_BYTES=2000000
+refuse "upload limit overflow" 2 'name=KVASM_MAX_UPLOAD_BYTES value=2147483648 allowed=0..2147483647' \
+  KVASM_MAX_UPLOAD_BYTES=2147483648
 
 # h2spec_check NAME BASELINE [VAR=VALUE...] — run h2spec against a fresh
 # server; the failures must be exactly BASELINE's (a new failure or skip
@@ -290,7 +290,7 @@ refuse "upload limit overflow" 2 'name=KVNODE_MAX_UPLOAD_BYTES value=2147483648 
 h2spec_check() {
   local name=$1 baseline=$2
   shift 2
-  start_server "$name" KVNODE_WORKERS=2 "$@"
+  start_server "$name" KVASM_WORKERS=2 "$@"
   # h2spec exits non-zero whenever anything fails; the baseline decides.
   h2spec -h 127.0.0.1 -p "$PORT" -o 2 -j "$WORK/$name.xml" > "$WORK/$name.txt" 2>&1 || true
   stop_server
@@ -323,8 +323,8 @@ fi
 
 echo "itest: phase 7 — fuzzing the HTTP/2 input path, then the suite on the same server"
 if [[ -n "${FUZZ_BIN:-}" ]]; then
-  start_server fuzz KVNODE_WORKERS=2 KVNODE_CAPACITY=200000 \
-    KVNODE_MAX_KEY_BYTES=$MAX_KEY KVNODE_MAX_VALUE_BYTES=$MAX_VALUE KVNODE_MAX_UPLOAD_BYTES=$MAX_UPLOAD
+  start_server fuzz KVASM_WORKERS=2 KVASM_CAPACITY=200000 \
+    KVASM_MAX_KEY_BYTES=$MAX_KEY KVASM_MAX_VALUE_BYTES=$MAX_VALUE KVASM_MAX_UPLOAD_BYTES=$MAX_UPLOAD
   "$FUZZ_BIN" 127.0.0.1 "$PORT" "${FUZZ_ITERATIONS:-3000}" "${FUZZ_SEED:-1}" "$PID" \
     || fail "fuzz_h2 found a failure"
   "$ITEST" 127.0.0.1 "$PORT" "$MAX_KEY" "$MAX_VALUE" "$MAX_UPLOAD" || fail "suite after fuzzing"
@@ -337,7 +337,7 @@ echo "itest: phase 7b — the request-size limit at the frame boundary"
 if [[ -n "${FUZZ_BIN:-}" ]]; then
   # 16 + 64 + 64 = 144 bytes is this server's largest message: fuzz_h2 --limits
   # sends Puts on either side of it, each as one DATA frame behind its HEADERS.
-  start_server reqlimit KVNODE_WORKERS=1 KVNODE_MAX_KEY_BYTES=16 KVNODE_MAX_VALUE_BYTES=64
+  start_server reqlimit KVASM_WORKERS=1 KVASM_MAX_KEY_BYTES=16 KVASM_MAX_VALUE_BYTES=64
   "$FUZZ_BIN" --limits 127.0.0.1 "$PORT" || fail "request-size limit at the frame boundary"
   stop_server
 else
@@ -347,13 +347,13 @@ fi
 echo "itest: phase 8 — streaming limits: memory, upload budget, capacity, releases"
 # Small limits so --stream-limits can hit each one and watch it recover;
 # the table CRC-32C here too (phase 2b already checks it logs).
-start_server limits KVNODE_WORKERS=2 KVNODE_CAPACITY=64 KVNODE_MAX_MEMORY_MB=24 \
-  KVNODE_CONN_BUFFER_MB=16 KVNODE_MAX_UPLOAD_BYTES=16777216 KVNODE_CRC32C=table
+start_server limits KVASM_WORKERS=2 KVASM_CAPACITY=64 KVASM_MAX_MEMORY_MB=24 \
+  KVASM_CONN_BUFFER_MB=16 KVASM_MAX_UPLOAD_BYTES=16777216 KVASM_CRC32C=table
 "$ITEST" --stream-limits 127.0.0.1 "$PORT" || fail "streaming limits"
 stop_server
 
 echo "itest: phase 9 — one worker: unary calls beside bulk downloads"
-start_server fairness KVNODE_WORKERS=1
+start_server fairness KVASM_WORKERS=1
 "$ITEST" --fairness 127.0.0.1 "$PORT" || fail "unary calls starved by downloads"
 stop_server
 

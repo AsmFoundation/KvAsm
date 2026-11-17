@@ -6,8 +6,8 @@
  * line; values unchanged. Vector i is the output for key = 00 01 .. 0f and
  * message = 00 01 .. (i-1) (i bytes), as 16 little-endian bytes (h1 || h2).
  */
-#ifndef KVNODE_SIPHASH_VECTORS_H
-#define KVNODE_SIPHASH_VECTORS_H
+#ifndef KVASM_SIPHASH_VECTORS_H
+#define KVASM_SIPHASH_VECTORS_H
 #include <stdint.h>
 
 static const uint8_t kSip128Vectors[64][16] = {

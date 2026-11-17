@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-KvNode is pre-1.0. Security fixes go into the latest minor release, and are
+KvAsm is pre-1.0. Security fixes go into the latest minor release, and are
 then released as a new patch version.
 
 | Version | Supported |
@@ -16,27 +16,27 @@ then released as a new patch version.
 
 1. Use GitHub's private reporting form: the repository's **Security** tab,
    then **Report a vulnerability**
-   (<https://github.com/Nucs/KvNode/security/advisories/new>). Only the
+   (<https://github.com/AsmFoundation/KvAsm/security/advisories/new>). Only the
    maintainers can read the report.
 2. Include:
    - the version, or commit and image digest;
-   - the configuration (`KVNODE_*` variables);
+   - the configuration (`KVASM_*` variables);
    - the server's log lines;
    - a reproduction. For protocol bugs, raw bytes or an `h2spec`-style
      case are ideal.
 
 We aim to acknowledge a report within 7 days, and to have a fix or a
-mitigation plan within 30 days of the acknowledgement. KvNode is maintained
+mitigation plan within 30 days of the acknowledgement. KvAsm is maintained
 by one person, so a release can take longer; we will tell you if it does.
 We will agree on a disclosure date with you and credit you in the advisory,
 unless you prefer not to be named.
 
 ## Threat model
 
-Know what KvNode protects against before you deploy it
+Know what KvAsm protects against before you deploy it
 ([docs/OPERATIONS.md](docs/OPERATIONS.md#security-notes)).
 
-**KvNode trusts its network.**
+**KvAsm trusts its network.**
 
 - It speaks cleartext HTTP/2 (h2c) and has no authentication or
   authorization. Anyone who can reach the port can read, write and delete
@@ -53,9 +53,9 @@ Know what KvNode protects against before you deploy it
   return another key's bytes. The HTTP/2 frames, HPACK blocks, gRPC
   messages, protobuf and snapshot files are all parsed in assembly.
 - **Resource exhaustion beyond the configured limits.**
-  - Memory, connections, streams and CPU must stay bounded by `KVNODE_*`
-    settings such as `KVNODE_MAX_MEMORY_MB`, `KVNODE_CONN_BUFFER_MB` and
-    `KVNODE_MAX_STREAMS`.
+  - Memory, connections, streams and CPU must stay bounded by `KVASM_*`
+    settings such as `KVASM_MAX_MEMORY_MB`, `KVASM_CONN_BUFFER_MB` and
+    `KVASM_MAX_STREAMS`.
   - The HTTP/2 engine's flood defenses must hold: rapid-reset limits
     (CVE-2023-44487), CONTINUATION caps, and the refusal of oversized
     frames.

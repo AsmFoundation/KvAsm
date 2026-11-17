@@ -1,8 +1,8 @@
 /*
- * bench_ds.c — KvNode data-structure bake-off (see docs/adr/0001).
+ * bench_ds.c — KvAsm data-structure bake-off (see docs/adr/0001).
  *
  * Question: can a linked structure — a linked-list hash table, or a binary
- * tree with assembly tricks — beat the bucketized cuckoo hash for KvNode's
+ * tree with assembly tricks — beat the bucketized cuckoo hash for KvAsm's
  * exact-key get/put/delete, given the requirement of O(1) operations?
  *
  * Candidates (all x86-64 assembly, same intrusive API, same records, same
@@ -30,7 +30,7 @@
  */
 #include <sched.h>
 
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 #include "test_common.h"
 
 /* chain.asm / trie.asm */

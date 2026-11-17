@@ -60,19 +60,19 @@
 #include <sys/mman.h>
 #include <time.h>
 
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 
 enum {
   KEY_LEN = 16,           /* "k:" + 14 decimal digits */
   VAL_LEN = 100,          /* the benchmark suite's value size */
-  SLOTS = 6,              /* BK_SLOTS in kvnode.inc */
+  SLOTS = 6,              /* BK_SLOTS in kvasm.inc */
   PAGE = 4096,            /* the proposed copy-on-write granule: 64 buckets */
   CHUNK = 8,              /* buckets gathered (and their records prefetched) per step */
   OUT_BATCH = 64 * 1024,  /* export message budget */
   MAX_REPS = 64,
 };
 
-/** One bucket exactly as kvnode.inc's `Bucket` lays it out: one 64-byte line. */
+/** One bucket exactly as kvasm.inc's `Bucket` lays it out: one 64-byte line. */
 typedef struct {
   uint64_t ver;           /* seqlock version (odd while a writer modifies it) */
   uint64_t tags;          /* six 1-byte tags, 0 = empty slot */
@@ -80,7 +80,7 @@ typedef struct {
 } Bucket;
 
 /**
- * The first two fields of kvnode.inc's `Table` (its read-mostly line 0).
+ * The first two fields of kvasm.inc's `Table` (its read-mostly line 0).
  * KvTable is opaque to C; this probe needs only the bucket array and its mask,
  * whose offsets have not changed since 0.1.0 (test_abi pins the layout).
  */

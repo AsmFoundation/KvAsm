@@ -10,8 +10,8 @@
 ; (config.asm, snapshot.asm) may keep using kv_logbuf_size().
 ; =============================================================================
 
-%ifndef KVNODE_LOG_INC
-%define KVNODE_LOG_INC
+%ifndef KVASM_LOG_INC
+%define KVASM_LOG_INC
 
 %define LOG_CAP         1000            ; payload bytes per line
 

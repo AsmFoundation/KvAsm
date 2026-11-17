@@ -3,7 +3,7 @@
  * 100k-key collection, and what each costs? (docs/proposals/capabilities.md)
  *
  * Why it exists: the review asked what O(1) or near-instant capabilities a
- * 100k-key KvNode could offer. At that size the whole key set is ~2 MB and
+ * 100k-key KvAsm could offer. At that size the whole key set is ~2 MB and
  * fits in the CPU's L2/L3 cache, which changes the answer: some capabilities
  * need a dedicated structure to be O(1), others become near instant simply
  * because a brute-force pass over a compact, cache-resident key arena is
@@ -53,7 +53,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 
 enum {
   KEYMAX = 32,           /* longest key: 5 + 10 + 1 + 5 = 21 bytes */
@@ -632,7 +632,7 @@ static int bloom_maybe(const uint64_t h[2]) {
 /* Store scan (records, no copy of the keys)                                  */
 /* ------------------------------------------------------------------------- */
 
-/** kvnode.inc Bucket and the head of Table (see export_probe.c). */
+/** kvasm.inc Bucket and the head of Table (see export_probe.c). */
 typedef struct {
   uint64_t ver, tags;
   KvRec *slot[SLOTS];

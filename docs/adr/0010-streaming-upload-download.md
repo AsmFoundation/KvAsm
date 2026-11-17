@@ -11,7 +11,7 @@
 
 Every call was unary: one request message, one response message. A value
 therefore had to fit one message, which capped values at
-`KVNODE_MAX_VALUE_BYTES` (1 MiB by default, 64 MiB at most), and each large
+`KVASM_MAX_VALUE_BYTES` (1 MiB by default, 64 MiB at most), and each large
 value paid for it twice:
 
 - **Put** buffered the whole request body per stream, then copied the value
@@ -27,7 +27,7 @@ APIs for streaming bytes — with tests covering network interruptions.
 ## Decision
 
 Two streaming methods, specified in
-[`kvnode.proto`](../../proto/kvnode/v1/kvnode.proto) and
+[`kvasm.proto`](../../proto/kvasm/v1/kvasm.proto) and
 [PROTOCOL.md](../PROTOCOL.md#streaming-upload-and-download):
 
 ```proto
@@ -41,7 +41,7 @@ rpc Download(DownloadRequest) returns (stream DownloadResponse);    // server st
   **reserves the final record** (`kv_store_rec_alloc`), checking the upload
   limit, the store's memory limit, and a **per-connection budget**: declared
   sizes of a connection's uploads in progress may not exceed
-  `KVNODE_CONN_BUFFER_MB`. Without the budget, a client could pin memory by
+  `KVASM_CONN_BUFFER_MB`. Without the budget, a client could pin memory by
   declaring uploads it never sends.
 - Each DATA payload is fed, as it arrives, to a **resumable message-stream
   decoder** (`kv_pb_stream_feed`): 64 bytes of state per stream, resumable
@@ -77,7 +77,7 @@ Pins live in a small open-addressing table beside the store, updated under
 the writer mutex (once per Download at each end). Reclamation consults it
 **only while a pin exists** — one compare otherwise — and a pinned record
 whose grace period ended is marked deferred; the last `kv_store_unpin`
-frees it. Its bytes stay counted against `KVNODE_MAX_MEMORY_MB` until then.
+frees it. Its bytes stay counted against `KVASM_MAX_MEMORY_MB` until then.
 Shutdown logs `pinned=` and `deferred=`, and every test phase requires both
 to be 0.
 
@@ -85,7 +85,7 @@ to be 0.
 
 Castagnoli CRC (`crc32c.asm`), always fused with the copy the bytes need
 anyway, in four implementations chosen once at startup
-(`KVNODE_CRC32C=auto|vpclmul|pclmul|sse42|table`; `auto` = the fastest the
+(`KVASM_CRC32C=auto|vpclmul|pclmul|sse42|table`; `auto` = the fastest the
 CPU has): carry-less folding on eight 128-bit lanes in four 256-bit
 registers (VPCLMULQDQ + AVX2) or in eight SSE registers (PCLMULQDQ), the
 SSE4.2 `crc32` instruction, and slicing-by-8 tables. NASM computes the
@@ -159,7 +159,7 @@ server stalled at the end of each transfer and handled dozens of
 WINDOW_UPDATEs per MiB — the window alone made downloads 1.50x (1 MiB
 values) and 1.20x (16 MiB) faster. And one connection runs every frame of
 every call through .NET's single reader and writer loop and is served by
-one server worker for life (KvNode pins a connection to its worker):
+one server worker for life (KvAsm pins a connection to its worker):
 4 connections against 1 made 1 MiB uploads 2.82x faster, downloads
 1.32-1.41x (then bound by the one server core), Gets with 64 in flight
 1.38x; against a 4-worker server one .NET client then moved 11.4 GB/s of
@@ -184,17 +184,17 @@ and by racing pending writes against the response.
 | Reference counts on every record | Every Get would pay an atomic increment and decrement on a shared line; pins cost only Downloads, and reclamation checks them only while one exists. |
 | Resume a broken Download transparently | Without record versions a resumed range may come from a different value. The client reports the failure; resuming by `offset` is the application's call. |
 | xxHash / SHA-256 instead of CRC-32C | CRC-32C is hardware-accelerated on x86-64 and Arm64, is what storage systems and gRPC ecosystems already use for transfer integrity (for example Google Cloud Storage), and detects the errors it is for. It is not a MAC; TLS protects against tampering. |
-| A separate buffering limit for uploads | Reusing `KVNODE_CONN_BUFFER_MB` keeps one knob for "what one connection may hold"; `KVNODE_MAX_UPLOAD_BYTES` must fit it (checked at startup). |
+| A separate buffering limit for uploads | Reusing `KVASM_CONN_BUFFER_MB` keeps one knob for "what one connection may hold"; `KVASM_MAX_UPLOAD_BYTES` must fit it (checked at startup). |
 
 ## Consequences
 
-- Values up to `KVNODE_MAX_UPLOAD_BYTES` (default 64 MiB, at most 2³¹ − 1).
-  Get refuses values above `KVNODE_MAX_VALUE_BYTES` with
+- Values up to `KVASM_MAX_UPLOAD_BYTES` (default 64 MiB, at most 2³¹ − 1).
+  Get refuses values above `KVASM_MAX_VALUE_BYTES` with
   `RESOURCE_EXHAUSTED` "read it with Download" instead of building a giant
   message.
 - Memory: an upload costs its value once (the record is the buffer); a
   download costs no buffer, but a pinned record replaced meanwhile stays in
-  memory until the download ends — budget `KVNODE_MAX_MEMORY_MB` for the
+  memory until the download ends — budget `KVASM_MAX_MEMORY_MB` for the
   concurrent downloads of hot, large, frequently replaced values.
 - Measured (`itest_grpc --bench-transfer`, one connection over loopback,
   the nghttp2 client doing as little as it can; medians of 7, two runs):
@@ -211,7 +211,7 @@ and by racing pending writes against the response.
   at the large sizes (the 64 MiB Download is its own buffer growth), so
   these are lower bounds for the server. Server memory: +65,540 KiB with a
   64 MiB value stored; +4 to +140 KiB during and after downloading it.
-- New startup settings `KVNODE_MAX_UPLOAD_BYTES`, `KVNODE_CRC32C`; new log
+- New startup settings `KVASM_MAX_UPLOAD_BYTES`, `KVASM_CRC32C`; new log
   fields `max_upload_bytes`, `crc32c`, `pinned`, `deferred`.
 - **For Export and Watch** ([proposal](../proposals/export-watch.md), §7
   asks for one shared streaming layer). This one already provides: a

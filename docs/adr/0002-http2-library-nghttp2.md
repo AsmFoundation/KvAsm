@@ -2,7 +2,7 @@
 
 - **Status:** superseded by
   [ADR 0008](0008-remove-nghttp2-from-the-server.md), after being amended
-  by [ADR 0007](0007-native-http2-engine.md). KvNode's own engine
+  by [ADR 0007](0007-native-http2-engine.md). KvAsm's own engine
   (`h2n.asm`) became the default, and nghttp2 was then removed from the
   server. It remains only as the independent client and HPACK oracle in the
   tests and in kvbench, built by the same pinned, verified Dockerfile step.
@@ -12,7 +12,7 @@
 
 ## Context
 
-KvNode serves gRPC, which requires HTTP/2: framing, HPACK, flow control,
+KvAsm serves gRPC, which requires HTTP/2: framing, HPACK, flow control,
 stream state machines, and a long list of protocol-abuse defenses. There
 is no production HTTP/2 implementation in assembly. Writing one would put
 the riskiest, most attack-exposed code in the least reviewable language.
@@ -29,7 +29,7 @@ Why nghttp2: it is the HTTP/2 engine of curl, Apache httpd, and many
 others. It is maintained by the author of RFC 7540's reference
 implementation. Its callback API maps cleanly onto an assembly event loop,
 and it enforces protocol rules (stream limits, flow control, header
-validation, CONTINUATION and rapid-reset flood defenses) before any KvNode
+validation, CONTINUATION and rapid-reset flood defenses) before any KvAsm
 code runs.
 
 ## Version: why 1.70.0 and not an older release
@@ -41,23 +41,23 @@ h2spec (v2.6.0, 146 cases), measured runs:
 | nghttpd (nghttp2's reference server) | 1.64.0 | 145 | 0 | 1 |
 | assembly PoC server (bodyless responses) | 1.64.0 | 138 | 4 | 4 |
 | assembly PoC server (bodyless responses) | 1.70.0 | 131 | 4 | 11 |
-| KvNode before the 405/415 body fix | 1.70.0 | 131 | 4 | 11 |
-| **KvNode** | **1.70.0** | **138** | **0** | **8** |
+| KvAsm before the 405/415 body fix | 1.70.0 | 131 | 4 | 11 |
+| **KvAsm** | **1.70.0** | **138** | **0** | **8** |
 
 How the failures break down:
 
 - **3 failures and 4 skips were server-side and are fixed.** h2spec's
   generic and stream-concurrency cases need a response with a body, and they
-  hold the stream open by sending a zero flow-control window. KvNode's 405
+  hold the stream open by sending a zero flow-control window. KvAsm's 405
   and 415 answers now carry a short text body, plus the headers RFC 9110
   asks for (`allow`, `accept`). With that, all 7 cases run and pass.
 - **7 failures come with the library version.** The same set appears
-  whenever 1.70.0 is linked, in the PoC and in KvNode, and never with
+  whenever 1.70.0 is linked, in the PoC and in KvAsm, and never with
   1.64.0.
 - **1 failure (5.1.1) is nghttp2 itself**, shared by every server above,
   nghttpd included.
 
-The seven version-dependent failures are an upstream decision, not a KvNode
+The seven version-dependent failures are an upstream decision, not a KvAsm
 defect. **nghttp2 v1.65.0 (2025-03-02) removed RFC 7540 stream priorities**
 (PR #2287) and deprecated closed-stream tracking (PR #2289). PRIORITY
 frames are no longer validated, and frames on already-closed streams are
@@ -67,11 +67,11 @@ shared by every nghttp2 release, nghttpd included.
 
 Downgrading to regain those checkmarks is **not an option**:
 **CVE-2026-27135** (high severity) is a remote assertion-failure denial of
-service reachable through `nghttp2_session_terminate_session`. KvNode calls
+service reachable through `nghttp2_session_terminate_session`. KvAsm calls
 that function for idle timeouts, and nghttp2 calls it internally on
 connection errors. Upstream fixed it in 1.68.1, and every upstream release up
 to 1.68.0 is affected. Distributions backport the fix; Debian's 1.64.0
-*package* is patched. KvNode, however, builds from pinned upstream tarballs,
+*package* is patched. KvAsm, however, builds from pinned upstream tarballs,
 so for this build an older version means a vulnerable version.
 
 The accepted failures are pinned in

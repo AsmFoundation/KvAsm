@@ -1,5 +1,5 @@
 /*
- * grpc.c — gRPC over HTTP/2 cleartext (KvNode), on nghttp2's client API.
+ * grpc.c — gRPC over HTTP/2 cleartext (KvAsm), on nghttp2's client API.
  *
  * Each connection owns one nghttp2 client session and a fixed pool of stream
  * slots (one per allowed in-flight request), so steady state allocates
@@ -11,7 +11,7 @@
  * large flow-control windows (no WINDOW_UPDATE stalls on the response path)
  * and HPACK-indexed headers after the first request.
  *
- * Streaming calls (KvNode's Upload and Download) move one whole value per
+ * Streaming calls (KvAsm's Upload and Download) move one whole value per
  * call without ever holding it: an Upload's request stream is generated
  * straight into the connection's output buffer as nghttp2 asks for each DATA
  * frame (NGHTTP2_DATA_FLAG_NO_COPY, so the bytes are copied once, not three
@@ -62,14 +62,14 @@ typedef struct {
   }
 #define REQUEST_HEADERS(path)                                                    \
   {NV(":method", "POST"), NV(":scheme", "http"), NV(":path", path),              \
-   NV(":authority", "kvnode"), NV("content-type", "application/grpc"),           \
+   NV(":authority", "kvasm"), NV("content-type", "application/grpc"),           \
    NV("te", "trailers")}
 
-static nghttp2_nv g_nv_get[] = REQUEST_HEADERS("/kvnode.v1.KvNode/Get");
-static nghttp2_nv g_nv_put[] = REQUEST_HEADERS("/kvnode.v1.KvNode/Put");
+static nghttp2_nv g_nv_get[] = REQUEST_HEADERS("/kvasm.v1.KvAsm/Get");
+static nghttp2_nv g_nv_put[] = REQUEST_HEADERS("/kvasm.v1.KvAsm/Put");
 static nghttp2_nv g_nv_ping[] = REQUEST_HEADERS("/grpc.health.v1.Health/Check");
-static nghttp2_nv g_nv_upload[] = REQUEST_HEADERS("/kvnode.v1.KvNode/Upload");
-static nghttp2_nv g_nv_download[] = REQUEST_HEADERS("/kvnode.v1.KvNode/Download");
+static nghttp2_nv g_nv_upload[] = REQUEST_HEADERS("/kvasm.v1.KvAsm/Upload");
+static nghttp2_nv g_nv_download[] = REQUEST_HEADERS("/kvasm.v1.KvAsm/Download");
 static nghttp2_session_callbacks *g_callbacks;
 
 /**

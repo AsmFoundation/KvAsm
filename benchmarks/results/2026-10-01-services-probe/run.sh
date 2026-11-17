@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# run.sh — build and run services_probe inside kvnode-dev:
+# run.sh — build and run services_probe inside kvasm-dev:
 #   MSYS_NO_PATHCONV=1 docker exec -e REV="$(git rev-parse --short HEAD)" \
-#     kvnode-dev bash /src/benchmarks/results/2026-10-01-services-probe/run.sh [CPU] [REPS]
+#     kvasm-dev bash /src/benchmarks/results/2026-10-01-services-probe/run.sh [CPU] [REPS]
 #
 # What it does, and why this way:
 #   * Assembles the store modules fresh from /src/server/src with the

@@ -1,7 +1,7 @@
 ; =============================================================================
 ; siphash.asm — SipHash-2-4 with 128-bit output (Aumasson & Bernstein).
 ;
-; Why SipHash: KvNode places keys by hash, and clients choose the keys. A
+; Why SipHash: KvAsm places keys by hash, and clients choose the keys. A
 ; keyed pseudo-random function with a per-process secret key (from
 ; getrandom) means nobody outside the process can predict which bucket a key
 ; lands in, so bucket occupancy stays random no matter what keys arrive. It is

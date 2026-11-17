@@ -1,6 +1,6 @@
-# Contributing to KvNode
+# Contributing to KvAsm
 
-Thank you for helping. KvNode is a key-value server in x86-64 assembly.
+Thank you for helping. KvAsm is a key-value server in x86-64 assembly.
 Assembly has no type system, no bounds checks and no sanitizers, so the
 project relies on two habits:
 
@@ -26,25 +26,25 @@ Everything builds in Docker. The `toolchain` stage of the
 # The whole server pipeline: assemble, unit tests, bake-off checks, the
 # end-to-end suite (h2spec, fuzzing, concurrency, streaming, shutdown,
 # snapshots). The image exists only if every suite passed.
-docker build --target runtime -t kvnode:0.2.0 .
+docker build --target runtime -t kvasm:0.3.0 .
 
 # Faster iterations in a long-lived dev container. On Windows Git Bash,
 # set MSYS_NO_PATHCONV=1 so /src paths are not rewritten.
-docker build --target toolchain -t kvnode-toolchain .
-docker run -d --name kvnode-dev -v "$PWD:/src" -w /src kvnode-toolchain sleep infinity
-docker exec kvnode-dev bash -c 'cd /src/server && make all test itest'
+docker build --target toolchain -t kvasm-toolchain .
+docker run -d --name kvasm-dev -v "$PWD:/src" -w /src kvasm-toolchain sleep infinity
+docker exec kvasm-dev bash -c 'cd /src/server && make all test itest'
 
 # The .NET client and its tests (run from client/dotnet: its global.json
 # selects the Microsoft.Testing.Platform runner).
 cd client/dotnet
-KVNODE_REQUIRE_DOCKER=1 dotnet test --solution KvNode.Client.slnx
+KVASM_REQUIRE_DOCKER=1 dotnet test --solution KvAsm.Client.slnx
 
 # The benchmark client (benchmarks/kvbench), with its unit tests.
-docker build --target kvbench -t kvnode-kvbench .
+docker build --target kvbench -t kvasm-kvbench .
 ```
 
-The .NET integration tests start the `kvnode:0.2.0` image through
-Testcontainers. `KVNODE_IMAGE` selects another tag. `KVNODE_REQUIRE_DOCKER=1`
+The .NET integration tests start the `kvasm:0.3.0` image through
+Testcontainers. `KVASM_IMAGE` selects another tag. `KVASM_REQUIRE_DOCKER=1`
 turns a missing Docker into a failure instead of skipped tests.
 
 ## The gates every change passes
@@ -65,7 +65,7 @@ review.
      needs a soak: `make itest FUZZ_ITERATIONS=100000 FUZZ_SEED=<n>`.
    - Name the seed in the pull request.
 4. **The HPACK differential test** (`test_hpack`) against nghttp2's decoder.
-5. **The .NET suite** with `KVNODE_REQUIRE_DOCKER=1`, all 380 tests or
+5. **The .NET suite** with `KVASM_REQUIRE_DOCKER=1`, all 380 tests or
    more.
 6. **No warnings anywhere.** NASM runs with `-w+error`, C with `-Werror`,
    and .NET with `TreatWarningsAsErrors`.
@@ -116,7 +116,7 @@ cookbook, with the numbers that rejected them.
     lifetime, memory ordering, cleanup on failure. It never restates the
     instruction.
   - Layouts shared with C tests are mirrored in
-    `server/tests/kvnode_abi.h`, and `test_abi` checks them.
+    `server/tests/kvasm_abi.h`, and `test_abi` checks them.
 - **C** (tests, tools, `kvbench`): C11 with `-Wall -Wextra -Werror`.
 - **C#** (`client/dotnet`):
   - XML documentation on every member: each parameter, the return value
@@ -140,8 +140,8 @@ cookbook, with the numbers that rejected them.
   ([functions-plan.md](docs/proposals/functions-plan.md)) is the single plan:
   - new functions are merged into it, not proposed in a parallel document;
   - its evidence stays in benchmark READMEs.
-- **The wire protocol** is `kvnode.v1`
-  ([proto](proto/kvnode/v1/kvnode.proto), [docs/PROTOCOL.md](docs/PROTOCOL.md)).
+- **The wire protocol** is `kvasm.v1`
+  ([proto](proto/kvasm/v1/kvasm.proto), [docs/PROTOCOL.md](docs/PROTOCOL.md)).
   It only grows in backward-compatible ways: new fields, new RPCs. Clients
   in other languages must pass the conformance vectors that PROTOCOL.md
   names.
@@ -160,7 +160,7 @@ cookbook, with the numbers that rejected them.
   licensed under the [Apache License 2.0](LICENSE), as its section 5
   provides. There is no separate contributor agreement.
 
-AI-assisted contributions are welcome under the same gates. KvNode itself
+AI-assisted contributions are welcome under the same gates. KvAsm itself
 was built that way ([docs/paper](docs/paper/README.md)). The gates do not
 care who wrote the code, only whether it survives them.
 

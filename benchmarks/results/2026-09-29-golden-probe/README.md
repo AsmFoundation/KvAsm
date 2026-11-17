@@ -28,7 +28,7 @@ standard."
   100-byte values. The table has 2,097,152 buckets at 79.5% slot load.
 - **Isolation.**
   - [`output.txt`](output.txt) is a certified attempt. A host-side wrapper
-    waited until `docker exec kvnode-dev ps` showed nothing running on
+    waited until `docker exec kvasm-dev ps` showed nothing running on
     three polls 5 s apart, then ran `run.sh`. `docker events` for the run's
     window (09:54:30-09:56:29 UTC) shows only its own exec.
   - The Windows host had 2.5 of 32 CPUs busy just before.

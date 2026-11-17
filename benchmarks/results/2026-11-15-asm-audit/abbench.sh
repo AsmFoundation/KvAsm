@@ -3,7 +3,7 @@
 # abbench.sh — compare bench_h2 builds of several server variants on a host
 # that other work shares.
 #
-# Usage (inside kvnode-dev): abbench.sh MODE CPU ROUNDS VARIANT [VARIANT..]
+# Usage (inside kvasm-dev): abbench.sh MODE CPU ROUNDS VARIANT [VARIANT..]
 #   MODE    get | ping (bench_h2's workload)   CPU  the vCPU to pin to
 #   ROUNDS  interleaved rounds (each round runs every variant once, in order)
 #

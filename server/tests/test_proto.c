@@ -21,7 +21,7 @@
  *     decoder's — which proves both the rules and split invariance; handler
  *     abort codes; and pieces that end at a guard page.
  */
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 #include "test_common.h"
 
 typedef struct {

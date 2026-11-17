@@ -1,5 +1,5 @@
 ; =============================================================================
-; store.asm — the KvNode key-value store: records, writer mutex, QSBR memory
+; store.asm — the KvAsm key-value store: records, writer mutex, QSBR memory
 ; reclamation and the public API around the cuckoo index (cuckoo.asm).
 ;
 ; Concurrency model ("owner-less MemC3"):
@@ -66,7 +66,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 
 %define RECLAIM_BATCH       8           ; records freed per write (amortized drain)
 %define RECLAIM_BATCH_FORCE 4096        ; per explicit kv_store_reclaim call
@@ -511,7 +511,7 @@ kv_set_hash_mode:
 ; =============================================================================
 ; kv_hash_best_mode — the fastest key hash this CPU runs.
 ; @returns eax = KV_HASH_AES when kv_aes_available(), else KV_HASH_SIPHASH.
-; @remarks What KVNODE_HASH=auto selects (main.asm). Measured per 16-byte key:
+; @remarks What KVASM_HASH=auto selects (main.asm). Measured per 16-byte key:
 ;          7.6 core cycles for AES when hashes overlap against 50.0 for
 ;          SipHash-2-4 (benchmarks/results/2026-11-15-asm-audit).
 ; =============================================================================
@@ -1206,7 +1206,7 @@ store_reclaim_step:
 ; @remarks Why: a streamed value arrives chunk by chunk; writing each chunk
 ;          straight into its final record copies it once, where kv_store_put
 ;          would need the whole value contiguous first. The bytes count
-;          against KVNODE_MAX_MEMORY_MB from this call on — so a client
+;          against KVASM_MAX_MEMORY_MB from this call on — so a client
 ;          cannot declare more than the store may hold and then hold it — and
 ;          the record belongs to the caller until kv_store_publish succeeds:
 ;          every other outcome MUST end in kv_store_rec_free, or the memory

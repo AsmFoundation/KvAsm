@@ -28,7 +28,7 @@
 ; AES-NI is not baseline x86-64, so nothing here may run unless
 ; kv_aes_available() said yes: store.asm builds a table's key block and
 ; selects this hash only then, and SipHash-2-4 stays the fallback
-; (KVNODE_HASH, config.asm). Like the SSE2 tag scan it uses XMM registers in
+; (KVASM_HASH, config.asm). Like the SSE2 tag scan it uses XMM registers in
 ; legacy (non-VEX) encoding: no AVX state, no frequency license, no
 ; VZEROUPPER concerns.
 ; =============================================================================
@@ -36,7 +36,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 
 section .text
 

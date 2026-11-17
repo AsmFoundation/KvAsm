@@ -1,4 +1,4 @@
-######## B = /tmp/kvnode-rc512 vs A = /tmp/kvnode-rc256
+######## B = /tmp/kvasm-rc512 vs A = /tmp/kvasm-rc256
 block 1 upload:1048576:4:1         A    10355 MB/s  0.101 ns/B p50      375 | B     9615 MB/s  0.107 ns/B p50      391 | B/A 0.929 (slot0=A)
 block 1 upload:65536:8:4           A     7056 MB/s  0.148 ns/B p50      247 | B     7716 MB/s  0.135 ns/B p50      272 | B/A 1.094 (slot0=A)
 block 1 upload:16777216:2:1        A     8330 MB/s  0.117 ns/B p50     3686 | B     7527 MB/s  0.120 ns/B p50     4080 | B/A 0.904 (slot0=A)
@@ -55,7 +55,7 @@ block 4 get:100:64:16              A     2379 kGET/s 439.348 ns/GET p50      375
    client CPUs busy           A      3.452  B      3.445  B/A geomean 0.999 [0.985-1.017]
    p50 us per transfer        A    356.350  B    352.255  B/A geomean 1.000 [0.988-1.012]  B better in 2/4, sign p=1.000
    p99 us per transfer        A   1146.880  B   1163.265  B/A geomean 1.010 [1.000-1.028]  B better in 0/4, sign p=0.125
-######## B = /tmp/kvnode-rc1024 vs A = /tmp/kvnode-rc256
+######## B = /tmp/kvasm-rc1024 vs A = /tmp/kvasm-rc256
 block 1 upload:1048576:4:1         A     8341 MB/s  0.123 ns/B p50      436 | B     7012 MB/s  0.138 ns/B p50      522 | B/A 0.841 (slot0=A)
 block 1 upload:65536:8:4           A     7473 MB/s  0.140 ns/B p50      220 | B     8120 MB/s  0.129 ns/B p50      268 | B/A 1.087 (slot0=A)
 block 1 upload:16777216:2:1        A     8162 MB/s  0.118 ns/B p50     3752 | B     7455 MB/s  0.121 ns/B p50     4178 | B/A 0.913 (slot0=A)

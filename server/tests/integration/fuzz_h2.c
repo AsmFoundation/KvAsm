@@ -1,6 +1,6 @@
 /*
- * fuzz_h2.c — black-box fuzzing of a running kvnode's HTTP/2 input path
- * (h2n.asm and hpack.asm, KvNode's own engine: ADR 0007/0008).
+ * fuzz_h2.c — black-box fuzzing of a running kvasm's HTTP/2 input path
+ * (h2n.asm and hpack.asm, KvAsm's own engine: ADR 0007/0008).
  *
  * Usage: fuzz_h2 HOST PORT ITERATIONS SEED PID
  *        fuzz_h2 --limits HOST PORT      (see limits_matrix; needs a server
@@ -172,7 +172,7 @@ static void hstr(Buf *b, const char *s) {
  */
 static void get_block(Buf *b) {
   static const struct { const char *n, *v; } f[] = {
-      {":method", "POST"}, {":scheme", "http"}, {":path", "/kvnode.v1.KvNode/Get"},
+      {":method", "POST"}, {":scheme", "http"}, {":path", "/kvasm.v1.KvAsm/Get"},
       {":authority", "fuzz"}, {"content-type", "application/grpc"}, {"te", "trailers"}};
   for (size_t i = 0; i < sizeof f / sizeof f[0]; i++) {
     uint8_t z = 0;
@@ -206,7 +206,7 @@ static void random_bytes(Buf *b, uint64_t *s, size_t n);
  * A gRPC call's header block for any path: literals without indexing only,
  * like get_block, so blocks stay independent of each other.
  * @param b     destination
- * @param path  :path (e.g. "/kvnode.v1.KvNode/Upload")
+ * @param path  :path (e.g. "/kvasm.v1.KvAsm/Upload")
  */
 static void call_block(Buf *b, const char *path) {
   const struct { const char *n, *v; } f[] = {
@@ -361,7 +361,7 @@ static void fuzz_setup(void) {
   preface(&b);
   for (int i = 0; i < 4; i++) {
     Buf blk = {0}, body = {0}, m = {0}, val = {0};
-    call_block(&blk, "/kvnode.v1.KvNode/Upload");
+    call_block(&blk, "/kvasm.v1.KvAsm/Upload");
     frame(&b, 1, 0x4, 1 + 2 * (uint32_t)i, blk.p, (uint32_t)blk.n);
     char key[32];
     snprintf(key, sizeof key, "fuzz-dl-%d", i);
@@ -569,7 +569,7 @@ static void build_case(Buf *b, uint64_t *s, int kind) {
     int nstreams = 1 + (int)(rng_next(s) % MAXS), cut[MAXS];
     for (int i = 0; i < nstreams; i++) {
       Buf blk = {0};
-      call_block(&blk, "/kvnode.v1.KvNode/Upload");
+      call_block(&blk, "/kvasm.v1.KvAsm/Upload");
       frame(b, 1, 0x4, 1 + 2 * (uint32_t)i, blk.p, (uint32_t)blk.n);
       free(blk.p);
       char key[32];
@@ -632,7 +632,7 @@ static void build_case(Buf *b, uint64_t *s, int kind) {
     int nstreams = 1 + (int)(rng_next(s) % 4);
     for (int i = 0; i < nstreams; i++) {
       Buf blk = {0}, msg = {0};
-      call_block(&blk, "/kvnode.v1.KvNode/Download");
+      call_block(&blk, "/kvasm.v1.KvAsm/Download");
       frame(b, 1, 0x4, 1 + 2 * (uint32_t)i, blk.p, (uint32_t)blk.n);
       download_msg(&msg, s);
       frame(b, 0, 0x1, 1 + 2 * (uint32_t)i, msg.p, (uint32_t)msg.n);
@@ -1068,8 +1068,8 @@ static long request_matrix(void) {
   const size_t vl = sizeof val - 1;
   long talks = 0;
   Buf blk_get = {0}, blk_put = {0}, msg_get = {0}, msg_put = {0};
-  matrix_block(&blk_get, "/kvnode.v1.KvNode/Get", -1);
-  matrix_block(&blk_put, "/kvnode.v1.KvNode/Put", -1);
+  matrix_block(&blk_get, "/kvasm.v1.KvAsm/Get", -1);
+  matrix_block(&blk_put, "/kvasm.v1.KvAsm/Put", -1);
   kv_message(&msg_get, key, NULL, 0, 0);
   kv_message(&msg_put, key, val, vl, 1);
 
@@ -1167,7 +1167,7 @@ static long request_matrix(void) {
 
   { /* content-length that matches the body */
     Buf b = {0}, blk = {0};
-    matrix_block(&blk, "/kvnode.v1.KvNode/Get", (long)msg_get.n);
+    matrix_block(&blk, "/kvasm.v1.KvAsm/Get", (long)msg_get.n);
     preface(&b);
     frame(&b, 1, 0x4, 1, blk.p, (uint32_t)blk.n);
     frame(&b, 0, 0x1, 1, msg_get.p, (uint32_t)msg_get.n);
@@ -1184,7 +1184,7 @@ static long request_matrix(void) {
     static const char what[] = "content-length shorter than the body";
     MatrixConn c;
     Buf b = {0}, blk = {0};
-    matrix_block(&blk, "/kvnode.v1.KvNode/Get", (long)msg_get.n - 1);
+    matrix_block(&blk, "/kvasm.v1.KvAsm/Get", (long)msg_get.n - 1);
     matrix_open(&c);
     preface(&b);
     frame(&b, 1, 0x4, 1, blk.p, (uint32_t)blk.n);
@@ -1298,7 +1298,7 @@ static long request_matrix(void) {
                              (uint8_t)(crc >> 24)};
     MatrixConn c;
     Buf b = {0}, blk = {0}, m = {0}, body = {0}, get = {0};
-    matrix_block(&blk, "/kvnode.v1.KvNode/Upload", -1);
+    matrix_block(&blk, "/kvasm.v1.KvAsm/Upload", -1);
     put(&m, "\x0A", 1);
     vput(&m, strlen(ukey));
     put(&m, ukey, strlen(ukey));
@@ -1390,7 +1390,7 @@ static long request_matrix(void) {
 
 /**
  * --limits: the request-size limit at the frame boundary. Needs a server
- * started with KVNODE_MAX_KEY_BYTES=16 and KVNODE_MAX_VALUE_BYTES=64, so
+ * started with KVASM_MAX_KEY_BYTES=16 and KVASM_MAX_VALUE_BYTES=64, so
  * that the largest message it accepts is 16 + 64 + 64 = 144 bytes (149 with
  * the gRPC prefix) — small enough for a single DATA frame to exceed it.
  * Three Puts on one connection, each HEADERS + one DATA frame, in one write:
@@ -1415,7 +1415,7 @@ static int limits_matrix(void) {
   memset(value, 'v', sizeof value);
   MatrixConn c;
   Buf b = {0}, blk = {0};
-  matrix_block(&blk, "/kvnode.v1.KvNode/Put", -1);
+  matrix_block(&blk, "/kvasm.v1.KvAsm/Put", -1);
   matrix_open(&c);
   preface(&b);
   for (uint32_t i = 0; i < 3; i++) {

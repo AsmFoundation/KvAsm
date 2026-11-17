@@ -1,12 +1,12 @@
-# KvNode
+# KvAsm
 
 **FOSAS — Free Open Source Assembly Software.**
 
-[![CI](https://github.com/Nucs/KvNode/actions/workflows/ci.yml/badge.svg)](https://github.com/Nucs/KvNode/actions/workflows/ci.yml)
+[![CI](https://github.com/AsmFoundation/KvAsm/actions/workflows/ci.yml/badge.svg)](https://github.com/AsmFoundation/KvAsm/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![NuGet: KvNode.Client](https://img.shields.io/nuget/v/KvNode.Client.svg?label=KvNode.Client)](https://www.nuget.org/packages/KvNode.Client)
+[![NuGet: KvAsm.Client](https://img.shields.io/nuget/v/KvAsm.Client.svg?label=KvAsm.Client)](https://www.nuget.org/packages/KvAsm.Client)
 
-KvNode is a gRPC key-value server written in **x86-64 assembly**. It ships
+KvAsm is a gRPC key-value server written in **x86-64 assembly**. It ships
 as a **2 MB `FROM scratch` container** (0.5 MB to download): one 1.1 MB
 static binary, with glibc the only library linked in, plus its license
 texts. To our knowledge
@@ -25,10 +25,9 @@ and what is deliberately *not* claimed.
   - 1.26× Redis on one core.
   - In that comparison (0.2.0) it was behind them on writes and on 16 KiB
     values (see [Performance](#performance)).
-  - Since then (unreleased), writes are about 3× faster, and 16 KiB values
-    about 1.8×. On `main`, writes are estimated ahead of all five stores:
-    1.9× Garnet to 4.6× Memcached on 100% SET, from a paired control
-    measurement.
+  - 0.3.0 makes writes about 3× faster and 16 KiB values about 1.8×. Its
+    writes are estimated ahead of all five stores: 1.9× Garnet to 4.6×
+    Memcached on 100% SET, from a paired control measurement.
 - **Assembly data structures.** The store is a bucketized cuckoo table of
   64-byte seqlocked buckets. A measured bake-off chose it over chaining and
   a branchless binary trie, both also written in assembly
@@ -47,7 +46,7 @@ and what is deliberately *not* claimed.
   4 cores: 1.76M → 8.84M GET/s.
   - Writes share one lock, taken once per batch of up to 64 writes
     ([ADR 0011](docs/adr/0011-batched-writes-per-worker-reclamation.md),
-    unreleased).
+    since 0.3.0).
   - Above 4 cores the benchmark client saturates first.
 - **Thread-safe by construction.** Reads are lock-free (seqlocked buckets),
   writes are serialized, records are immutable, and reclamation is QSBR. A
@@ -88,7 +87,7 @@ and what is deliberately *not* claimed.
 
 ## What it is not (yet)
 
-KvNode is young (v0.2.0) and deliberately small. Before you deploy it, know
+KvAsm is young (v0.3.0) and deliberately small. Before you deploy it, know
 what it does not do:
 
 - **No persistence.** A snapshot file loads at startup, but the server
@@ -111,26 +110,26 @@ plan's scope and has no design in the repository yet.
 Run the published image (linux/amd64):
 
 ```sh
-docker run --rm -p 50051:50051 ghcr.io/nucs/kvnode:0.2.0
+docker run --rm -p 50051:50051 ghcr.io/asmfoundation/kvasm:0.3.0
 ```
 
 Or build it from source. The build runs every server test suite, and the
 image exists only if all of them pass:
 
 ```sh
-docker build --target runtime -t kvnode:0.2.0 .
-docker run --rm -p 50051:50051 kvnode:0.2.0
+docker build --target runtime -t kvasm:0.3.0 .
+docker run --rm -p 50051:50051 kvasm:0.3.0
 ```
 
-Talk to it from .NET 8 or 10 (`dotnet add package KvNode.Client`), or from
+Talk to it from .NET 8 or 10 (`dotnet add package KvAsm.Client`), or from
 any language with gRPC tooling, using
-[`proto/kvnode/v1/kvnode.proto`](proto/kvnode/v1/kvnode.proto) and
+[`proto/kvasm/v1/kvasm.proto`](proto/kvasm/v1/kvasm.proto) and
 [docs/PROTOCOL.md](docs/PROTOCOL.md):
 
 ```csharp
-using KvNode.Client;
+using KvAsm.Client;
 
-using var kv = new KvNodeClient(new Uri("http://localhost:50051"));
+using var kv = new KvAsmClient(new Uri("http://localhost:50051"));
 bool created = await kv.PutAsync("user:42", "Ada");   // true: new key
 string? name = await kv.GetStringAsync("user:42");    // "Ada"
 bool deleted = await kv.DeleteAsync("user:42");       // true
@@ -148,7 +147,7 @@ Load data at startup from a snapshot written by
 
 ```sh
 docker run --rm -p 50051:50051 -v "$PWD/data:/data:ro" \
-  -e KVNODE_SNAPSHOT=/data/seed.kvs -e KVNODE_CAPACITY=5000000 ghcr.io/nucs/kvnode:0.2.0
+  -e KVASM_SNAPSHOT=/data/seed.kvs -e KVASM_CAPACITY=5000000 ghcr.io/asmfoundation/kvasm:0.3.0
 ```
 
 Every setting, the exit codes, health probes, memory sizing and security
@@ -171,7 +170,7 @@ notes are in [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ## Performance
 
-KvNode was compared with Redis, Valkey, Dragonfly, Garnet and Memcached,
+KvAsm was compared with Redis, Valkey, Dragonfly, Garnet and Memcached,
 using one client, pinned versions, paired statistics, and host-noise
 monitoring ([benchmarks/](benchmarks/README.md)).
 
@@ -181,23 +180,23 @@ monitoring ([benchmarks/](benchmarks/README.md)).
   requests in flight.
 - **Machine:** i9-13900K, Docker Desktop on WSL2, loopback.
 
-**4 cores** (S1: ten runs per server on a quiet host; KvNode was ahead of
+**4 cores** (S1: ten runs per server on a quiet host; KvAsm was ahead of
 every server in all ten paired blocks):
 
-| 4 cores | KvNode | Redis | Valkey | Dragonfly | Garnet | Memcached |
+| 4 cores | KvAsm | Redis | Valkey | Dragonfly | Garnet | Memcached |
 |---|---|---|---|---|---|---|
 | GET/s | **8.84 M** | 2.88 M | 3.20 M | 2.40 M | 3.86 M | 3.01 M |
-| KvNode ÷ X | — | **3.07×** | **2.76×** | **3.68×** | **2.29×** | **2.94×** |
+| KvAsm ÷ X | — | **3.07×** | **2.76×** | **3.68×** | **2.29×** | **2.94×** |
 
 **One core** (N1, 6 paired blocks, all agreeing):
 
-| 1 core | KvNode | Redis | Valkey |
+| 1 core | KvAsm | Redis | Valkey |
 |---|---|---|---|
 | GET/s | **1.76 M** | 1.40 M | 1.42 M |
-| KvNode ÷ X | — | **1.26×** | **1.24×** |
+| KvAsm ÷ X | — | **1.26×** | **1.24×** |
 | server CPU per GET | **576 ns** | 722 ns | 710 ns |
 
-- **Reads, latency, concurrency:** KvNode is ahead of every server
+- **Reads, latency, concurrency:** KvAsm is ahead of every server
   - on 90%-GET mixes (7.66M ops/s at 4 cores, 1.9–3.2×);
   - without pipelining (815k requests/s, 1.3–2.1×);
   - with 1 KiB values (5.59M, 1.8–3.7×);
@@ -210,19 +209,20 @@ every server in all ten paired blocks):
 - **Where it is behind:**
   - writes, as of 0.2.0: 2.23M SETs/s at 4 cores through the single writer
     lock (0.87× Redis, 0.60× Garnet).
-    - Since then, [ADR 0011](docs/adr/0011-batched-writes-per-worker-reclamation.md)
-      (unreleased) batches writes and moved their cleanup out of the lock.
+    - In 0.3.0, [ADR 0011](docs/adr/0011-batched-writes-per-worker-reclamation.md)
+      batches writes and moves their cleanup out of the lock.
     - Against 0.2.0, each server alone at 4 workers: 2.61× SET/s and
       1.77× on a 50/50 mix. The server's CPU per SET fell from 3,071 to
       1,254 ns.
     - The comparison with the other stores predates it. A first re-run ran
       on a loaded host and is only indicative
       ([W1](benchmarks/results/2026-11-15-writes-w1/README.md)).
-    - **On `main`, estimated ahead of all five**
-      ([paired suite](benchmarks/results/2026-11-15-kvnode-head/README.md)).
-      - The standard suite re-ran for KvNode next to the very image measured
+    - **In 0.3.0, estimated ahead of all five**
+      ([paired suite](benchmarks/results/2026-11-15-kvasm-head/README.md)).
+      - The standard suite re-ran for KvAsm next to the very image measured
         on 2026-09-27, in the same blocks. Writes came out 3.14× (100% SET)
-        and 1.88× (50/50).
+        and 1.88× (50/50). It measured 0.3.0's server code at `850cfd9`,
+        before the rename, which changed names and constants but no code.
       - Carried over through the 2026-09-27 pairings:
         - 100% SET: 2.72× Redis, 3.95× Valkey, 2.83× Dragonfly, 1.87×
           Garnet and 4.56× Memcached;
@@ -231,8 +231,8 @@ every server in all ten paired blocks):
         is the same on both days' hosts.
   - 16 KiB values: 481k GET/s, half of Garnet's and Memcached's, and 30%
     below the old nghttp2 build.
-    - The cause is known and fixed since (unreleased): a reply longer
-      than one HTTP/2 frame was buffered and copied twice
+    - The cause is known and fixed in 0.3.0: a reply longer than one
+      HTTP/2 frame was buffered and copied twice
       ([ADR 0007](docs/adr/0007-native-http2-engine.md), amendment).
     - Against the version before the fix, one worker:
       1.84× the GETs per second at 0.54× the server CPU per GET (paired
@@ -243,7 +243,7 @@ every server in all ten paired blocks):
       - Estimated 0.90× Garnet and 0.88× Memcached, up from 0.50× and 0.48×.
       - Still slightly behind both.
 - **At 8 cores the benchmark client is the limit:** kvbench's gRPC client
-  tops out near 9.3M requests/s, so KvNode's 8-core numbers measure the
+  tops out near 9.3M requests/s, so KvAsm's 8-core numbers measure the
   client.
   - A bigger client on this machine was 12% slower, because its physical
     cores are all in use.
@@ -251,7 +251,7 @@ every server in all ten paired blocks):
     host. Measuring 8 cores properly needs the client on a second machine
     ([why](benchmarks/results/2026-09-28-client-ceiling/README.md)).
 - **Caveat:** the 1-to-8-core scaling experiment ran while another program
-  kept half the host busy. KvNode still led every server at every core
+  kept half the host busy. KvAsm still led every server at every core
   budget there, except that it was not clearly ahead of Garnet at 8 cores.
   The report adjusts every comparison for outside load.
 
@@ -280,7 +280,7 @@ session on nghttp2 (2026-09-26) measured 2.93M GET/s at 4 cores, against
 - **Event-driven, never spinning:** an idle worker sleeps in `epoll_wait`.
   4 workers holding 1,000 idle connections used 10 ms of CPU in 10 s.
 - **With a busy-polling client** that cost disappears, and one core served
-  **2.62M GET/s** (382 ns per GET): 177 ns kernel, 205 ns KvNode. The store
+  **2.62M GET/s** (382 ns per GET): 177 ns kernel, 205 ns KvAsm. The store
   lookup is the biggest part of that, mostly memory stalls. On a quieter
   host the same measurement gave 3.71M GET/s, 269 ns per GET
   ([results](benchmarks/results/2026-09-27-store-lookup/README.md)).
@@ -299,13 +299,13 @@ Store alone, single thread, 4M keys: 279 ns per dependent lookup, p99.9
 
 | Path | Contents |
 |---|---|
-| [`proto/kvnode/v1/kvnode.proto`](proto/kvnode/v1/kvnode.proto) | the gRPC contract |
+| [`proto/kvasm/v1/kvasm.proto`](proto/kvasm/v1/kvasm.proto) | the gRPC contract |
 | [`server/`](server) | NASM sources, native unit tests, bake-off, end-to-end suite (`make all test itest bench`) |
 | [`client/dotnet/`](client/dotnet) | .NET 8/10 client and snapshot writer, with unit and container tests |
 | [`benchmarks/`](benchmarks/README.md) | comparison with other key-value stores: the kvbench client, the suite, methodology, committed results |
 | [`docs/`](docs) | [architecture](docs/ARCHITECTURE.md), [protocol and client contract](docs/PROTOCOL.md), [operations](docs/OPERATIONS.md), [decision records](docs/adr), [claims and their evidence](docs/CLAIMS.md) |
 | [`docs/proposals/`](docs/proposals/functions-plan.md) | designs measured but not implemented: the functions plan (58 functions, Export/Watch and key indexes among them) and store speedups |
-| [`docs/paper/`](docs/paper/README.md) | case-study paper on how an LLM coding agent built KvNode in assembly (Word document, Markdown source, figures, and the scripts behind its numbers) |
+| [`docs/paper/`](docs/paper/README.md) | case-study paper on how an LLM coding agent built KvAsm in assembly (Word document, Markdown source, figures, and the scripts behind its numbers) |
 | [`Dockerfile`](Dockerfile) | toolchain (pinned and verified nghttp2 for the test clients, and h2spec) → build + all tests → scratch runtime |
 | [`.github/`](.github) | CI (every test suite on every push and pull request) and the release workflow (GHCR image, NuGet package, GitHub release) |
 | [`CHANGELOG.md`](CHANGELOG.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), [`SECURITY.md`](SECURITY.md), [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | release notes; how to build, test, measure and propose changes; how to report a vulnerability; community rules |
@@ -314,10 +314,10 @@ Store alone, single thread, 4M keys: 279 ns per dependent lookup, p99.9
 ## Development
 
 ```sh
-docker build --target toolchain -t kvnode-toolchain .
-docker run --rm -v "$PWD:/src" -w /src/server kvnode-toolchain make all test itest
-docker build --target runtime -t kvnode:0.2.0 .           # the image the .NET tests start
-cd client/dotnet && KVNODE_REQUIRE_DOCKER=1 dotnet test --solution KvNode.Client.slnx
+docker build --target toolchain -t kvasm-toolchain .
+docker run --rm -v "$PWD:/src" -w /src/server kvasm-toolchain make all test itest
+docker build --target runtime -t kvasm:0.3.0 .            # the image the .NET tests start
+cd client/dotnet && KVASM_REQUIRE_DOCKER=1 dotnet test --solution KvAsm.Client.slnx
 ```
 
 Run `dotnet test` from `client/dotnet`. Its `global.json` selects the
@@ -328,12 +328,15 @@ performance claims.
 
 ## Status
 
-Version 0.2.0, the first public release ([CHANGELOG](CHANGELOG.md)).
+Version 0.3.0 ([CHANGELOG](CHANGELOG.md)), published by the
+[AsmFoundation](https://github.com/AsmFoundation).
 
 - **Clients:** .NET is done. Two more languages are planned. They must
   implement [docs/PROTOCOL.md](docs/PROTOCOL.md), including long-key
   compaction and the snapshot conformance vector.
-- **Unreleased:** batched writes with per-worker reclamation (ADR 0011).
+- **New in 0.3.0:** batched writes with per-worker reclamation (ADR 0011),
+  a GET request path 43% shorter in process, AES-NI key hashing, and
+  replies of any length framed in place.
 - **Next:** the store speedups (8-lane AVX2 hashing; flat combining, if the
   writer lock becomes the limit again) and the functions plan, phase by
   phase, as
@@ -347,7 +350,7 @@ Version 0.2.0, the first public release ([CHANGELOG](CHANGELOG.md)).
   paired measurement, not an argument.
 - **Security:** report vulnerabilities privately, as
   [SECURITY.md](SECURITY.md) describes. Do not open a public issue.
-- **License:** KvNode is licensed under the
+- **License:** KvAsm is licensed under the
   [Apache License 2.0](LICENSE). The server binary statically links glibc
   (LGPL-2.1-or-later) and libgcc.
   [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) explains what that

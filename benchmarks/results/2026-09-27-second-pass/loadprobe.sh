@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside kvnode-dev: one worker pinned to vCPU 2 under E1's GET load,
+# Runs inside kvasm-dev: one worker pinned to vCPU 2 under E1's GET load,
 # then samples, over a 5 s window inside the measured phase:
 #   * the server's and the client's voluntary context switches (summed over
 #     threads): each one is a thread that blocked (epoll_wait) and had to be
@@ -7,16 +7,16 @@
 #   * requests completed (kvbench's ops/s x window).
 # Signals /tmp/lp.ready when the window starts (an external perf stat can
 # attach to /tmp/lp.pid then) and writes /tmp/lp.result at the end.
-# Env: SRV (binary, default build/kvnode), THREADS (16), CONNS (64),
+# Env: SRV (binary, default build/kvasm), THREADS (16), CONNS (64),
 #      BUSY (1 = busy-polling client).
 set -u
-SRV=${SRV:-/src/server/build/kvnode}
+SRV=${SRV:-/src/server/build/kvasm}
 KVB=/src/benchmarks/kvbench/build/kvbench
 PORT=50231
 THREADS=${THREADS:-16}
 CONNS=${CONNS:-64}
 rm -f /tmp/lp.*
-KVNODE_PORT=$PORT KVNODE_WORKERS=1 KVNODE_CAPACITY=1250000 taskset -c 2 "$SRV" 2>/tmp/lp.srv.log &
+KVASM_PORT=$PORT KVASM_WORKERS=1 KVASM_CAPACITY=1250000 taskset -c 2 "$SRV" 2>/tmp/lp.srv.log &
 SPID=$!
 for _ in $(seq 200); do grep -q 'msg="listening"' /tmp/lp.srv.log && break; sleep 0.05; done
 echo "$SPID" > /tmp/lp.pid

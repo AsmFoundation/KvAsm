@@ -20,7 +20,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 %include "log.inc"                      ; LOG_CAP, LogBuf, LOGBUF_BYTES
 
 %define CLOCK_REALTIME  0

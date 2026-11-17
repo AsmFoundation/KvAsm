@@ -4,8 +4,8 @@
  * through gRPC). Keeping the generator in one place guarantees writer and
  * verifier can never drift apart.
  */
-#ifndef KVNODE_SNAPGEN_H
-#define KVNODE_SNAPGEN_H
+#ifndef KVASM_SNAPGEN_H
+#define KVASM_SNAPGEN_H
 
 #include <inttypes.h>
 #include <stddef.h>

@@ -1,11 +1,11 @@
 # Native HTTP/2 engine, first version — N1-N3, 2026-09-26
 
-The first measurement of KvNode's own HTTP/2 engine (`server/src/h2n.asm`,
+The first measurement of KvAsm's own HTTP/2 engine (`server/src/h2n.asm`,
 [ADR 0007](../../../docs/adr/0007-native-http2-engine.md)) against nghttp2,
 Redis and Valkey. The full report is in [REPORT.md](REPORT.md); the raw
 records are in `raw.jsonl`.
 
-**What was measured.** The `kvnode:0.1.0` image built from the working tree
+**What was measured.** The `kvasm:0.1.0` image built from the working tree
 before h2n.asm was committed. The engine was complete (h2spec 146/146, the
 full itest suite), but the header-block cache, O(1) stream-map removal,
 zero-copy request bodies and the table prefault were not in it yet. Those
@@ -29,7 +29,7 @@ the within-block ratios valid, but see the caveat below.
 | N3, no-op floor | 1.68M/s. 2.00× nghttp2, **0.82× Redis** (p = 0.031), 0.89× Valkey (not significant) |
 
 **Caveat on N1's ratio against Redis and Valkey.** With the host's memory
-system saturated, every cache miss costs more. KvNode overlaps its misses
+system saturated, every cache miss costs more. KvAsm overlaps its misses
 (batched, prefetched GETs), while Redis and Valkey take theirs one after
-another, so heavy outside load favors KvNode's GET ratio. The quieter runs
+another, so heavy outside load favors KvAsm's GET ratio. The quieter runs
 that followed are the ones to quote.

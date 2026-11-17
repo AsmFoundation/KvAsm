@@ -14,7 +14,7 @@
 ; the copy it rides on.
 ;
 ; Four implementations with identical results, chosen once at startup
-; (kv_crc32c_set_mode, from KVNODE_CRC32C; `auto` takes the first the CPU
+; (kv_crc32c_set_mode, from KVASM_CRC32C; `auto` takes the first the CPU
 ; has, kv_crc32c_best_mode):
 ;   vpclmul  carry-less folding on four 256-bit registers (eight independent
 ;            128-bit lanes) with VPCLMULQDQ + AVX2 (Ice Lake / Zen 3 and
@@ -67,7 +67,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 
 %define CRC32C_POLY     0x82F63B78      ; reflected Castagnoli polynomial
 %define CRC32C_NORMAL   0x1EDC6F41      ; the same polynomial, normal bit order (x^32 implicit)
@@ -1038,7 +1038,7 @@ kv_crc32c_best_mode:
 ;          when the mode's instructions are not available on this CPU (mode
 ;          unchanged in both error cases).
 ; @remarks Not synchronized: call it before any thread computes checksums
-;          (main does, from KVNODE_CRC32C). Refusing an unsupported mode is
+;          (main does, from KVASM_CRC32C). Refusing an unsupported mode is
 ;          what keeps a forced setting from crashing a worker with #UD at
 ;          the first upload: main turns -ENODEV into a startup error.
 ; =============================================================================

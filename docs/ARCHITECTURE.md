@@ -1,7 +1,7 @@
-# KvNode architecture
+# KvAsm architecture
 
-KvNode is a gRPC key-value server written in x86-64 assembly (NASM). It
-links one C library, glibc. HTTP/2 is KvNode's own engine, `h2n.asm` with
+KvAsm is a gRPC key-value server written in x86-64 assembly (NASM). It
+links one C library, glibc. HTTP/2 is KvAsm's own engine, `h2n.asm` with
 the HPACK decoder `hpack.asm` (ADR 0007). nghttp2, the library it replaced,
 was removed from the server (ADR 0008) and survives only as the independent
 client the tests and benchmarks check the server with. This page shows how
@@ -11,7 +11,7 @@ the parts fit together. The ADRs record why each choice was made.
 flowchart LR
     C[gRPC clients<br/>.NET, others] -- "h2c :50051" --> K{{"kernel<br/>SO_REUSEPORT"}}
     K --> W1 & W2 & Wn
-    subgraph P["kvnode process (static-PIE, FROM scratch)"]
+    subgraph P["kvasm process (static-PIE, FROM scratch)"]
         M["main thread<br/>config → port probe → store → snapshot<br/>→ workers → sigwaitinfo"]
         subgraph W1["worker 0"]
             E1[epoll loop] --> N1["HTTP/2 engine<br/>h2n.asm + hpack.asm"] --> G1[gRPC dispatch]
@@ -25,7 +25,7 @@ flowchart LR
         G1 & G2 & Gn --> S[("store<br/>cuckoo buckets + records<br/>lock-free reads · QSBR")]
         M --> S
     end
-    F[/"snapshot file<br/>KVNSNAP1"/] -. startup .-> M
+    F[/"snapshot file<br/>KVASNAP1"/] -. startup .-> M
 ```
 
 ## Request path
@@ -46,11 +46,11 @@ flowchart LR
    an open-addressing map, and every RFC 9113 state and error rule is
    applied (h2spec 146/146).
 3. **Route.** Headers decide the route: `:path` picks
-   `/kvnode.v1.KvNode/{Get,Put,Delete,Upload,Download}` or
+   `/kvasm.v1.KvAsm/{Get,Put,Delete,Upload,Download}` or
    `/grpc.health.v1.Health/Check`, and `:method`, `content-type` and
    `grpc-encoding` are checked. The body is buffered per stream within two
    budgets: the per-request `max_request` and the per-connection
-   `KVNODE_CONN_BUFFER_MB`; a body that arrives whole in one DATA frame is
+   `KVASM_CONN_BUFFER_MB`; a body that arrives whole in one DATA frame is
    used in place instead — and when that frame is right behind the
    request's HEADERS in the same read, the two are handled together,
    without a second pass through the frame loop
@@ -115,7 +115,7 @@ of CPU in 10 s.
 - **A sleeping thread cannot "enter the action" by itself.** When its
   event arrives, the kernel must make it runnable and, if its CPU is idle,
   interrupt that CPU. That is the price of sleeping instead of spinning.
-- **Under load a KvNode worker never sleeps** (0.00 wakeups per 1,000
+- **Under load a KvAsm worker never sleeps** (0.00 wakeups per 1,000
   requests, measured). Each `epoll_wait` returns the next batch at once.
 - **The wakeups in a loopback profile are the client's.** Its threads
   sleep between responses. With no network card in between, our `sendto`
@@ -163,7 +163,7 @@ flowchart LR
   resumable at every byte, which reports fields as events and hands data
   payloads over as pointers into the frame. The first message's `key` and
   `total_size` reserve the final record (`kv_store_rec_alloc`: the upload
-  limit, the connection's budget `Conn.up_bytes ≤ KVNODE_CONN_BUFFER_MB`,
+  limit, the connection's budget `Conn.up_bytes ≤ KVASM_CONN_BUFFER_MB`,
   the store's memory limit); every data piece is then copied straight into
   that record with its CRC-32C computed in the same pass
   (`kv_crc32c_copy`). At END_STREAM `upload_finish` checks whole messages,
@@ -191,11 +191,11 @@ flowchart LR
   retired record whose grace period ended but that is still pinned is
   marked deferred instead of freed, and the last `kv_store_unpin` frees it.
   Its bytes stay counted in `mem_used` until then, so a pinned 64 MiB
-  record keeps holding 64 MiB of `KVNODE_MAX_MEMORY_MB`.
+  record keeps holding 64 MiB of `KVASM_MAX_MEMORY_MB`.
 - **CRC-32C** (`crc32c.asm`), fused with the copy that moves the bytes
   anyway (an upload chunk into its record, a download chunk into the
   output buffer). Four paths, the fastest the CPU has chosen at startup
-  (`KVNODE_CRC32C` forces one): carry-less folding on eight 128-bit lanes
+  (`KVASM_CRC32C` forces one): carry-less folding on eight 128-bit lanes
   held in four 256-bit registers (VPCLMULQDQ + AVX2) or eight SSE registers
   (PCLMULQDQ), the `crc32` instruction, and slicing-by-8 tables; NASM
   computes the tables and the fold constants at assembly time. On a 16 KiB
@@ -215,19 +215,19 @@ flowchart LR
 
 - **Table:** 2^k buckets × 64 bytes. Each bucket holds a version word, six
   8-bit tags and six record pointers. It is sized once from
-  `KVNODE_CAPACITY` at up to about 83% load and backed by `mmap`
+  `KVASM_CAPACITY` at up to about 83% load and backed by `mmap`
   (`MAP_NORESERVE`, `MADV_HUGEPAGE`). Each whole 2 MiB region is faulted in
   with a write at startup: left to the lookups, a region's first touch was a
   read that mapped the huge zero page, and the first insert split it into
   4 KiB pages (measured: no huge page at all in a full 16 MiB table).
 - **Lookup:** tag = the top byte of h2; bucket 1 comes from h1; bucket 2 =
   bucket 1 XOR a hash of the tag. By default one SSE2 compare matches the
-  tags of both buckets (12 slots); `KVNODE_SCAN=swar` compares one bucket's
+  tags of both buckets (12 slots); `KVASM_SCAN=swar` compares one bucket's
   six tags per 64-bit SWAR step instead. The full key is compared exactly
   on a tag hit. At most two cache lines are touched (ADR 0006).
 - **Private caches (optional, off by default):** each worker can keep a
   two-level, direct-mapped cache of record pointers
-  (`KVNODE_CACHE_L1_BITS`/`L2_BITS`). It is validated against per-key
+  (`KVASM_CACHE_L1_BITS`/`L2_BITS`). It is validated against per-key
   invalidation generations that writers bump before retiring a record.
   Measured slower than the CPU's own caches except for tiny hot sets
   (ADR 0006).
@@ -269,7 +269,7 @@ flowchart LR
   the last processed stream id. In-flight requests complete — Uploads and
   Downloads included; health checks answer `NOT_SERVING` from then on. Idle
   connections close with a lingering close. Anything still open after
-  `KVNODE_SHUTDOWN_GRACE_SEC` is closed. The process exits 0, logging
+  `KVASM_SHUTDOWN_GRACE_SEC` is closed. The process exits 0, logging
   `pinned=` and `deferred=` (both must be 0: every Download pin ended with
   its call).
 
@@ -306,7 +306,7 @@ flowchart LR
 | bake-off | cuckoo vs chaining vs trie, every answer verified | `make -C server bench` |
 | store levels | lookup variants per memory level (SWAR/SSE2, private caches), every answer verified | `make -C server bench-store` |
 | end to end | real server over loopback, driven by an independent HTTP/2 client (nghttp2's client API, its own CRC-32C): protocol and limits, pipelining, cancel, torn-value detection; Upload/Download: every refusal, a size × chunking × checksum matrix, every DATA split, cancels and resets at every stage, ranges, 1-byte windows, one version per download while the key changes, a streaming race; drain with in-flight unary and streaming calls; idle timeout against stalled, slow and frozen transfers; memory/budget/capacity limits and their release; fairness with one worker; snapshot source; startup refusals; h2spec 146/146 (empty baseline); fuzzing of the HTTP/2 input path (Upload and Download soups included) followed by the full suite on the same server; no pin may outlive its call (checked at every shutdown) | `make -C server itest` |
-| client | 64 SipHash vectors, compaction, byte-exact snapshot vs the server tool, CRC-32C vectors, and the real container via Testcontainers — including Upload/Download through a fault-injecting TCP proxy (resets mid-transfer, hung paths, slow links, refused connections) and a memory-limited server | `dotnet test --solution client/dotnet/KvNode.Client.slnx` |
+| client | 64 SipHash vectors, compaction, byte-exact snapshot vs the server tool, CRC-32C vectors, and the real container via Testcontainers — including Upload/Download through a fault-injecting TCP proxy (resets mid-transfer, hung paths, slow links, refused connections) and a memory-limited server | `dotnet test --solution client/dotnet/KvAsm.Client.slnx` |
 
 The Docker build runs the unit, bake-off and end-to-end layers. An image
 exists only if all of them pass.

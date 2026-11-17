@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""ab_client.py - is KvNode's 8-core result limited by the load generator?
+"""ab_client.py - is KvAsm's 8-core result limited by the load generator?
 
-The 2026-09-27 standard session found KvNode's 8-core cells client-bound:
-KvNode's cores were only 0.52-0.70 busy while kvbench's 16 client threads
+The 2026-09-27 standard session found KvAsm's 8-core cells client-bound:
+KvAsm's cores were only 0.52-0.70 busy while kvbench's 16 client threads
 were 80-92% busy, and its server CPU per GET stayed flat from 4 to 8 cores.
 That is an inference from utilization. This script tests it directly: the
 same server, the same workload, only the client's CPU budget differs.
@@ -14,14 +14,14 @@ Arms (paired, one fresh server per run):
   never used by the suite (servers take 0-7), so B adds 8 vCPUs without
   touching the server's.
 
-Server: KvNode on vCPUs 0-7 with 8 workers, E1's workload (100% GET,
+Server: KvAsm on vCPUs 0-7 with 8 workers, E1's workload (100% GET,
 100-byte values, 1M preloaded keys, 64 connections x 16 in flight = 1,024
 requests in flight in BOTH arms - only threads and vCPUs change).
 
 Reading the result:
 
-* B faster AND KvNode's utilization higher -> the standard client was the
-  ceiling, and A's number is a floor of KvNode's capacity;
+* B faster AND KvAsm's utilization higher -> the standard client was the
+  ceiling, and A's number is a floor of KvAsm's capacity;
 * B no faster -> the server (or the host) is the limit.
 
 Caveat that biases AGAINST B: with B the VM has all 32 vCPUs busy, so any
@@ -105,7 +105,7 @@ def one_run(arm: str, block: int, cg: run.Cgroups) -> dict:
     saved = (suite.CLIENT_CPUS, suite.CLIENT_THREADS)
     suite.CLIENT_CPUS, suite.CLIENT_THREADS = ARMS[arm]["cpus"], ARMS[arm]["threads"]
     try:
-        cell = {"system": "kvnode", "cores": SERVER_CORES, "threads": SERVER_WORKERS,
+        cell = {"system": "kvasm", "cores": SERVER_CORES, "threads": SERVER_WORKERS,
                 "workload_obj": suite.BASE, "warmup": WARMUP, "duration": DURATION,
                 "rep": block, "run_id": f"client-ceiling/{arm}/r{block}"}
         started = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -164,7 +164,7 @@ def main() -> int:
     run.HOST.start()
     rev = subprocess.run(["git", "-C", str(HERE.parents[2]), "rev-parse", "--short=12", "HEAD"],
                          capture_output=True, text=True).stdout.strip()
-    image = run.image_identity(suite.SYSTEMS["kvnode"].image)["id"][:19]
+    image = run.image_identity(suite.SYSTEMS["kvasm"].image)["id"][:19]
     calib = run.calibrate_cpu_clock(cg)
     factor = calib["factor"]
     print(f"revision {rev}, image {image}, cpu clock factor {factor:.4f}, {blocks} blocks", flush=True)
@@ -201,7 +201,7 @@ def main() -> int:
         if len(pair) == 2:
             for k in ratios:
                 ratios[k].append(pair["B"][k] / pair["A"][k])
-    for k, name in (("mops", "throughput"), ("srv_util", "KvNode core utilization")):
+    for k, name in (("mops", "throughput"), ("srv_util", "KvAsm core utilization")):
         rs = ratios[k]
         wins = sum(x > 1 for x in rs)
         ties = sum(x == 1 for x in rs)

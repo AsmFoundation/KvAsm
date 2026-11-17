@@ -157,7 +157,7 @@ principles (functions-plan Part II):
 **API.** No new read RPC. Compact keys are ordinary keys in a configured
 key space:
 ```text
-KVNODE_COMPACT_PREFIXES="c:,flag:,cnt:"   # keys under these prefixes live in the compact table
+KVASM_COMPACT_PREFIXES="c:,flag:,cnt:"    # keys under these prefixes live in the compact table
 ```
 - Get, GetMany, Put, Delete and Increment (functions-plan B1) work
   unchanged.
@@ -254,7 +254,7 @@ increments were exact against per-key occurrence counts of the stream.
 **API.**
 ```proto
 rpc Fields(FieldsRequest) returns (FieldsResponse);
-message FieldsRequest { repeated FieldOp ops = 1; }   // 1 .. KVNODE_MAX_WRITE_BATCH
+message FieldsRequest { repeated FieldOp ops = 1; }   // 1 .. KVASM_MAX_WRITE_BATCH
 message FieldOp {
   bytes key = 1;
   FieldOpKind kind = 2;
@@ -492,7 +492,7 @@ structure.
 ```proto
 rpc FindNear(FindNearRequest) returns (FindNearResponse);
 message FindNearRequest {
-  bytes prefix = 1;                // an opted-in index (KVNODE_NEAR_PREFIXES)
+  bytes prefix = 1;                // an opted-in index (KVASM_NEAR_PREFIXES)
   fixed64 fingerprint = 2;         // a 64-bit SimHash / pHash, computed by the client
   uint32 max_distance = 3;         // 0 .. 3
   uint32 limit = 4;

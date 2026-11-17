@@ -162,7 +162,7 @@ static void parse_options(int argc, char **argv) {
   else if (g_opt.threads < 1 || g_opt.connections < 1) bad = "threads and connections must be >= 1";
   else if (g_opt.depth < 1 || g_opt.depth > 4096) bad = "--depth must be 1..4096";
   else if (g_opt.proto == PROTO_GRPC && g_opt.depth > 100)
-    bad = "--depth must be <= 100 for grpc (KvNode's default concurrent-stream limit)";
+    bad = "--depth must be <= 100 for grpc (KvAsm's default concurrent-stream limit)";
   else if (g_opt.keys < 1 || g_opt.keys > 1000000000000ull) bad = "--keys must be 1..10^12";
   else if (g_opt.value_size < 8) bad = "--value-size must be >= 8 (the key id is embedded)";
   else if (g_opt.read_ratio < 0 || g_opt.read_ratio > 1) bad = "--read-ratio must be 0..1";
@@ -263,7 +263,7 @@ static int stat_field(const char *text, const char *name, int64_t *out) {
  * @returns nanoseconds, or -1 when the process is not visible
  * @remarks Exact to the nanosecond where /proc/PID/stat has 10 ms ticks. A
  *          thread that exits takes its time with it, which is fine for
- *          KvNode (workers live as long as the process). Over loopback the
+ *          KvAsm (workers live as long as the process). Over loopback the
  *          server's figure includes the peer's TCP receive processing run
  *          in the server's send() (and loses its own, run in the client's):
  *          compare variants measured the same way, never against a NIC.

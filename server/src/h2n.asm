@@ -1,7 +1,7 @@
 ; =============================================================================
-; h2n.asm — KvNode's native HTTP/2 server engine (RFC 9113), built for gRPC.
+; h2n.asm — KvAsm's native HTTP/2 server engine (RFC 9113), built for gRPC.
 ;
-; Why it exists (ADR 0007): KvNode first used nghttp2, and profiling it at
+; Why it exists (ADR 0007): KvAsm first used nghttp2, and profiling it at
 ; one core showed the library spending ~672 of the 1,427 ns of server time
 ; per request — generic frame queues, priority trees, per-header
 ; allocations, stream-id hash lookups, data-provider callbacks. This engine
@@ -49,7 +49,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 %include "server.inc"
 %include "hpack.inc"
 

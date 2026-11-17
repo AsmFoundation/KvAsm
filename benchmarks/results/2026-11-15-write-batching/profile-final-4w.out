@@ -1,6 +1,6 @@
-# profile_set.sh /tmp/kvnode-step3 4 8 -- the final server (ADR 0011), 4 workers, 100% SET.
+# profile_set.sh /tmp/kvasm-step3 4 8 -- the final server (ADR 0011), 4 workers, 100% SET.
 # Head of the symbol list, then where kv_store_rec_alloc_local's samples land
-# (perf script, by offset; objdump -M intel of /tmp/kvnode-step3).
+# (perf script, by offset; objdump -M intel of /tmp/kvasm-step3).
 === final, 4 workers
 SET/s: 3538771
 server CPU per SET: 1185 ns (user 450, kernel 735); cores busy 4.19

@@ -8,7 +8,7 @@ reader can check each fairness rule against the code that applies it:
   with every result;
 * every server gets exactly N vCPUs (``--cpuset-cpus``) and is configured to
   use them, with the thread count tuned per system in experiment E0;
-* persistence is disabled everywhere (KvNode has none), nothing is evicted,
+* persistence is disabled everywhere (KvAsm has none), nothing is evicted,
   there is no TLS and no authentication;
 * every system is driven by the same client (kvbench) with the same
   connections, pipeline depth, keys, values and key distribution.
@@ -141,13 +141,13 @@ class System:
     build: str | None = None
 
 
-KVNODE_RELEASE_IMAGE = "kvnode:0.2.0"
-"""The local tag of the released KvNode that the standard suite measures."""
+KVASM_RELEASE_IMAGE = "kvasm:0.3.0"
+"""The local tag of the released KvAsm that the standard suite measures."""
 
-KVNODE_IMAGE = os.environ.get("KVNODE_BENCH_IMAGE") or KVNODE_RELEASE_IMAGE
-"""KvNode image to measure: ``KVNODE_BENCH_IMAGE``, else the release tag.
+KVASM_IMAGE = os.environ.get("KVASM_BENCH_IMAGE") or KVASM_RELEASE_IMAGE
+"""KvAsm image to measure: ``KVASM_BENCH_IMAGE``, else the release tag.
 
-Set it to measure an unreleased build (e.g. ``kvnode:adr0011``) without
+Set it to measure an unreleased build (e.g. ``kvasm:adr0011``) without
 re-tagging that build as a release. The system's title then names the image
 instead of a version, so the report and environment.json cannot pass the
 build off as the release; environment.json also records its digest and the
@@ -175,23 +175,23 @@ SYSTEMS: dict[str, System] = {
     s.name: s
     for s in [
         System(
-            name="kvnode",
-            title="KvNode 0.2.0" if KVNODE_IMAGE == KVNODE_RELEASE_IMAGE else f"KvNode ({KVNODE_IMAGE})",
-            image=KVNODE_IMAGE, protocol="grpc", port=50051,
+            name="kvasm",
+            title="KvAsm 0.2.0" if KVASM_IMAGE == KVASM_RELEASE_IMAGE else f"KvAsm ({KVASM_IMAGE})",
+            image=KVASM_IMAGE, protocol="grpc", port=50051,
             args=lambda t, w: [],
             env=lambda t, w: {
-                "KVNODE_WORKERS": str(t),
+                "KVASM_WORKERS": str(t),
                 # capacity is fixed at startup: size it for the key space
-                "KVNODE_CAPACITY": str(max(1000, int(w.keys * 1.25))),
-                "KVNODE_MAX_VALUE_BYTES": str(max(1 << 20, w.value_size)),
+                "KVASM_CAPACITY": str(max(1000, int(w.keys * 1.25))),
+                "KVASM_MAX_VALUE_BYTES": str(max(1 << 20, w.value_size)),
             },
-            notes="gRPC over h2c; one worker thread per core (KVNODE_WORKERS).",
-            build=f"docker build --target runtime -t {KVNODE_IMAGE} . (repository root)",
+            notes="gRPC over h2c; one worker thread per core (KVASM_WORKERS).",
+            build=f"docker build --target runtime -t {KVASM_IMAGE} . (repository root)",
         ),
         # (Until ADR 0008 the image also carried nghttp2, measured as the
-        # variants "kvnode-native" / "kvnode-nghttp2" by N1-N3; results
+        # variants "kvasm-native" / "kvasm-nghttp2" by N1-N3; results
         # from before that commit still contain them and analyze.py still
-        # renders them. KvNode's HTTP/2 is now always its own engine.)
+        # renders them. KvAsm's HTTP/2 is now always its own engine.)
         System(
             name="redis", title="Redis 8.10.2", image="redis:8.10.2", protocol="resp", port=6379,
             args=lambda t, w: ["redis-server", "--save", "", "--appendonly", "no",
@@ -239,7 +239,7 @@ SYSTEMS: dict[str, System] = {
 
 VALIDATION_IMAGES = {
     "memtier": "redislabs/memtier_benchmark:2.5.1",
-    "h2load": "kvnode-toolchain:latest",
+    "h2load": "kvasm-toolchain:latest",
 }
 """Standard tools run against kvbench in the validation experiment."""
 
@@ -285,7 +285,7 @@ class Experiment:
 
 ALL = tuple(SYSTEMS)
 BASE = Workload()  # 100% GET, 100-byte values, 1M keys, uniform, 64 conns x 16 deep
-ONE_CORE_RIVALS = ("kvnode", "redis", "valkey")
+ONE_CORE_RIVALS = ("kvasm", "redis", "valkey")
 """The single-threaded-execution servers the 1-core headline is claimed
 against (N1, N3): Redis and Valkey run every command on one thread, so one
 core is their natural unit and the fairest place to compare per-core
@@ -337,15 +337,15 @@ STANDARD: list[Experiment] = [
     Experiment(
         "E8", "Client validation",
         "Is kvbench as efficient a client as each ecosystem's standard tool?",
-        systems=("redis", "kvnode"), cores=(4,), workloads=(BASE,), reps=3, kind="validation"),
+        systems=("redis", "kvasm"), cores=(4,), workloads=(BASE,), reps=3, kind="validation"),
     # N1/N3: the 1-core headline on its own — E1's and E5's 1-core cells for
-    # KvNode, Redis and Valkey only, so the claim can be re-checked in about
+    # KvAsm, Redis and Valkey only, so the claim can be re-checked in about
     # a quarter of an hour with full pairing. (Until ADR 0008 they also ran
-    # KvNode's nghttp2 engine, and N2 compared the two engines at 2 and 4
+    # KvAsm's nghttp2 engine, and N2 compared the two engines at 2 and 4
     # cores; that question is answered and archived in results/.)
     Experiment(
-        "N1", "One core: KvNode vs Redis and Valkey",
-        "Does KvNode beat Redis and Valkey on a single core? E1's workload.",
+        "N1", "One core: KvAsm vs Redis and Valkey",
+        "Does KvAsm beat Redis and Valkey on a single core? E1's workload.",
         systems=ONE_CORE_RIVALS, cores=(1,), workloads=(BASE,)),
     Experiment(
         "N3", "One core: per-request floor",

@@ -7,44 +7,44 @@
 ; with its name and the server refuses to start — a typo must never silently
 ; fall back to a default in production.
 ;
-;   KVNODE_PORT                 1..65535          default 50051
-;   KVNODE_WORKERS              0..256            default 0 = CPUs in affinity mask
-;   KVNODE_CAPACITY             1..2^36 keys      default 1000000
-;   KVNODE_MAX_KEY_BYTES        1..65536          default 1024
-;   KVNODE_MAX_VALUE_BYTES      0..67108864       default 1048576
-;   KVNODE_MAX_MEMORY_MB        0..16777216       default 0 = unlimited
-;   KVNODE_MAX_STREAMS          1..1000           default 100 (per connection)
-;   KVNODE_MAX_CONNECTIONS      1..1000000        default 10000 (per worker)
-;   KVNODE_IDLE_TIMEOUT_SEC     0..86400          default 300 (0 = never)
-;   KVNODE_SHUTDOWN_GRACE_SEC   0..3600           default 10
-;   KVNODE_CONN_BUFFER_MB       1..4096           default 64 (per connection)
-;   KVNODE_CACHE_L1_BITS        0..24             default 0 = no private L1 cache
-;   KVNODE_CACHE_L2_BITS        0..24             default 0 = no private L2 cache
-;   KVNODE_MAX_UPLOAD_BYTES     0..2147483647     default 67108864 (64 MiB): the
+;   KVASM_PORT                  1..65535          default 50051
+;   KVASM_WORKERS               0..256            default 0 = CPUs in affinity mask
+;   KVASM_CAPACITY              1..2^36 keys      default 1000000
+;   KVASM_MAX_KEY_BYTES         1..65536          default 1024
+;   KVASM_MAX_VALUE_BYTES       0..67108864       default 1048576
+;   KVASM_MAX_MEMORY_MB         0..16777216       default 0 = unlimited
+;   KVASM_MAX_STREAMS           1..1000           default 100 (per connection)
+;   KVASM_MAX_CONNECTIONS       1..1000000        default 10000 (per worker)
+;   KVASM_IDLE_TIMEOUT_SEC      0..86400          default 300 (0 = never)
+;   KVASM_SHUTDOWN_GRACE_SEC    0..3600           default 10
+;   KVASM_CONN_BUFFER_MB        1..4096           default 64 (per connection)
+;   KVASM_CACHE_L1_BITS         0..24             default 0 = no private L1 cache
+;   KVASM_CACHE_L2_BITS         0..24             default 0 = no private L2 cache
+;   KVASM_MAX_UPLOAD_BYTES      0..2147483647     default 67108864 (64 MiB): the
 ;                               largest value Upload stores; must not exceed
-;                               KVNODE_CONN_BUFFER_MB (checked: a larger upload
+;                               KVASM_CONN_BUFFER_MB (checked: a larger upload
 ;                               could never fit one connection's budget)
-;   KVNODE_SNAPSHOT             path              optional snapshot to load
+;   KVASM_SNAPSHOT              path              optional snapshot to load
 ; Named choices (exact lowercase words; anything else refuses to start):
-;   KVNODE_SCAN                 swar | sse2       default sse2 (docs/adr/0006)
-;   KVNODE_CRC32C               auto | vpclmul | pclmul | sse42 | table
+;   KVASM_SCAN                  swar | sse2       default sse2 (docs/adr/0006)
+;   KVASM_CRC32C                auto | vpclmul | pclmul | sse42 | table
 ;                               default auto: the fastest the CPU has
 ;                               (256-bit folding, 128-bit folding, the
 ;                               crc32 instruction, tables — crc32c.asm);
 ;                               main.asm refuses a forced mode the CPU lacks
-;   KVNODE_HASH                 auto | siphash | aes
+;   KVASM_HASH                  auto | siphash | aes
 ;                               default auto: the keyed hash that places
 ;                               keys — AES-128 through AES-NI where the CPU
 ;                               has it, SipHash-2-4 otherwise (ADR 0004);
 ;                               main.asm refuses aes on a CPU without AES-NI
-; (KVNODE_H2_ENGINE is gone: HTTP/2 is always KvNode's own engine, ADR 0008;
+; (KVASM_H2_ENGINE is gone: HTTP/2 is always KvAsm's own engine, ADR 0008;
 ; like any unknown variable it is ignored.)
 ; =============================================================================
 
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 %include "server.inc"
 
 extern getenv
@@ -85,37 +85,37 @@ struc Choice
 endstruc
 
 section .rodata
-n_port:     db "KVNODE_PORT", 0
-n_workers:  db "KVNODE_WORKERS", 0
-n_capacity: db "KVNODE_CAPACITY", 0
-n_maxkey:   db "KVNODE_MAX_KEY_BYTES", 0
-n_maxval:   db "KVNODE_MAX_VALUE_BYTES", 0
-n_maxmem:   db "KVNODE_MAX_MEMORY_MB", 0
-n_streams:  db "KVNODE_MAX_STREAMS", 0
-n_conns:    db "KVNODE_MAX_CONNECTIONS", 0
-n_idle:     db "KVNODE_IDLE_TIMEOUT_SEC", 0
-n_grace:    db "KVNODE_SHUTDOWN_GRACE_SEC", 0
-n_connbuf:  db "KVNODE_CONN_BUFFER_MB", 0
-n_cachel1:  db "KVNODE_CACHE_L1_BITS", 0
-n_cachel2:  db "KVNODE_CACHE_L2_BITS", 0
-n_snapshot: db "KVNODE_SNAPSHOT", 0
-n_scan:     db "KVNODE_SCAN", 0
+n_port:     db "KVASM_PORT", 0
+n_workers:  db "KVASM_WORKERS", 0
+n_capacity: db "KVASM_CAPACITY", 0
+n_maxkey:   db "KVASM_MAX_KEY_BYTES", 0
+n_maxval:   db "KVASM_MAX_VALUE_BYTES", 0
+n_maxmem:   db "KVASM_MAX_MEMORY_MB", 0
+n_streams:  db "KVASM_MAX_STREAMS", 0
+n_conns:    db "KVASM_MAX_CONNECTIONS", 0
+n_idle:     db "KVASM_IDLE_TIMEOUT_SEC", 0
+n_grace:    db "KVASM_SHUTDOWN_GRACE_SEC", 0
+n_connbuf:  db "KVASM_CONN_BUFFER_MB", 0
+n_cachel1:  db "KVASM_CACHE_L1_BITS", 0
+n_cachel2:  db "KVASM_CACHE_L2_BITS", 0
+n_snapshot: db "KVASM_SNAPSHOT", 0
+n_scan:     db "KVASM_SCAN", 0
 w_swar:     db "swar", 0
 w_sse2:     db "sse2", 0
 a_scan:     db "swar|sse2", 0
-n_maxup:    db "KVNODE_MAX_UPLOAD_BYTES", 0
-n_crc:      db "KVNODE_CRC32C", 0
+n_maxup:    db "KVASM_MAX_UPLOAD_BYTES", 0
+n_crc:      db "KVASM_CRC32C", 0
 w_auto:     db "auto", 0
 w_sse42:    db "sse42", 0
 w_table:    db "table", 0
 w_pclmul:   db "pclmul", 0
 w_vpclmul:  db "vpclmul", 0
 a_crc:      db "auto|vpclmul|pclmul|sse42|table", 0
-n_hash:     db "KVNODE_HASH", 0
+n_hash:     db "KVASM_HASH", 0
 w_siphash:  db "siphash", 0
 w_aes:      db "aes", 0
 a_hash:     db "auto|siphash|aes", 0
-m_upbudget: db ' reason="must not exceed KVNODE_CONN_BUFFER_MB: a larger upload could never fit one connection', 39, 's budget"'
+m_upbudget: db ' reason="must not exceed KVASM_CONN_BUFFER_MB: a larger upload could never fit one connection', 39, 's budget"'
 m_upbudget_len equ $ - m_upbudget
 lvl_error:  db "ERROR", 0
 m_invalid:  db " msg=", 34, "invalid setting", 34, " name="
@@ -399,10 +399,10 @@ log_invalid_choice:
     ret
 
 ; =============================================================================
-; log_upload_budget — "invalid setting name=KVNODE_MAX_UPLOAD_BYTES value=V
+; log_upload_budget — "invalid setting name=KVASM_MAX_UPLOAD_BYTES value=V
 ; allowed=0..B reason=..." for an upload limit above the connection budget.
 ; Internal.
-; @param  rdi  KVNODE_MAX_UPLOAD_BYTES (bytes)   @param rsi  the budget (bytes)
+; @param  rdi  KVASM_MAX_UPLOAD_BYTES (bytes)    @param rsi  the budget (bytes)
 ; @returns nothing.
 ; @remarks Same shape as the range errors above, with the budget as the
 ;          upper bound, so operators read every configuration error alike.
@@ -495,7 +495,7 @@ parse_u64:
 ; affinity_cpus — number of CPUs this process may run on. Internal.
 ; @returns rax = CPU count from sched_getaffinity (at least 1).
 ; @remarks Honors cpusets (docker --cpuset-cpus) but not CFS quotas
-;          (--cpus); with quotas, set KVNODE_WORKERS explicitly.
+;          (--cpus); with quotas, set KVASM_WORKERS explicitly.
 ; =============================================================================
 affinity_cpus:
     sub     rsp, CPUSET_BYTES + 8

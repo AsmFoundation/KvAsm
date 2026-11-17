@@ -18,7 +18,7 @@
 
 ; ---- field codes (the name) ------------------------------------------------------
 ; 1..6 are pseudo-header fields: "seen" bits in a request use 1 << code.
-%define HF_OTHER            0           ; any regular field KvNode does not interpret
+%define HF_OTHER            0           ; any regular field KvAsm does not interpret
 %define HF_METHOD           1           ; :method
 %define HF_SCHEME           2           ; :scheme
 %define HF_AUTHORITY        3           ; :authority

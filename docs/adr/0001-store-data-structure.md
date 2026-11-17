@@ -71,7 +71,7 @@ that matters:
 
 ## Consequences
 
-- The store has a hard **key capacity** (`KVNODE_CAPACITY`), because the
+- The store has a hard **key capacity** (`KVASM_CAPACITY`), because the
   table is sized up front: buckets = next power of two of
   ⌈capacity / 5⌉, at most about 83% load. It does not resize while serving.
   Resizing would need a stop-the-world rehash or a doubled footprint, which

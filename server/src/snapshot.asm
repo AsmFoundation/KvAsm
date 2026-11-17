@@ -1,14 +1,14 @@
 ; =============================================================================
-; snapshot.asm — load a KvNode snapshot file into the store at startup.
+; snapshot.asm — load a KvAsm snapshot file into the store at startup.
 ;
-; File format (little-endian; written by the C# KvNode.Client SnapshotWriter):
-;   0   "KVNSNAP1"                      magic
+; File format (little-endian; written by the C# KvAsm.Client SnapshotWriter):
+;   0   "KVASNAP1"                      magic
 ;   8   u32 version = 1
 ;   12  u32 flags   = 0
 ;   16  u64 record_count
 ;   24  u64 reserved (ignored)
 ;   32  record_count x { u32 key_len, u32 value_len, key bytes, value bytes }
-;   end-16  "KVNSEND1"                  trailer magic
+;   end-16  "KVASEND1"                  trailer magic
 ;   end-8   u64 checksum = SipHash-2-4-128 (key = 16 zero bytes), low word,
 ;           over every byte before the trailer
 ;
@@ -24,7 +24,7 @@
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 %include "server.inc"
 
 %define SYS_openat      257
@@ -154,7 +154,7 @@ kv_snapshot_load:
     syscall
 
     ; ---- header, trailer, checksum ----
-    mov     rax, 'KVNSNAP1'
+    mov     rax, 'KVASNAP1'
     lea     rdi, [r_magic]
     cmp     [rbp], rax
     jne     .reject
@@ -163,7 +163,7 @@ kv_snapshot_load:
     jne     .reject
     cmp     dword [rbp + 12], 0
     jne     .reject
-    mov     rax, 'KVNSEND1'
+    mov     rax, 'KVASEND1'
     lea     rdi, [r_trailer]
     cmp     [rbp + r15 - TRAILER_SIZE], rax
     jne     .reject

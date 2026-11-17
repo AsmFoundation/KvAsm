@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """abdotnet.py — concurrent paired A/B of two builds of the .NET client
-(client/dotnet/bench/KvNode.Client.Bench, published self-contained for
-linux-x64) against the same KvNode server binary.
+(client/dotnet/bench/KvAsm.Client.Bench, published self-contained for
+linux-x64) against the same KvAsm server binary.
 
-Usage (inside kvnode-dev):
+Usage (inside kvasm-dev):
   abdotnet.py OUT.jsonl BLOCKS CONFIG...
   CONFIG = MODE:SIZE:CONCURRENCY[:CHUNK[:WINDOW]]
     MODE    upload | download
     CHUNK   the bench's --chunk (0 = the client's defaults)
     WINDOW  the bench's --window (HTTP/2 stream receive window; 0 = default)
-Env: A_BENCH, B_BENCH (bench executables), SERVER (kvnode binary; default
-     the worktree's server/build/kvnode), DN_ENV (extra VAR=VALUE for both
+Env: A_BENCH, B_BENCH (bench executables), SERVER (kvasm binary; default
+     the worktree's server/build/kvasm), DN_ENV (extra VAR=VALUE for both
      clients, e.g. DOTNET_ThreadPool_UnfairSemaphoreSpinLimit=0),
      A_ARGS / B_ARGS (extra bench flags for one side only, e.g. B_ARGS=
      "--window 4194304" to A/B a setting with one build; appended last, so
@@ -34,7 +34,7 @@ import sys
 import time
 
 ROOT = "/src/.claude/worktrees/upload-download"
-SERVER = os.environ.get("SERVER", ROOT + "/server/build/kvnode")
+SERVER = os.environ.get("SERVER", ROOT + "/server/build/kvasm")
 BENCH = {"A": os.environ["A_BENCH"], "B": os.environ["B_BENCH"]}
 DN_ENV = os.environ.get("DN_ENV", "")
 SLOTS = [("2", "16-23", 50221), ("6", "24-31", 50222)]  # (server vCPU, client vCPUs, port)
@@ -45,8 +45,8 @@ RECORD_BYTES = 64 << 20
 
 def start(cpu, port, log):
     """Starts one pinned server (1 worker); returns its Popen once it listens."""
-    env = dict(os.environ, KVNODE_PORT=str(port), KVNODE_WORKERS="1", KVNODE_CAPACITY="100000",
-               KVNODE_MAX_UPLOAD_BYTES="67108864")
+    env = dict(os.environ, KVASM_PORT=str(port), KVASM_WORKERS="1", KVASM_CAPACITY="100000",
+               KVASM_MAX_UPLOAD_BYTES="67108864")
     f = open(log, "w")
     p = subprocess.Popen(["taskset", "-c", cpu, SERVER], env=env, stderr=f)
     for _ in range(500):

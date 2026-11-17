@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
 # profile_set.sh — where a SET's server time goes: perf cpu-clock samples of
-# one kvnode under a 100% SET load, by symbol, plus the user/kernel split.
+# one kvasm under a 100% SET load, by symbol, plus the user/kernel split.
 #
-# Usage (inside the kvnode-dev container):
+# Usage (inside the kvasm-dev container):
 #   profile_set.sh BINARY [WORKERS] [SECONDS]
 # defaults: 1 worker (pinned to vCPU 2), 10 s of samples. The client (kvbench,
 # 16 threads x 64 connections x 16 deep on vCPUs 16-31) replaces random keys
@@ -28,7 +28,7 @@ mkdir -p "$OUT"
 if [ "$WORKERS" = 1 ]; then SCPU=2; else SCPU="2-$((1 + WORKERS))"; fi
 
 # Server: pinned, capacity for 1M keys + headroom.
-KVNODE_PORT=$PORT KVNODE_WORKERS=$WORKERS KVNODE_CAPACITY=1250000 \
+KVASM_PORT=$PORT KVASM_WORKERS=$WORKERS KVASM_CAPACITY=1250000 \
     taskset -c "$SCPU" "$BIN" 2> "$OUT/server.log" &
 SPID=$!
 trap 'kill -TERM $SPID 2>/dev/null || true; wait $SPID 2>/dev/null || true' EXIT

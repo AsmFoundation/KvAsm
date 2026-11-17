@@ -1,0 +1,289 @@
+host load outside the container VM: 5.2 of 32 logical CPUs
+  WARNING: other programs are using 5.2 logical CPUs; they compete with the servers and the client, and results will carry that noise. Close them for a publishable run.
+recording environment and calibrating the CPU clock ...
+  cpu clock factor 1.0354
+== E0 Thread-count tuning: 36 runs, ~14 min
+[E0 1/36] kvasm-control c2 t1 get100-v100-k1000000-uni-c64d16                                     931,370/s  eta 10m
+[E0 2/36] kvasm     c8 t8 get100-v100-k1000000-uni-c64d16                                  5,286,724/s  eta 9m
+[E0 3/36] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,234,414/s  eta 9m
+[E0 4/36] kvasm     c2 t1 get100-v100-k1000000-uni-c64d16                                    752,847/s  eta 9m
+[E0 5/36] kvasm-control c2 t2 get100-v100-k1000000-uni-c64d16                                   1,977,306/s  eta 8m
+[E0 6/36] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  3,660,445/s  eta 8m
+[E0 7/36] kvasm-control c8 t8 get100-v100-k1000000-uni-c64d16                                   5,581,446/s  eta 8m
+[E0 8/36] kvasm-control c8 t7 get100-v100-k1000000-uni-c64d16                                   5,048,519/s  eta 8m
+[E0 9/36] kvasm-control c4 t3 get100-v100-k1000000-uni-c64d16                                   3,265,807/s  eta 7m
+[E0 10/36] kvasm     c4 t3 get100-v100-k1000000-uni-c64d16                                  3,235,933/s  eta 7m
+[E0 11/36] kvasm     c8 t7 get100-v100-k1000000-uni-c64d16                                  5,081,295/s  eta 7m
+[E0 12/36] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,411,428/s  eta 6m
+[E0 13/36] kvasm     c8 t7 get100-v100-k1000000-uni-c64d16                                  5,295,753/s  eta 6m
+[E0 14/36] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,340,621/s  eta 6m
+[E0 15/36] kvasm-control c2 t2 get100-v100-k1000000-uni-c64d16                                   2,495,174/s  eta 6m
+[E0 16/36] kvasm-control c8 t8 get100-v100-k1000000-uni-c64d16                                   5,556,725/s  eta 5m
+[E0 17/36] kvasm-control c4 t3 get100-v100-k1000000-uni-c64d16                                   3,964,424/s  eta 5m
+[E0 18/36] kvasm-control c8 t7 get100-v100-k1000000-uni-c64d16                                   5,226,279/s  eta 5m
+[E0 19/36] kvasm     c2 t1 get100-v100-k1000000-uni-c64d16                                    954,797/s  eta 5m
+[E0 20/36] kvasm     c8 t8 get100-v100-k1000000-uni-c64d16                                  5,691,108/s  eta 4m
+[E0 21/36] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,353,214/s  eta 4m
+[E0 22/36] kvasm     c4 t3 get100-v100-k1000000-uni-c64d16                                  4,008,356/s  eta 4m
+[E0 23/36] kvasm-control c2 t1 get100-v100-k1000000-uni-c64d16                                     886,443/s  eta 3m
+[E0 24/36] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,978,942/s  eta 3m
+[E0 25/36] kvasm     c8 t8 get100-v100-k1000000-uni-c64d16                                  5,116,669/s  eta 3m
+[E0 26/36] kvasm-control c2 t1 get100-v100-k1000000-uni-c64d16                                     982,211/s  eta 3m
+[E0 27/36] kvasm     c8 t7 get100-v100-k1000000-uni-c64d16                                  5,523,799/s  eta 2m
+[E0 28/36] kvasm-control c2 t2 get100-v100-k1000000-uni-c64d16                                   2,182,712/s  eta 2m
+[E0 29/36] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,757,226/s  eta 2m
+[E0 30/36] kvasm-control c8 t8 get100-v100-k1000000-uni-c64d16                                   5,676,376/s  eta 2m
+[E0 31/36] kvasm     c4 t3 get100-v100-k1000000-uni-c64d16                                  3,869,846/s  eta 1m
+[E0 32/36] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,759,409/s  eta 1m
+[E0 33/36] kvasm     c2 t1 get100-v100-k1000000-uni-c64d16                                    995,885/s  eta 1m
+[E0 34/36] kvasm-control c4 t3 get100-v100-k1000000-uni-c64d16                                   3,860,942/s  eta 1m
+[E0 35/36] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,372,047/s  eta 0m
+[E0 36/36] kvasm-control c8 t7 get100-v100-k1000000-uni-c64d16                                   5,131,811/s  eta 0m
+== E1 Throughput scaling: 48 runs, ~22 min
+[E1 1/48] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   3,931,691/s  eta 15m
+[E1 2/48] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  1,907,990/s  eta 15m
+[E1 3/48] kvasm-control c2 t2 get100-v100-k1000000-uni-c64d16                                   2,165,882/s  eta 14m
+[E1 4/48] kvasm-control c8 t8 get100-v100-k1000000-uni-c64d16                                   5,269,120/s  eta 14m
+[E1 5/48] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,044,565/s  eta 14m
+[E1 6/48] kvasm     c8 t7 get100-v100-k1000000-uni-c64d16                                  4,350,442/s  eta 13m
+[E1 7/48] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    826,540/s  eta 13m
+[E1 8/48] kvasm-control c1 t1 get100-v100-k1000000-uni-c64d16                                     907,989/s  eta 13m
+[E1 9/48] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,300,513/s  eta 13m
+[E1 10/48] kvasm     c8 t7 get100-v100-k1000000-uni-c64d16                                  5,365,188/s  eta 12m
+[E1 11/48] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,954,187/s  eta 12m
+[E1 12/48] kvasm-control c2 t2 get100-v100-k1000000-uni-c64d16                                   2,208,290/s  eta 12m
+[E1 13/48] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    905,296/s  eta 11m
+[E1 14/48] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,200,772/s  eta 11m
+[E1 15/48] kvasm-control c8 t8 get100-v100-k1000000-uni-c64d16                                   5,389,154/s  eta 11m
+[E1 16/48] kvasm-control c1 t1 get100-v100-k1000000-uni-c64d16                                     943,946/s  eta 10m
+[E1 17/48] kvasm     c8 t7 get100-v100-k1000000-uni-c64d16                                  5,437,909/s  eta 10m
+[E1 18/48] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,811,738/s  eta 10m
+[E1 19/48] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,299,779/s  eta 9m
+[E1 20/48] kvasm-control c1 t1 get100-v100-k1000000-uni-c64d16                                     983,980/s  eta 9m
+[E1 21/48] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,826,623/s  eta 9m
+[E1 22/48] kvasm-control c8 t8 get100-v100-k1000000-uni-c64d16                                   5,483,445/s  eta 8m
+[E1 23/48] kvasm-control c2 t2 get100-v100-k1000000-uni-c64d16                                   2,240,725/s  eta 8m
+[E1 24/48] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    874,938/s  eta 8m
+[E1 25/48] kvasm     c8 t7 get100-v100-k1000000-uni-c64d16                                  5,303,665/s  eta 7m
+[E1 26/48] kvasm-control c8 t8 get100-v100-k1000000-uni-c64d16                                   5,522,636/s  eta 7m
+[E1 27/48] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,388,960/s  eta 7m
+[E1 28/48] kvasm-control c1 t1 get100-v100-k1000000-uni-c64d16                                     940,280/s  eta 6m
+[E1 29/48] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    952,838/s  eta 6m
+[E1 30/48] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,562,020/s  eta 6m
+[E1 31/48] kvasm-control c2 t2 get100-v100-k1000000-uni-c64d16                                   2,317,395/s  eta 5m
+[E1 32/48] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,635,808/s  eta 5m
+[E1 33/48] kvasm-control c1 t1 get100-v100-k1000000-uni-c64d16                                     941,166/s  eta 5m
+[E1 34/48] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,645,974/s  eta 4m
+[E1 35/48] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,307,900/s  eta 4m
+[E1 36/48] kvasm-control c2 t2 get100-v100-k1000000-uni-c64d16                                   1,997,394/s  eta 4m
+[E1 37/48] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    932,266/s  eta 4m
+[E1 38/48] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,600,013/s  eta 3m
+[E1 39/48] kvasm     c8 t7 get100-v100-k1000000-uni-c64d16                                  5,201,216/s  eta 3m
+[E1 40/48] kvasm-control c8 t8 get100-v100-k1000000-uni-c64d16                                   5,271,724/s  eta 3m
+[E1 41/48] kvasm-control c2 t2 get100-v100-k1000000-uni-c64d16                                   2,294,664/s  eta 2m
+[E1 42/48] kvasm-control c8 t8 get100-v100-k1000000-uni-c64d16                                   4,999,581/s  eta 2m
+[E1 43/48] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    976,735/s  eta 2m
+[E1 44/48] kvasm     c2 t2 get100-v100-k1000000-uni-c64d16                                  2,352,406/s  eta 1m
+[E1 45/48] kvasm     c8 t7 get100-v100-k1000000-uni-c64d16                                  5,243,874/s  eta 1m
+[E1 46/48] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   3,948,567/s  eta 1m
+[E1 47/48] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  3,545,513/s  eta 0m
+[E1 48/48] kvasm-control c1 t1 get100-v100-k1000000-uni-c64d16                                     801,448/s  eta 0m
+== E2 Read/write mixes: 48 runs, ~22 min
+[E2 1/48] kvasm-control c4 t4 get50-v100-k1000000-uni-c64d16                                    2,230,037/s  eta 15m
+[E2 2/48] kvasm     c4 t4 get90-v100-k1000000-zipf0.99-c64d16                              4,066,014/s  eta 14m
+[E2 3/48] kvasm     c4 t4 get0-v100-k1000000-uni-c64d16                                    3,107,882/s  eta 14m
+[E2 4/48] kvasm-control c4 t4 get90-v100-k1000000-uni-c64d16                                    3,101,458/s  eta 14m
+[E2 5/48] kvasm     c4 t4 get50-v100-k1000000-uni-c64d16                                   3,669,133/s  eta 14m
+[E2 6/48] kvasm-control c4 t4 get0-v100-k1000000-uni-c64d16                                     1,340,524/s  eta 13m
+[E2 7/48] kvasm-control c4 t4 get90-v100-k1000000-zipf0.99-c64d16                               3,996,478/s  eta 13m
+[E2 8/48] kvasm     c4 t4 get90-v100-k1000000-uni-c64d16                                   4,271,879/s  eta 13m
+[E2 9/48] kvasm-control c4 t4 get50-v100-k1000000-uni-c64d16                                    2,179,649/s  eta 12m
+[E2 10/48] kvasm     c4 t4 get90-v100-k1000000-uni-c64d16                                   4,144,064/s  eta 12m
+[E2 11/48] kvasm     c4 t4 get90-v100-k1000000-zipf0.99-c64d16                              4,554,075/s  eta 12m
+[E2 12/48] kvasm-control c4 t4 get90-v100-k1000000-uni-c64d16                                    4,223,315/s  eta 11m
+[E2 13/48] kvasm     c4 t4 get50-v100-k1000000-uni-c64d16                                   3,833,269/s  eta 11m
+[E2 14/48] kvasm-control c4 t4 get90-v100-k1000000-zipf0.99-c64d16                               4,158,686/s  eta 11m
+[E2 15/48] kvasm-control c4 t4 get0-v100-k1000000-uni-c64d16                                     1,367,905/s  eta 10m
+[E2 16/48] kvasm     c4 t4 get0-v100-k1000000-uni-c64d16                                    4,185,015/s  eta 10m
+[E2 17/48] kvasm-control c4 t4 get50-v100-k1000000-uni-c64d16                                    2,175,117/s  eta 10m
+[E2 18/48] kvasm-control c4 t4 get90-v100-k1000000-zipf0.99-c64d16                               3,771,991/s  eta 9m
+[E2 19/48] kvasm     c4 t4 get0-v100-k1000000-uni-c64d16                                    3,355,197/s  eta 9m
+[E2 20/48] kvasm     c4 t4 get90-v100-k1000000-uni-c64d16                                   3,703,922/s  eta 9m
+[E2 21/48] kvasm-control c4 t4 get90-v100-k1000000-uni-c64d16                                    3,349,608/s  eta 9m
+[E2 22/48] kvasm     c4 t4 get90-v100-k1000000-zipf0.99-c64d16                              3,566,457/s  eta 8m
+[E2 23/48] kvasm     c4 t4 get50-v100-k1000000-uni-c64d16                                   3,066,126/s  eta 8m
+[E2 24/48] kvasm-control c4 t4 get0-v100-k1000000-uni-c64d16                                     1,238,153/s  eta 8m
+[E2 25/48] kvasm-control c4 t4 get90-v100-k1000000-zipf0.99-c64d16                               3,757,959/s  eta 7m
+[E2 26/48] kvasm-control c4 t4 get90-v100-k1000000-uni-c64d16                                    3,813,623/s  eta 7m
+[E2 27/48] kvasm     c4 t4 get50-v100-k1000000-uni-c64d16                                   3,655,721/s  eta 7m
+[E2 28/48] kvasm     c4 t4 get90-v100-k1000000-uni-c64d16                                   3,929,810/s  eta 6m
+[E2 29/48] kvasm-control c4 t4 get50-v100-k1000000-uni-c64d16                                    2,086,301/s  eta 6m
+[E2 30/48] kvasm     c4 t4 get90-v100-k1000000-zipf0.99-c64d16                              4,173,732/s  eta 6m
+[E2 31/48] kvasm-control c4 t4 get0-v100-k1000000-uni-c64d16                                     1,334,309/s  eta 5m
+[E2 32/48] kvasm     c4 t4 get0-v100-k1000000-uni-c64d16                                    3,977,382/s  eta 5m
+[E2 33/48] kvasm     c4 t4 get90-v100-k1000000-zipf0.99-c64d16                              4,177,565/s  eta 5m
+[E2 34/48] kvasm-control c4 t4 get90-v100-k1000000-zipf0.99-c64d16                               4,185,205/s  eta 4m
+[E2 35/48] kvasm     c4 t4 get90-v100-k1000000-uni-c64d16                                   4,009,639/s  eta 4m
+[E2 36/48] kvasm-control c4 t4 get50-v100-k1000000-uni-c64d16                                    2,120,993/s  eta 4m
+[E2 37/48] kvasm-control c4 t4 get0-v100-k1000000-uni-c64d16                                     1,345,472/s  eta 3m
+[E2 38/48] kvasm-control c4 t4 get90-v100-k1000000-uni-c64d16                                    4,307,295/s  eta 3m
+[E2 39/48] kvasm     c4 t4 get50-v100-k1000000-uni-c64d16                                   3,796,377/s  eta 3m
+[E2 40/48] kvasm     c4 t4 get0-v100-k1000000-uni-c64d16                                    4,173,535/s  eta 3m
+[E2 41/48] kvasm-control c4 t4 get90-v100-k1000000-zipf0.99-c64d16                               4,431,774/s  eta 2m
+[E2 42/48] kvasm     c4 t4 get0-v100-k1000000-uni-c64d16                                    4,023,920/s  eta 2m
+[E2 43/48] kvasm-control c4 t4 get0-v100-k1000000-uni-c64d16                                     1,180,921/s  eta 2m
+[E2 44/48] kvasm-control c4 t4 get90-v100-k1000000-uni-c64d16                                    3,876,871/s  eta 1m
+[E2 45/48] kvasm     c4 t4 get50-v100-k1000000-uni-c64d16                                   3,827,359/s  eta 1m
+[E2 46/48] kvasm-control c4 t4 get50-v100-k1000000-uni-c64d16                                    2,258,409/s  eta 1m
+[E2 47/48] kvasm     c4 t4 get90-v100-k1000000-zipf0.99-c64d16                              4,613,271/s  eta 0m
+[E2 48/48] kvasm     c4 t4 get90-v100-k1000000-uni-c64d16                                   4,040,150/s  eta 0m
+== E3 No pipelining: 12 runs, ~5 min
+[E3 1/12] kvasm-control c4 t4 get100-v100-k1000000-uni-c256d1                                     450,100/s  eta 4m
+[E3 2/12] kvasm     c4 t4 get100-v100-k1000000-uni-c256d1                                    461,735/s  eta 4m
+[E3 3/12] kvasm     c4 t4 get100-v100-k1000000-uni-c256d1                                    424,679/s  eta 3m
+[E3 4/12] kvasm-control c4 t4 get100-v100-k1000000-uni-c256d1                                     382,717/s  eta 3m
+[E3 5/12] kvasm     c4 t4 get100-v100-k1000000-uni-c256d1                                    440,462/s  eta 3m
+[E3 6/12] kvasm-control c4 t4 get100-v100-k1000000-uni-c256d1                                     453,998/s  eta 2m
+[E3 7/12] kvasm     c4 t4 get100-v100-k1000000-uni-c256d1                                    452,822/s  eta 2m
+[E3 8/12] kvasm-control c4 t4 get100-v100-k1000000-uni-c256d1                                     465,740/s  eta 1m
+[E3 9/12] kvasm     c4 t4 get100-v100-k1000000-uni-c256d1                                    438,687/s  eta 1m
+[E3 10/12] kvasm-control c4 t4 get100-v100-k1000000-uni-c256d1                                     445,170/s  eta 1m
+[E3 11/12] kvasm     c4 t4 get100-v100-k1000000-uni-c256d1                                    481,310/s  eta 0m
+[E3 12/12] kvasm-control c4 t4 get100-v100-k1000000-uni-c256d1                                     453,560/s  eta 0m
+== E4 Latency at fixed load: 18 runs, ~8 min
+[E4 1/18] kvasm     c4 t4 get100-v100-k1000000-uni-c64d64-r836000                               836,156/s  eta 5m
+[E4 2/18] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d64-r836000                                836,156/s  eta 5m
+[E4 3/18] kvasm     c4 t4 get100-v100-k1000000-uni-c64d64-r418000                               418,228/s  eta 5m
+[E4 4/18] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d64-r1254000                              1,254,263/s  eta 4m
+[E4 5/18] kvasm     c4 t4 get100-v100-k1000000-uni-c64d64-r1254000                             1,254,267/s  eta 4m
+[E4 6/18] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d64-r418000                                418,230/s  eta 4m
+[E4 7/18] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d64-r418000                                417,711/s  eta 3m
+[E4 8/18] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d64-r1254000                              1,254,120/s  eta 3m
+[E4 9/18] kvasm     c4 t4 get100-v100-k1000000-uni-c64d64-r1254000                             1,254,131/s  eta 3m
+[E4 10/18] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d64-r836000                                835,840/s  eta 3m
+[E4 11/18] kvasm     c4 t4 get100-v100-k1000000-uni-c64d64-r418000                               417,716/s  eta 2m
+[E4 12/18] kvasm     c4 t4 get100-v100-k1000000-uni-c64d64-r836000                               835,851/s  eta 2m
+[E4 13/18] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d64-r418000                                418,176/s  eta 2m
+[E4 14/18] kvasm     c4 t4 get100-v100-k1000000-uni-c64d64-r836000                               835,963/s  eta 1m
+[E4 15/18] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d64-r836000                                835,946/s  eta 1m
+[E4 16/18] kvasm     c4 t4 get100-v100-k1000000-uni-c64d64-r418000                               418,175/s  eta 1m
+[E4 17/18] kvasm     c4 t4 get100-v100-k1000000-uni-c64d64-r1254000                             1,254,284/s  eta 0m
+[E4 18/18] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d64-r1254000                              1,254,260/s  eta 0m
+== E5 Per-request floor: 12 runs, ~5 min
+[E5 1/12] kvasm     c1 t1 ping-v100-k1000000-uni-c64d16                                    1,095,917/s  eta 4m
+[E5 2/12] kvasm-control c1 t1 ping-v100-k1000000-uni-c64d16                                     1,188,475/s  eta 3m
+[E5 3/12] kvasm     c1 t1 ping-v100-k1000000-uni-c64d16                                    1,086,586/s  eta 3m
+[E5 4/12] kvasm-control c1 t1 ping-v100-k1000000-uni-c64d16                                     1,131,052/s  eta 3m
+[E5 5/12] kvasm-control c1 t1 ping-v100-k1000000-uni-c64d16                                     1,156,091/s  eta 2m
+[E5 6/12] kvasm     c1 t1 ping-v100-k1000000-uni-c64d16                                    1,177,133/s  eta 2m
+[E5 7/12] kvasm     c1 t1 ping-v100-k1000000-uni-c64d16                                    1,161,289/s  eta 2m
+[E5 8/12] kvasm-control c1 t1 ping-v100-k1000000-uni-c64d16                                     1,078,385/s  eta 1m
+[E5 9/12] kvasm-control c1 t1 ping-v100-k1000000-uni-c64d16                                     1,181,819/s  eta 1m
+[E5 10/12] kvasm     c1 t1 ping-v100-k1000000-uni-c64d16                                    1,129,534/s  eta 1m
+[E5 11/12] kvasm-control c1 t1 ping-v100-k1000000-uni-c64d16                                     1,150,537/s  eta 0m
+[E5 12/12] kvasm     c1 t1 ping-v100-k1000000-uni-c64d16                                    1,117,278/s  eta 0m
+== E6 Value size: 12 runs, ~5 min
+[E6 1/12] kvasm-control c4 t4 get100-v16384-k65536-uni-c64d16                                     358,177/s  eta 4m
+[E6 2/12] kvasm     c4 t4 get100-v16384-k65536-uni-c64d16                                    317,447/s  eta 3m
+[E6 3/12] kvasm-control c4 t4 get100-v1024-k1000000-uni-c64d16                                  3,621,897/s  eta 3m
+[E6 4/12] kvasm     c4 t4 get100-v1024-k1000000-uni-c64d16                                 3,689,394/s  eta 3m
+[E6 5/12] kvasm     c4 t4 get100-v16384-k65536-uni-c64d16                                    324,949/s  eta 2m
+[E6 6/12] kvasm     c4 t4 get100-v1024-k1000000-uni-c64d16                                 3,230,957/s  eta 2m
+[E6 7/12] kvasm-control c4 t4 get100-v1024-k1000000-uni-c64d16                                  3,418,466/s  eta 2m
+[E6 8/12] kvasm-control c4 t4 get100-v16384-k65536-uni-c64d16                                     324,580/s  eta 1m
+[E6 9/12] kvasm     c4 t4 get100-v16384-k65536-uni-c64d16                                    287,011/s  eta 1m
+[E6 10/12] kvasm     c4 t4 get100-v1024-k1000000-uni-c64d16                                 2,915,355/s  eta 1m
+[E6 11/12] kvasm-control c4 t4 get100-v16384-k65536-uni-c64d16                                     305,674/s  eta 0m
+[E6 12/12] kvasm-control c4 t4 get100-v1024-k1000000-uni-c64d16                                  2,954,335/s  eta 0m
+== E7 Concurrency sweep: 30 runs, ~14 min
+[E7 1/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c16d1                                      128,428/s  eta 12m
+[E7 2/30] kvasm     c4 t4 get100-v100-k1000000-uni-c64d1                                     322,644/s  eta 11m
+[E7 3/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d1                                      338,843/s  eta 11m
+[E7 4/30] kvasm     c4 t4 get100-v100-k1000000-uni-c1d1                                       14,831/s  eta 17m
+[E7 5/30] kvasm     c4 t4 get100-v100-k1000000-uni-c64d4                                   1,257,774/s  eta 15m
+[E7 6/30] kvasm     c4 t4 get100-v100-k1000000-uni-c16d1                                     140,929/s  eta 14m
+[E7 7/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d4                                    1,405,260/s  eta 12m
+[E7 8/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c1d1                                        15,989/s  eta 14m
+[E7 9/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,013,681/s  eta 13m
+[E7 10/30] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,062,453/s  eta 12m
+[E7 11/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d4                                    1,428,953/s  eta 11m
+[E7 12/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c1d1                                        17,393/s  eta 11m
+[E7 13/30] kvasm     c4 t4 get100-v100-k1000000-uni-c16d1                                     159,438/s  eta 10m
+[E7 14/30] kvasm     c4 t4 get100-v100-k1000000-uni-c64d1                                     369,707/s  eta 10m
+[E7 15/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   3,743,740/s  eta 9m
+[E7 16/30] kvasm     c4 t4 get100-v100-k1000000-uni-c1d1                                       11,806/s  eta 9m
+[E7 17/30] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,168,806/s  eta 8m
+[E7 18/30] kvasm     c4 t4 get100-v100-k1000000-uni-c64d4                                   1,529,143/s  eta 7m
+[E7 19/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d1                                      369,228/s  eta 6m
+[E7 20/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c16d1                                      116,077/s  eta 6m
+[E7 21/30] kvasm     c4 t4 get100-v100-k1000000-uni-c64d4                                   1,386,211/s  eta 5m
+[E7 22/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d1                                      384,552/s  eta 5m
+[E7 23/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c16d1                                      120,507/s  eta 4m
+[E7 24/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   3,826,998/s  eta 3m
+[E7 25/30] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,456,723/s  eta 3m
+[E7 26/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c1d1                                        18,372/s  eta 2m
+[E7 27/30] kvasm     c4 t4 get100-v100-k1000000-uni-c64d1                                     389,554/s  eta 2m
+[E7 28/30] kvasm     c4 t4 get100-v100-k1000000-uni-c1d1                                       17,141/s  eta 1m
+[E7 29/30] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d4                                    1,450,127/s  eta 1m
+[E7 30/30] kvasm     c4 t4 get100-v100-k1000000-uni-c16d1                                     149,243/s  eta 0m
+== E8 Client validation: 12 runs, ~5 min
+[E8 1/12] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16      h2load-onekey               3,208,884/s  eta 2m
+[E8 2/12] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16      kvbench-onekey              4,924,052/s  eta 2m
+[E8 3/12] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16       kvbench-onekey              4,703,888/s  eta 2m
+[E8 4/12] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16       h2load-onekey               3,188,538/s  eta 2m
+[E8 5/12] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16       kvbench-onekey              4,768,604/s  eta 2m
+[E8 6/12] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16      kvbench-onekey              4,760,706/s  eta 2m
+[E8 7/12] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16       h2load-onekey               3,223,054/s  eta 1m
+[E8 8/12] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16      h2load-onekey               3,203,085/s  eta 1m
+[E8 9/12] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16      h2load-onekey               3,134,935/s  eta 1m
+[E8 10/12] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16       kvbench-onekey              4,973,191/s  eta 0m
+[E8 11/12] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16      kvbench-onekey              4,963,520/s  eta 0m
+[E8 12/12] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16       h2load-onekey               3,234,101/s  eta 0m
+== N1 One core: KvAsm vs Redis and Valkey: 12 runs, ~5 min
+[N1 1/12] kvasm-control c1 t1 get100-v100-k1000000-uni-c64d16                                     888,801/s  eta 4m
+[N1 2/12] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    907,762/s  eta 3m
+[N1 3/12] kvasm-control c1 t1 get100-v100-k1000000-uni-c64d16                                     802,084/s  eta 3m
+[N1 4/12] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    825,872/s  eta 3m
+[N1 5/12] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    905,924/s  eta 2m
+[N1 6/12] kvasm-control c1 t1 get100-v100-k1000000-uni-c64d16                                     892,619/s  eta 2m
+[N1 7/12] kvasm-control c1 t1 get100-v100-k1000000-uni-c64d16                                     949,206/s  eta 2m
+[N1 8/12] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    978,664/s  eta 1m
+[N1 9/12] kvasm-control c1 t1 get100-v100-k1000000-uni-c64d16                                     909,997/s  eta 1m
+[N1 10/12] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    951,142/s  eta 1m
+[N1 11/12] kvasm-control c1 t1 get100-v100-k1000000-uni-c64d16                                     944,211/s  eta 0m
+[N1 12/12] kvasm     c1 t1 get100-v100-k1000000-uni-c64d16                                    910,994/s  eta 0m
+== N3 One core: per-request floor: 12 runs, ~5 min
+[N3 1/12] kvasm-control c1 t1 ping-v100-k1000000-uni-c64d16                                     1,146,657/s  eta 4m
+[N3 2/12] kvasm     c1 t1 ping-v100-k1000000-uni-c64d16                                    1,197,624/s  eta 3m
+[N3 3/12] kvasm     c1 t1 ping-v100-k1000000-uni-c64d16                                    1,144,626/s  eta 3m
+[N3 4/12] kvasm-control c1 t1 ping-v100-k1000000-uni-c64d16                                     1,068,086/s  eta 3m
+[N3 5/12] kvasm     c1 t1 ping-v100-k1000000-uni-c64d16                                    1,043,645/s  eta 2m
+[N3 6/12] kvasm-control c1 t1 ping-v100-k1000000-uni-c64d16                                     1,128,129/s  eta 2m
+[N3 7/12] kvasm     c1 t1 ping-v100-k1000000-uni-c64d16                                    1,102,070/s  eta 2m
+[N3 8/12] kvasm-control c1 t1 ping-v100-k1000000-uni-c64d16                                     1,144,289/s  eta 1m
+[N3 9/12] kvasm-control c1 t1 ping-v100-k1000000-uni-c64d16                                     1,102,747/s  eta 1m
+[N3 10/12] kvasm     c1 t1 ping-v100-k1000000-uni-c64d16                                    1,094,468/s  eta 1m
+[N3 11/12] kvasm     c1 t1 ping-v100-k1000000-uni-c64d16                                    1,086,280/s  eta 0m
+[N3 12/12] kvasm-control c1 t1 ping-v100-k1000000-uni-c64d16                                     1,147,229/s  eta 0m
+== S1 Measurement stability: 20 runs, ~9 min
+[S1 1/20] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,637,964/s  eta 6m
+[S1 2/20] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,687,831/s  eta 6m
+[S1 3/20] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,896,305/s  eta 5m
+[S1 4/20] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,887,084/s  eta 5m
+[S1 5/20] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,912,726/s  eta 5m
+[S1 6/20] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,897,966/s  eta 4m
+[S1 7/20] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,704,119/s  eta 4m
+[S1 8/20] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,584,743/s  eta 4m
+[S1 9/20] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,564,873/s  eta 3m
+[S1 10/20] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,957,857/s  eta 3m
+[S1 11/20] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  5,021,539/s  eta 3m
+[S1 12/20] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,645,051/s  eta 3m
+[S1 13/20] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,937,909/s  eta 2m
+[S1 14/20] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  5,052,174/s  eta 2m
+[S1 15/20] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  5,042,893/s  eta 2m
+[S1 16/20] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,675,432/s  eta 1m
+[S1 17/20] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,623,371/s  eta 1m
+[S1 18/20] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,477,236/s  eta 1m
+[S1 19/20] kvasm-control c4 t4 get100-v100-k1000000-uni-c64d16                                   4,966,132/s  eta 0m
+[S1 20/20] kvasm     c4 t4 get100-v100-k1000000-uni-c64d16                                  4,241,854/s  eta 0m
+results: benchmarks\results\2026-11-15-kvasm-standard\raw.jsonl

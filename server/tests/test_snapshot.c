@@ -14,13 +14,13 @@
  */
 #include <fcntl.h>
 
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 #include "test_common.h"
 
 int64_t kv_snapshot_load(KvTable *t, const char *path, const void *cfg);
 extern const uint64_t kv_config_abi[];
 
-#define SNAP_PATH "/tmp/kvnode_test_snapshot.kvs"
+#define SNAP_PATH "/tmp/kvasm_test_snapshot.kvs"
 
 /* Opaque Config image; only max_key/max_value are read by the loader. Its
  * real size and field offsets come from kv_config_abi (abi.asm), so this test
@@ -70,7 +70,7 @@ static void put_u32(Buf *b, uint32_t v) { put(b, &v, 4); }
 static void put_u64(Buf *b, uint64_t v) { put(b, &v, 8); }
 
 /**
- * Appends the trailer: "KVNSEND1" + SipHash-2-4-128 (16 zero key bytes) low
+ * Appends the trailer: "KVASEND1" + SipHash-2-4-128 (16 zero key bytes) low
  * word over every byte written so far — the same definition the C#
  * SnapshotWriter implements.
  * @param b  buffer holding header + records
@@ -79,7 +79,7 @@ static void finish(Buf *b) {
   static const uint64_t zero[2] = {0, 0};
   uint64_t h[2];
   kv_siphash128(b->p, b->len, zero, h);
-  put(b, "KVNSEND1", 8);
+  put(b, "KVASEND1", 8);
   put_u64(b, h[0]);
 }
 
@@ -92,7 +92,7 @@ static void finish(Buf *b) {
  * @param flags    flags word (the loader accepts only 0)
  */
 static void header(Buf *b, uint64_t count, uint32_t version, uint32_t flags) {
-  put(b, "KVNSNAP1", 8);
+  put(b, "KVASNAP1", 8);
   put_u32(b, version);
   put_u32(b, flags);
   put_u64(b, count);
@@ -245,7 +245,7 @@ int main(void) {
   memset(filler, 'x', sizeof filler);
   Buf c = {0};
 
-  put(&c, "KVNSNAPX", 8); put_u32(&c, 1); put_u32(&c, 0); put_u64(&c, 1); put_u64(&c, 0);
+  put(&c, "KVASNAPX", 8); put_u32(&c, 1); put_u32(&c, 0); put_u64(&c, 1); put_u64(&c, 0);
   record(&c, "k", 1, "v", 1); finish(&c);
   expect_reject("magic", &c, -EINVAL, "bad header magic");
 
@@ -290,7 +290,7 @@ int main(void) {
   header(&c, 1, 1, 0); record(&c, "k", 1, "v", 1); put(&c, "xx", 2); finish(&c);
   expect_reject("extra-bytes", &c, -EINVAL, "unexpected bytes after the last record");
 
-  put(&c, "KVNSNAP1", 8);
+  put(&c, "KVASNAP1", 8);
   expect_reject("too-small", &c, -EINVAL, "file too small");
 
   expect_reject_path("missing", "/nonexistent/snapshot.kvs", 10, -ENOENT,

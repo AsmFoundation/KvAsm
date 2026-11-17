@@ -65,7 +65,7 @@ the candidates for a next step:
 
 | Cost | Share | Where |
 |---|---|---|
-| The shared memory counter's LOCK XADD, one per Put (`KVNODE_MAX_MEMORY_MB` accounting) | 7.2% | 58% of `kv_store_rec_alloc_local` |
+| The shared memory counter's LOCK XADD, one per Put (`KVASM_MAX_MEMORY_MB` accounting) | 7.2% | 58% of `kv_store_rec_alloc_local` |
 | Popping a record from the slot cache: its link is a cold line | 4.3% | 35% of `kv_store_rec_alloc_local` |
 | Reading cold retired-record headers in `slot_reclaim` | 12.0% | `slot_reclaim.no_prefetch`, `.free_next` |
 | Where the batch's prefetched bucket and record misses land | 14.8% | `kv_cuckoo_prefetch_records`, `kv_cuckoo_prefetch` |
@@ -149,14 +149,14 @@ values and memory accounting, and is part of `make test`.
 
 ## Reproduce
 
-Inside the `kvnode-dev` container (see CONTRIBUTING.md):
-- the original binary at `/tmp/kvnode-A` (built from `6a31d0a`);
-- the new one at `/tmp/kvnode-B`.
+Inside the `kvasm-dev` container (see CONTRIBUTING.md):
+- the original binary at `/tmp/kvasm-A` (built from `6a31d0a`);
+- the new one at `/tmp/kvasm-B`.
 
 ```sh
 cd /src/benchmarks/results/2026-11-15-write-batching
 python3 abw.py 6 1:0:100 4:0:100 4:0.5:100 1:0.9:100 1:1:100 4:1:100 1:0:100:256:1
-bash solo.sh 3 4 0 /tmp/kvnode-A /tmp/kvnode-B
-bash profile_set.sh /tmp/kvnode-B 4 8
+bash solo.sh 3 4 0 /tmp/kvasm-A /tmp/kvasm-B
+bash profile_set.sh /tmp/kvasm-B 4 8
 make -C /src/server bench-write
 ```

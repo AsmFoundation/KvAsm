@@ -20,7 +20,7 @@ Timing follow-ups for a quiet host are listed at the end.
 ## 1. Why an event-driven server still pays for wakeups
 
 Event-driven means a thread with nothing to do *sleeps* in `epoll_wait`
-instead of spinning. That is why an idle KvNode uses no CPU (measured the
+instead of spinning. That is why an idle KvAsm uses no CPU (measured the
 same day: 4 workers, 1,000 idle connections, 10 ms of CPU in 10 s). The
 price of sleeping is that someone must wake you. A sleeping thread is on no
 CPU at all. When its event arrives, the kernel must mark it runnable,
@@ -33,7 +33,7 @@ is a block-then-wake:
 
 | per 1,000 requests | wakeups |
 |---|---|
-| **KvNode's worker** | **0.00** |
+| **KvAsm's worker** | **0.00** |
 | kvbench's threads (the client) | ~27 |
 
 So **our worker already just enters the action.** Under load it never
@@ -48,13 +48,13 @@ and costs microseconds.
 
 With a real network, `sendto` hands the packet to the NIC and returns. The
 client's NIC and kernel wake the client on the client's machine, and
-KvNode's CPU never sees it.
+KvAsm's CPU never sees it.
 
 There are three ways to make it zero:
 
 - **remote clients** (production);
 - **clients that don't sleep while they wait:** in the same session, a
-  busy-polling client took KvNode from 582 to 382 ns per GET
+  busy-polling client took KvAsm from 582 to 382 ns per GET
   (`../2026-09-26-profile-memory`);
 - **kernel RPS/RFS on loopback,** which only moves the work to another CPU,
   via its own IPI.
@@ -79,7 +79,7 @@ events.
   dumps after an 8 s workload. `vgdb` needs `--cap-add=SYS_PTRACE`.
 - The instruction total is divided by the exact number of requests: calls
   of `get_execute`, `kv_store_put`, or the ping replier.
-- Callgrind reads KvNode's DWARF lines but not its function names: NASM
+- Callgrind reads KvAsm's DWARF lines but not its function names: NASM
   emits no function entries, so functions appear as addresses. The scripts
   map them with `nm -n`.
 - A function entered by a tail `jmp` is charged to its caller. So
@@ -198,7 +198,7 @@ These use the server's own cost on a quiet host, a busy-polling client,
 | `cgcount.py` | instructions per request and per-request call counts from a dump |
 | `cgprofile.py` | self instructions per function per request |
 | `instructions-per-request.txt`, `instruction-profile.txt` | the results above |
-| `callgrind-{before,after}-{get,set,ping}.out`, `kvnode-{before,after}.nm` | the raw dumps and the symbol tables that name their addresses |
+| `callgrind-{before,after}-{get,set,ping}.out`, `kvasm-{before,after}.nm` | the raw dumps and the symbol tables that name their addresses |
 | `loadprobe.sh` | server and client wakeups per request under load |
 
 ## To run on a quiet host

@@ -22,7 +22,7 @@
  *     MB/s of each implementation next to glibc memcpy, in cache and in DRAM.
  *     This is the evidence behind the dispatch — see crc32c.asm.
  */
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 #include "test_common.h"
 
 uint32_t kv_crc32c(uint32_t crc, const void *buf, size_t len);
@@ -357,6 +357,6 @@ int main(void) {
     test_chaining();
     CHECK(kv_crc32c_set_mode(MODE_TABLE) == m);
   }
-  if (!getenv("KVNODE_TEST_QUICK")) report_speed();
+  if (!getenv("KVASM_TEST_QUICK")) report_speed();
   return test_finish("test_crc32c");
 }

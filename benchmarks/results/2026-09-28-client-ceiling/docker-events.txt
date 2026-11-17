@@ -1,157 +1,157 @@
 # docker events during ab_client.py, 2026-09-27T21:45:13Z .. 2026-09-27T21:49:19Z: every event of every type in the Docker VM.
-# Only the test's own containers appear: kvb-burn/alpine and kvnode-toolchain (CPU-clock calibration), kvb-srv/kvnode:0.1.0 (servers), kvnode-kvbench:dev (clients), and their network (dis)connects. No exec into kvnode-dev, no other container.
+# Only the test's own containers appear: kvb-burn/alpine and kvasm-toolchain (CPU-clock calibration), kvb-srv/kvasm:0.1.0 (servers), kvasm-kvbench:dev (clients), and their network (dis)connects. No exec into kvasm-dev, no other container.
 2026-09-27T21:45:15Z container create kvb-burn alpine:3
 2026-09-27T21:45:16Z network connect bridge <no value>
 2026-09-27T21:45:16Z container start kvb-burn alpine:3
-2026-09-27T21:45:18Z container create musing_margulis kvnode-toolchain
-2026-09-27T21:45:18Z container attach musing_margulis kvnode-toolchain
+2026-09-27T21:45:18Z container create musing_margulis kvasm-toolchain
+2026-09-27T21:45:18Z container attach musing_margulis kvasm-toolchain
 2026-09-27T21:45:18Z network connect bridge <no value>
-2026-09-27T21:45:18Z container start musing_margulis kvnode-toolchain
+2026-09-27T21:45:18Z container start musing_margulis kvasm-toolchain
 2026-09-27T21:45:31Z network disconnect bridge <no value>
-2026-09-27T21:45:31Z container die musing_margulis kvnode-toolchain
-2026-09-27T21:45:31Z container destroy musing_margulis kvnode-toolchain
+2026-09-27T21:45:31Z container die musing_margulis kvasm-toolchain
+2026-09-27T21:45:31Z container destroy musing_margulis kvasm-toolchain
 2026-09-27T21:45:31Z container kill kvb-burn alpine:3
 2026-09-27T21:45:31Z network disconnect bridge <no value>
 2026-09-27T21:45:31Z container die kvb-burn alpine:3
 2026-09-27T21:45:31Z container destroy kvb-burn alpine:3
-2026-09-27T21:45:31Z container create kvb-srv kvnode:0.1.0
+2026-09-27T21:45:31Z container create kvb-srv kvasm:0.1.0
 2026-09-27T21:45:32Z network connect bridge <no value>
-2026-09-27T21:45:32Z container start kvb-srv kvnode:0.1.0
-2026-09-27T21:45:32Z container create hardcore_leakey kvnode-kvbench:dev
-2026-09-27T21:45:32Z container attach hardcore_leakey kvnode-kvbench:dev
-2026-09-27T21:45:32Z container start hardcore_leakey kvnode-kvbench:dev
-2026-09-27T21:45:51Z container die hardcore_leakey kvnode-kvbench:dev
-2026-09-27T21:45:51Z container destroy hardcore_leakey kvnode-kvbench:dev
-2026-09-27T21:45:51Z container kill kvb-srv kvnode:0.1.0
+2026-09-27T21:45:32Z container start kvb-srv kvasm:0.1.0
+2026-09-27T21:45:32Z container create hardcore_leakey kvasm-kvbench:dev
+2026-09-27T21:45:32Z container attach hardcore_leakey kvasm-kvbench:dev
+2026-09-27T21:45:32Z container start hardcore_leakey kvasm-kvbench:dev
+2026-09-27T21:45:51Z container die hardcore_leakey kvasm-kvbench:dev
+2026-09-27T21:45:51Z container destroy hardcore_leakey kvasm-kvbench:dev
+2026-09-27T21:45:51Z container kill kvb-srv kvasm:0.1.0
 2026-09-27T21:45:51Z network disconnect bridge <no value>
-2026-09-27T21:45:51Z container die kvb-srv kvnode:0.1.0
-2026-09-27T21:45:51Z container destroy kvb-srv kvnode:0.1.0
-2026-09-27T21:45:51Z container create kvb-srv kvnode:0.1.0
+2026-09-27T21:45:51Z container die kvb-srv kvasm:0.1.0
+2026-09-27T21:45:51Z container destroy kvb-srv kvasm:0.1.0
+2026-09-27T21:45:51Z container create kvb-srv kvasm:0.1.0
 2026-09-27T21:45:51Z network connect bridge <no value>
-2026-09-27T21:45:52Z container start kvb-srv kvnode:0.1.0
-2026-09-27T21:45:52Z container create awesome_fermi kvnode-kvbench:dev
-2026-09-27T21:45:52Z container attach awesome_fermi kvnode-kvbench:dev
-2026-09-27T21:45:52Z container start awesome_fermi kvnode-kvbench:dev
-2026-09-27T21:46:08Z container die awesome_fermi kvnode-kvbench:dev
-2026-09-27T21:46:08Z container destroy awesome_fermi kvnode-kvbench:dev
-2026-09-27T21:46:09Z container kill kvb-srv kvnode:0.1.0
+2026-09-27T21:45:52Z container start kvb-srv kvasm:0.1.0
+2026-09-27T21:45:52Z container create awesome_fermi kvasm-kvbench:dev
+2026-09-27T21:45:52Z container attach awesome_fermi kvasm-kvbench:dev
+2026-09-27T21:45:52Z container start awesome_fermi kvasm-kvbench:dev
+2026-09-27T21:46:08Z container die awesome_fermi kvasm-kvbench:dev
+2026-09-27T21:46:08Z container destroy awesome_fermi kvasm-kvbench:dev
+2026-09-27T21:46:09Z container kill kvb-srv kvasm:0.1.0
 2026-09-27T21:46:09Z network disconnect bridge <no value>
-2026-09-27T21:46:09Z container die kvb-srv kvnode:0.1.0
-2026-09-27T21:46:09Z container destroy kvb-srv kvnode:0.1.0
-2026-09-27T21:46:09Z container create kvb-srv kvnode:0.1.0
+2026-09-27T21:46:09Z container die kvb-srv kvasm:0.1.0
+2026-09-27T21:46:09Z container destroy kvb-srv kvasm:0.1.0
+2026-09-27T21:46:09Z container create kvb-srv kvasm:0.1.0
 2026-09-27T21:46:09Z network connect bridge <no value>
-2026-09-27T21:46:09Z container start kvb-srv kvnode:0.1.0
-2026-09-27T21:46:10Z container create goofy_bouman kvnode-kvbench:dev
-2026-09-27T21:46:10Z container attach goofy_bouman kvnode-kvbench:dev
-2026-09-27T21:46:10Z container start goofy_bouman kvnode-kvbench:dev
-2026-09-27T21:46:28Z container die goofy_bouman kvnode-kvbench:dev
-2026-09-27T21:46:28Z container destroy goofy_bouman kvnode-kvbench:dev
-2026-09-27T21:46:28Z container kill kvb-srv kvnode:0.1.0
+2026-09-27T21:46:09Z container start kvb-srv kvasm:0.1.0
+2026-09-27T21:46:10Z container create goofy_bouman kvasm-kvbench:dev
+2026-09-27T21:46:10Z container attach goofy_bouman kvasm-kvbench:dev
+2026-09-27T21:46:10Z container start goofy_bouman kvasm-kvbench:dev
+2026-09-27T21:46:28Z container die goofy_bouman kvasm-kvbench:dev
+2026-09-27T21:46:28Z container destroy goofy_bouman kvasm-kvbench:dev
+2026-09-27T21:46:28Z container kill kvb-srv kvasm:0.1.0
 2026-09-27T21:46:29Z network disconnect bridge <no value>
-2026-09-27T21:46:29Z container die kvb-srv kvnode:0.1.0
-2026-09-27T21:46:29Z container destroy kvb-srv kvnode:0.1.0
-2026-09-27T21:46:29Z container create kvb-srv kvnode:0.1.0
+2026-09-27T21:46:29Z container die kvb-srv kvasm:0.1.0
+2026-09-27T21:46:29Z container destroy kvb-srv kvasm:0.1.0
+2026-09-27T21:46:29Z container create kvb-srv kvasm:0.1.0
 2026-09-27T21:46:29Z network connect bridge <no value>
-2026-09-27T21:46:29Z container start kvb-srv kvnode:0.1.0
-2026-09-27T21:46:29Z container create nifty_carson kvnode-kvbench:dev
-2026-09-27T21:46:29Z container attach nifty_carson kvnode-kvbench:dev
-2026-09-27T21:46:30Z container start nifty_carson kvnode-kvbench:dev
-2026-09-27T21:46:46Z container die nifty_carson kvnode-kvbench:dev
-2026-09-27T21:46:46Z container destroy nifty_carson kvnode-kvbench:dev
-2026-09-27T21:46:46Z container kill kvb-srv kvnode:0.1.0
+2026-09-27T21:46:29Z container start kvb-srv kvasm:0.1.0
+2026-09-27T21:46:29Z container create nifty_carson kvasm-kvbench:dev
+2026-09-27T21:46:29Z container attach nifty_carson kvasm-kvbench:dev
+2026-09-27T21:46:30Z container start nifty_carson kvasm-kvbench:dev
+2026-09-27T21:46:46Z container die nifty_carson kvasm-kvbench:dev
+2026-09-27T21:46:46Z container destroy nifty_carson kvasm-kvbench:dev
+2026-09-27T21:46:46Z container kill kvb-srv kvasm:0.1.0
 2026-09-27T21:46:47Z network disconnect bridge <no value>
-2026-09-27T21:46:47Z container die kvb-srv kvnode:0.1.0
-2026-09-27T21:46:47Z container destroy kvb-srv kvnode:0.1.0
-2026-09-27T21:46:47Z container create kvb-srv kvnode:0.1.0
+2026-09-27T21:46:47Z container die kvb-srv kvasm:0.1.0
+2026-09-27T21:46:47Z container destroy kvb-srv kvasm:0.1.0
+2026-09-27T21:46:47Z container create kvb-srv kvasm:0.1.0
 2026-09-27T21:46:47Z network connect bridge <no value>
-2026-09-27T21:46:47Z container start kvb-srv kvnode:0.1.0
-2026-09-27T21:46:47Z container create strange_volhard kvnode-kvbench:dev
-2026-09-27T21:46:47Z container attach strange_volhard kvnode-kvbench:dev
-2026-09-27T21:46:47Z container start strange_volhard kvnode-kvbench:dev
-2026-09-27T21:47:06Z container die strange_volhard kvnode-kvbench:dev
-2026-09-27T21:47:06Z container destroy strange_volhard kvnode-kvbench:dev
-2026-09-27T21:47:06Z container kill kvb-srv kvnode:0.1.0
+2026-09-27T21:46:47Z container start kvb-srv kvasm:0.1.0
+2026-09-27T21:46:47Z container create strange_volhard kvasm-kvbench:dev
+2026-09-27T21:46:47Z container attach strange_volhard kvasm-kvbench:dev
+2026-09-27T21:46:47Z container start strange_volhard kvasm-kvbench:dev
+2026-09-27T21:47:06Z container die strange_volhard kvasm-kvbench:dev
+2026-09-27T21:47:06Z container destroy strange_volhard kvasm-kvbench:dev
+2026-09-27T21:47:06Z container kill kvb-srv kvasm:0.1.0
 2026-09-27T21:47:06Z network disconnect bridge <no value>
-2026-09-27T21:47:06Z container die kvb-srv kvnode:0.1.0
-2026-09-27T21:47:06Z container destroy kvb-srv kvnode:0.1.0
-2026-09-27T21:47:07Z container create kvb-srv kvnode:0.1.0
+2026-09-27T21:47:06Z container die kvb-srv kvasm:0.1.0
+2026-09-27T21:47:06Z container destroy kvb-srv kvasm:0.1.0
+2026-09-27T21:47:07Z container create kvb-srv kvasm:0.1.0
 2026-09-27T21:47:07Z network connect bridge <no value>
-2026-09-27T21:47:07Z container start kvb-srv kvnode:0.1.0
-2026-09-27T21:47:07Z container create reverent_dirac kvnode-kvbench:dev
-2026-09-27T21:47:07Z container attach reverent_dirac kvnode-kvbench:dev
-2026-09-27T21:47:07Z container start reverent_dirac kvnode-kvbench:dev
-2026-09-27T21:47:26Z container die reverent_dirac kvnode-kvbench:dev
-2026-09-27T21:47:26Z container destroy reverent_dirac kvnode-kvbench:dev
-2026-09-27T21:47:26Z container kill kvb-srv kvnode:0.1.0
+2026-09-27T21:47:07Z container start kvb-srv kvasm:0.1.0
+2026-09-27T21:47:07Z container create reverent_dirac kvasm-kvbench:dev
+2026-09-27T21:47:07Z container attach reverent_dirac kvasm-kvbench:dev
+2026-09-27T21:47:07Z container start reverent_dirac kvasm-kvbench:dev
+2026-09-27T21:47:26Z container die reverent_dirac kvasm-kvbench:dev
+2026-09-27T21:47:26Z container destroy reverent_dirac kvasm-kvbench:dev
+2026-09-27T21:47:26Z container kill kvb-srv kvasm:0.1.0
 2026-09-27T21:47:26Z network disconnect bridge <no value>
-2026-09-27T21:47:26Z container die kvb-srv kvnode:0.1.0
-2026-09-27T21:47:26Z container destroy kvb-srv kvnode:0.1.0
-2026-09-27T21:47:26Z container create kvb-srv kvnode:0.1.0
+2026-09-27T21:47:26Z container die kvb-srv kvasm:0.1.0
+2026-09-27T21:47:26Z container destroy kvb-srv kvasm:0.1.0
+2026-09-27T21:47:26Z container create kvb-srv kvasm:0.1.0
 2026-09-27T21:47:26Z network connect bridge <no value>
-2026-09-27T21:47:27Z container start kvb-srv kvnode:0.1.0
-2026-09-27T21:47:27Z container create focused_agnesi kvnode-kvbench:dev
-2026-09-27T21:47:27Z container attach focused_agnesi kvnode-kvbench:dev
-2026-09-27T21:47:27Z container start focused_agnesi kvnode-kvbench:dev
-2026-09-27T21:47:43Z container die focused_agnesi kvnode-kvbench:dev
-2026-09-27T21:47:44Z container destroy focused_agnesi kvnode-kvbench:dev
-2026-09-27T21:47:44Z container kill kvb-srv kvnode:0.1.0
+2026-09-27T21:47:27Z container start kvb-srv kvasm:0.1.0
+2026-09-27T21:47:27Z container create focused_agnesi kvasm-kvbench:dev
+2026-09-27T21:47:27Z container attach focused_agnesi kvasm-kvbench:dev
+2026-09-27T21:47:27Z container start focused_agnesi kvasm-kvbench:dev
+2026-09-27T21:47:43Z container die focused_agnesi kvasm-kvbench:dev
+2026-09-27T21:47:44Z container destroy focused_agnesi kvasm-kvbench:dev
+2026-09-27T21:47:44Z container kill kvb-srv kvasm:0.1.0
 2026-09-27T21:47:44Z network disconnect bridge <no value>
-2026-09-27T21:47:44Z container die kvb-srv kvnode:0.1.0
-2026-09-27T21:47:44Z container destroy kvb-srv kvnode:0.1.0
-2026-09-27T21:47:44Z container create kvb-srv kvnode:0.1.0
+2026-09-27T21:47:44Z container die kvb-srv kvasm:0.1.0
+2026-09-27T21:47:44Z container destroy kvb-srv kvasm:0.1.0
+2026-09-27T21:47:44Z container create kvb-srv kvasm:0.1.0
 2026-09-27T21:47:44Z network connect bridge <no value>
-2026-09-27T21:47:44Z container start kvb-srv kvnode:0.1.0
-2026-09-27T21:47:45Z container create objective_stonebraker kvnode-kvbench:dev
-2026-09-27T21:47:45Z container attach objective_stonebraker kvnode-kvbench:dev
-2026-09-27T21:47:45Z container start objective_stonebraker kvnode-kvbench:dev
-2026-09-27T21:48:03Z container die objective_stonebraker kvnode-kvbench:dev
-2026-09-27T21:48:03Z container destroy objective_stonebraker kvnode-kvbench:dev
-2026-09-27T21:48:03Z container kill kvb-srv kvnode:0.1.0
+2026-09-27T21:47:44Z container start kvb-srv kvasm:0.1.0
+2026-09-27T21:47:45Z container create objective_stonebraker kvasm-kvbench:dev
+2026-09-27T21:47:45Z container attach objective_stonebraker kvasm-kvbench:dev
+2026-09-27T21:47:45Z container start objective_stonebraker kvasm-kvbench:dev
+2026-09-27T21:48:03Z container die objective_stonebraker kvasm-kvbench:dev
+2026-09-27T21:48:03Z container destroy objective_stonebraker kvasm-kvbench:dev
+2026-09-27T21:48:03Z container kill kvb-srv kvasm:0.1.0
 2026-09-27T21:48:04Z network disconnect bridge <no value>
-2026-09-27T21:48:04Z container die kvb-srv kvnode:0.1.0
-2026-09-27T21:48:04Z container destroy kvb-srv kvnode:0.1.0
-2026-09-27T21:48:04Z container create kvb-srv kvnode:0.1.0
+2026-09-27T21:48:04Z container die kvb-srv kvasm:0.1.0
+2026-09-27T21:48:04Z container destroy kvb-srv kvasm:0.1.0
+2026-09-27T21:48:04Z container create kvb-srv kvasm:0.1.0
 2026-09-27T21:48:04Z network connect bridge <no value>
-2026-09-27T21:48:04Z container start kvb-srv kvnode:0.1.0
-2026-09-27T21:48:04Z container create objective_einstein kvnode-kvbench:dev
-2026-09-27T21:48:04Z container attach objective_einstein kvnode-kvbench:dev
-2026-09-27T21:48:04Z container start objective_einstein kvnode-kvbench:dev
-2026-09-27T21:48:21Z container die objective_einstein kvnode-kvbench:dev
-2026-09-27T21:48:21Z container destroy objective_einstein kvnode-kvbench:dev
-2026-09-27T21:48:21Z container kill kvb-srv kvnode:0.1.0
+2026-09-27T21:48:04Z container start kvb-srv kvasm:0.1.0
+2026-09-27T21:48:04Z container create objective_einstein kvasm-kvbench:dev
+2026-09-27T21:48:04Z container attach objective_einstein kvasm-kvbench:dev
+2026-09-27T21:48:04Z container start objective_einstein kvasm-kvbench:dev
+2026-09-27T21:48:21Z container die objective_einstein kvasm-kvbench:dev
+2026-09-27T21:48:21Z container destroy objective_einstein kvasm-kvbench:dev
+2026-09-27T21:48:21Z container kill kvb-srv kvasm:0.1.0
 2026-09-27T21:48:21Z network disconnect bridge <no value>
-2026-09-27T21:48:21Z container die kvb-srv kvnode:0.1.0
-2026-09-27T21:48:21Z container destroy kvb-srv kvnode:0.1.0
-2026-09-27T21:48:22Z container create kvb-srv kvnode:0.1.0
+2026-09-27T21:48:21Z container die kvb-srv kvasm:0.1.0
+2026-09-27T21:48:21Z container destroy kvb-srv kvasm:0.1.0
+2026-09-27T21:48:22Z container create kvb-srv kvasm:0.1.0
 2026-09-27T21:48:22Z network connect bridge <no value>
-2026-09-27T21:48:22Z container start kvb-srv kvnode:0.1.0
-2026-09-27T21:48:22Z container create happy_wu kvnode-kvbench:dev
-2026-09-27T21:48:22Z container attach happy_wu kvnode-kvbench:dev
-2026-09-27T21:48:22Z container start happy_wu kvnode-kvbench:dev
-2026-09-27T21:48:41Z container die happy_wu kvnode-kvbench:dev
-2026-09-27T21:48:41Z container destroy happy_wu kvnode-kvbench:dev
-2026-09-27T21:48:41Z container kill kvb-srv kvnode:0.1.0
+2026-09-27T21:48:22Z container start kvb-srv kvasm:0.1.0
+2026-09-27T21:48:22Z container create happy_wu kvasm-kvbench:dev
+2026-09-27T21:48:22Z container attach happy_wu kvasm-kvbench:dev
+2026-09-27T21:48:22Z container start happy_wu kvasm-kvbench:dev
+2026-09-27T21:48:41Z container die happy_wu kvasm-kvbench:dev
+2026-09-27T21:48:41Z container destroy happy_wu kvasm-kvbench:dev
+2026-09-27T21:48:41Z container kill kvb-srv kvasm:0.1.0
 2026-09-27T21:48:41Z network disconnect bridge <no value>
-2026-09-27T21:48:41Z container die kvb-srv kvnode:0.1.0
-2026-09-27T21:48:41Z container destroy kvb-srv kvnode:0.1.0
-2026-09-27T21:48:41Z container create kvb-srv kvnode:0.1.0
+2026-09-27T21:48:41Z container die kvb-srv kvasm:0.1.0
+2026-09-27T21:48:41Z container destroy kvb-srv kvasm:0.1.0
+2026-09-27T21:48:41Z container create kvb-srv kvasm:0.1.0
 2026-09-27T21:48:41Z network connect bridge <no value>
-2026-09-27T21:48:42Z container start kvb-srv kvnode:0.1.0
-2026-09-27T21:48:42Z container create awesome_brown kvnode-kvbench:dev
-2026-09-27T21:48:42Z container attach awesome_brown kvnode-kvbench:dev
-2026-09-27T21:48:42Z container start awesome_brown kvnode-kvbench:dev
-2026-09-27T21:49:00Z container die awesome_brown kvnode-kvbench:dev
-2026-09-27T21:49:01Z container destroy awesome_brown kvnode-kvbench:dev
-2026-09-27T21:49:01Z container kill kvb-srv kvnode:0.1.0
+2026-09-27T21:48:42Z container start kvb-srv kvasm:0.1.0
+2026-09-27T21:48:42Z container create awesome_brown kvasm-kvbench:dev
+2026-09-27T21:48:42Z container attach awesome_brown kvasm-kvbench:dev
+2026-09-27T21:48:42Z container start awesome_brown kvasm-kvbench:dev
+2026-09-27T21:49:00Z container die awesome_brown kvasm-kvbench:dev
+2026-09-27T21:49:01Z container destroy awesome_brown kvasm-kvbench:dev
+2026-09-27T21:49:01Z container kill kvb-srv kvasm:0.1.0
 2026-09-27T21:49:01Z network disconnect bridge <no value>
-2026-09-27T21:49:01Z container die kvb-srv kvnode:0.1.0
-2026-09-27T21:49:01Z container destroy kvb-srv kvnode:0.1.0
-2026-09-27T21:49:01Z container create kvb-srv kvnode:0.1.0
+2026-09-27T21:49:01Z container die kvb-srv kvasm:0.1.0
+2026-09-27T21:49:01Z container destroy kvb-srv kvasm:0.1.0
+2026-09-27T21:49:01Z container create kvb-srv kvasm:0.1.0
 2026-09-27T21:49:01Z network connect bridge <no value>
-2026-09-27T21:49:01Z container start kvb-srv kvnode:0.1.0
-2026-09-27T21:49:02Z container create wizardly_kowalevski kvnode-kvbench:dev
-2026-09-27T21:49:02Z container attach wizardly_kowalevski kvnode-kvbench:dev
-2026-09-27T21:49:02Z container start wizardly_kowalevski kvnode-kvbench:dev
-2026-09-27T21:49:18Z container die wizardly_kowalevski kvnode-kvbench:dev
-2026-09-27T21:49:18Z container destroy wizardly_kowalevski kvnode-kvbench:dev
-2026-09-27T21:49:18Z container kill kvb-srv kvnode:0.1.0
+2026-09-27T21:49:01Z container start kvb-srv kvasm:0.1.0
+2026-09-27T21:49:02Z container create wizardly_kowalevski kvasm-kvbench:dev
+2026-09-27T21:49:02Z container attach wizardly_kowalevski kvasm-kvbench:dev
+2026-09-27T21:49:02Z container start wizardly_kowalevski kvasm-kvbench:dev
+2026-09-27T21:49:18Z container die wizardly_kowalevski kvasm-kvbench:dev
+2026-09-27T21:49:18Z container destroy wizardly_kowalevski kvasm-kvbench:dev
+2026-09-27T21:49:18Z container kill kvb-srv kvasm:0.1.0

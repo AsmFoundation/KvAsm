@@ -2,14 +2,14 @@
 ; abi.asm — exports the assembler's view of shared struct layouts.
 ;
 ; test_abi.c compares these numbers with offsetof/sizeof of the C mirror in
-; server/tests/kvnode_abi.h. The order below is part of that contract: append
+; server/tests/kvasm_abi.h. The order below is part of that contract: append
 ; new entries at the end and update test_abi.c in the same commit.
 ; =============================================================================
 
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 %include "server.inc"
 
 section .rodata

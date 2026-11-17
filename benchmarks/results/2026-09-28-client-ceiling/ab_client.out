@@ -16,4 +16,4 @@ medians (runs):
   A standard client, 16 vCPUs    9.72M/s  server 0.69 busy  568 ns/op  client 0.97 busy  1596 ns/op  outside 5.5  (n=6)
   B bigger client, 24 vCPUs      8.60M/s  server 0.86 busy  810 ns/op  client 0.68 busy  1888 ns/op  outside 6.1  (n=6)
 B/A throughput: median 0.877x [0.845-0.900], B higher in 0/6 blocks, sign p = 0.031
-B/A KvNode core utilization: median 1.232x [1.192-1.320], B higher in 6/6 blocks, sign p = 0.031
+B/A KvAsm core utilization: median 1.232x [1.192-1.320], B higher in 6/6 blocks, sign p = 0.031

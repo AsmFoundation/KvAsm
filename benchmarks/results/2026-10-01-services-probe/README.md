@@ -13,7 +13,7 @@
   | File | What |
   |---|---|
   | `services_probe.c` | the probe: every structure, its reference check, its timing |
-  | `run.sh` | builds the store's assembly and the probe in `kvnode-dev`, runs it |
+  | `run.sh` | builds the store's assembly and the probe in `kvasm-dev`, runs it |
   | `output.txt` | the certified 10M-key run quoted everywhere |
   | `control_golden_bar.sh`, `control.txt` | the golden probe's own bar, run the same hour |
   | `output-run1-repmovsq.txt` | the first certified run, kept as the exhibit of a probe bug (below); do not quote it |
@@ -23,9 +23,9 @@
 ```bash
 # full run, 10M keys, pinned to CPU 4, 5 repetitions (~40 s, ~3.2 GB)
 MSYS_NO_PATHCONV=1 docker exec -e REV="$(git rev-parse --short HEAD)" \
-  kvnode-dev bash /src/benchmarks/results/2026-10-01-services-probe/run.sh 4 5
+  kvasm-dev bash /src/benchmarks/results/2026-10-01-services-probe/run.sh 4 5
 # smoke test: 1M keys, one repetition, every check, meaningless timings
-MSYS_NO_PATHCONV=1 docker exec -e QUICK=1 kvnode-dev \
+MSYS_NO_PATHCONV=1 docker exec -e QUICK=1 kvasm-dev \
   bash /src/benchmarks/results/2026-10-01-services-probe/run.sh
 ```
 
@@ -134,7 +134,7 @@ recorded so the next probe avoids them.
 - **The window was certified by a host-side wrapper**, a successor of the
   golden probe's (session scratchpad, `certified_run2.sh`). It required 3
   consecutive idle polls, 5 s apart:
-  - kvnode-dev had no process besides pid 1, zombies, and six process trees
+  - kvasm-dev had no process besides pid 1, zombies, and six process trees
     stuck in D state since 2026-09-29;
   - VM CPU below 2% over 2 s, from `/proc/stat` deltas;
   - host CPU below 20%.

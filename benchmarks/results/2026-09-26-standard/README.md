@@ -41,11 +41,11 @@ for exactly that reason.
   stable. S1 ÷ E1 (the same cell, hours apart) is 1.26–1.87× for every
   system, which shows how much the loaded hours depressed E1.
 - **The S1 medians give the best idea of an unloaded 4-core machine:**
-  Garnet 4.20M, Valkey 3.52M, KvNode 3.14M, Redis 3.00M, Memcached 2.80M,
+  Garnet 4.20M, Valkey 3.52M, KvAsm 3.14M, Redis 3.00M, Memcached 2.80M,
   Dragonfly 2.53M GET/s.
 - **E8, which ran just before S1, validates the client.** kvbench was faster
   than every standard tool on the same server: Redis 3.02M (kvbench) vs
-  2.86M (redis-benchmark) vs 2.60M (memtier_benchmark), and KvNode 3.19M
+  2.86M (redis-benchmark) vs 2.60M (memtier_benchmark), and KvAsm 3.19M
   (kvbench) vs 2.67M (h2load) on one key.
 - **The paired comparisons stay internally consistent.** Load that is shared
   within a block cancels, but load that changes within a block adds noise

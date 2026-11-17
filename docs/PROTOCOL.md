@@ -1,7 +1,7 @@
-# KvNode protocol and client contract
+# KvAsm protocol and client contract
 
-Everything a KvNode client needs, in any language. The normative contract is
-[`proto/kvnode/v1/kvnode.proto`](../proto/kvnode/v1/kvnode.proto); this page
+Everything a KvAsm client needs, in any language. The normative contract is
+[`proto/kvasm/v1/kvasm.proto`](../proto/kvasm/v1/kvasm.proto); this page
 adds the parts protobuf cannot express. The .NET client
 ([`client/dotnet`](../client/dotnet)) is the reference implementation, and its
 tests pin every rule below.
@@ -27,15 +27,15 @@ tests pin every rule below.
 
 | Method | Request | Response | Notes |
 |---|---|---|---|
-| `/kvnode.v1.KvNode/Get` | `key` | `found`, `value` | A missing key is `OK` with `found = false`. An empty stored value is `found = true` and an empty `value`. |
-| `/kvnode.v1.KvNode/Put` | `key`, `value` | `created` | Atomic replace: readers see the old or the new value, never a mix. `created = false` means an existing value was replaced. |
-| `/kvnode.v1.KvNode/Delete` | `key` | `deleted` | `deleted = false` means the key was absent. |
-| `/kvnode.v1.KvNode/Upload` | stream of `key`, `total_size`, `data`, `crc32c` | `created`, `crc32c` | Values up to `KVNODE_MAX_UPLOAD_BYTES`, sent in chunks; stored atomically at the end, or not at all. |
-| `/kvnode.v1.KvNode/Download` | `key`, `offset`, `length`, `chunk_size` | stream of `total_size`, `data`, `crc32c` | A value or a byte range of it, in chunks; one version per call. A missing key is `NOT_FOUND`. |
-| `/grpc.health.v1.Health/Check` | `service` | `status` | `""` or `kvnode.v1.KvNode` gets `SERVING`, or `NOT_SERVING` once the server drains for shutdown. Other services get `NOT_FOUND`. `Watch` is `UNIMPLEMENTED`. |
+| `/kvasm.v1.KvAsm/Get` | `key` | `found`, `value` | A missing key is `OK` with `found = false`. An empty stored value is `found = true` and an empty `value`. |
+| `/kvasm.v1.KvAsm/Put` | `key`, `value` | `created` | Atomic replace: readers see the old or the new value, never a mix. `created = false` means an existing value was replaced. |
+| `/kvasm.v1.KvAsm/Delete` | `key` | `deleted` | `deleted = false` means the key was absent. |
+| `/kvasm.v1.KvAsm/Upload` | stream of `key`, `total_size`, `data`, `crc32c` | `created`, `crc32c` | Values up to `KVASM_MAX_UPLOAD_BYTES`, sent in chunks; stored atomically at the end, or not at all. |
+| `/kvasm.v1.KvAsm/Download` | `key`, `offset`, `length`, `chunk_size` | stream of `total_size`, `data`, `crc32c` | A value or a byte range of it, in chunks; one version per call. A missing key is `NOT_FOUND`. |
+| `/grpc.health.v1.Health/Check` | `service` | `status` | `""` or `kvasm.v1.KvAsm` gets `SERVING`, or `NOT_SERVING` once the server drains for shutdown. Other services get `NOT_FOUND`. `Watch` is `UNIMPLEMENTED`. |
 
-Get refuses a value larger than `KVNODE_MAX_VALUE_BYTES` (which only Upload
-can store when `KVNODE_MAX_UPLOAD_BYTES` is larger) with `RESOURCE_EXHAUSTED`
+Get refuses a value larger than `KVASM_MAX_VALUE_BYTES` (which only Upload
+can store when `KVASM_MAX_UPLOAD_BYTES` is larger) with `RESOURCE_EXHAUSTED`
 and the message "read it with Download": one unary message holding the whole
 value is exactly what the streaming calls exist to avoid.
 
@@ -43,9 +43,9 @@ value is exactly what the streaming calls exist to avoid.
 
 | Code | When |
 |---|---|
-| `INVALID_ARGUMENT` (3) | empty key, key over `KVNODE_MAX_KEY_BYTES`, value over `KVNODE_MAX_VALUE_BYTES` (Put) or `KVNODE_MAX_UPLOAD_BYTES` (Upload), malformed protobuf; an Upload [rule](#upload) broken |
+| `INVALID_ARGUMENT` (3) | empty key, key over `KVASM_MAX_KEY_BYTES`, value over `KVASM_MAX_VALUE_BYTES` (Put) or `KVASM_MAX_UPLOAD_BYTES` (Upload), malformed protobuf; an Upload [rule](#upload) broken |
 | `NOT_FOUND` (5) | Download of a missing key; health check for an unknown service |
-| `RESOURCE_EXHAUSTED` (8) | store at `KVNODE_CAPACITY` keys or at `KVNODE_MAX_MEMORY_MB`; request message larger than key + value limits allow; Get of a value above `KVNODE_MAX_VALUE_BYTES`; the connection's uploads in progress would exceed `KVNODE_CONN_BUFFER_MB` |
+| `RESOURCE_EXHAUSTED` (8) | store at `KVASM_CAPACITY` keys or at `KVASM_MAX_MEMORY_MB`; request message larger than key + value limits allow; Get of a value above `KVASM_MAX_VALUE_BYTES`; the connection's uploads in progress would exceed `KVASM_CONN_BUFFER_MB` |
 | `OUT_OF_RANGE` (11) | Download `offset` past the end of the value |
 | `UNIMPLEMENTED` (12) | unknown method or service; unsupported compression codec |
 | `INTERNAL` (13) | framing violations (no message, two messages, bad length prefix, compressed flag without codec, a message flag other than 0/1, an Upload stream that ends inside a message) |
@@ -70,8 +70,8 @@ restarted, because the value may have changed in between (resume with
 ## Streaming: Upload and Download
 
 For values larger than one comfortable message — up to
-`KVNODE_MAX_UPLOAD_BYTES` (default 64 MiB, at most 2³¹ − 1 and never above
-`KVNODE_CONN_BUFFER_MB`) — and for byte ranges of any value. Put/Get stay the
+`KVASM_MAX_UPLOAD_BYTES` (default 64 MiB, at most 2³¹ − 1 and never above
+`KVASM_CONN_BUFFER_MB`) — and for byte ranges of any value. Put/Get stay the
 fast path for small values; the two families interoperate (Upload then Get,
 Put then Download).
 
@@ -102,10 +102,10 @@ stored:
    to 1 MiB is efficient.
 
 As soon as `key` and `total_size` are known, the server **reserves** the
-final record: `total_size` above `KVNODE_MAX_UPLOAD_BYTES` is refused
+final record: `total_size` above `KVASM_MAX_UPLOAD_BYTES` is refused
 (`INVALID_ARGUMENT`), and so is a reservation the memory limit or the
 connection's budget cannot take (`RESOURCE_EXHAUSTED`; each connection may
-hold at most `KVNODE_CONN_BUFFER_MB` of declared sizes in uploads in
+hold at most `KVASM_CONN_BUFFER_MB` of declared sizes in uploads in
 progress). Every data byte is then copied **once**, straight from the
 received frame into that record, and checksummed in the same pass. At the
 end of the stream the server checks the size and the checksum and
@@ -142,10 +142,10 @@ more data than the range, or fails the checksum is not a value.
 **One version per call.** The server pins the record for the whole call, so
 a value replaced or deleted meanwhile is still read whole as it was when the
 call started. The pinned record stays in memory (and counted against
-`KVNODE_MAX_MEMORY_MB`) until the call ends. The response body is generated
+`KVASM_MAX_MEMORY_MB`) until the call ends. The response body is generated
 frame by frame as the client's flow-control window opens: a slow reader
 slows the call, it never grows the server's buffers. A reader that stops
-entirely for `KVNODE_IDLE_TIMEOUT_SEC` is disconnected, which releases the
+entirely for `KVASM_IDLE_TIMEOUT_SEC` is disconnected, which releases the
 pin — also when it stopped reading its socket altogether.
 
 ### Conformance vectors
@@ -182,20 +182,20 @@ Keys of 64 bytes or less are sent unchanged.
 - *Snapshots* apply the same rule (see below), so data loaded from a
   snapshot is found by the clients.
 
-## Snapshot file format (`KVNSNAP1`)
+## Snapshot file format (`KVASNAP1`)
 
 A snapshot is the bulk data source a server loads at startup
-(`KVNODE_SNAPSHOT=/path`). All integers are little-endian.
+(`KVASM_SNAPSHOT=/path`). All integers are little-endian.
 
 | Offset | Size | Field |
 |---|---|---|
-| 0 | 8 | magic `KVNSNAP1` |
+| 0 | 8 | magic `KVASNAP1` |
 | 8 | 4 | version = 1 |
 | 12 | 4 | flags = 0 |
 | 16 | 8 | record count |
 | 24 | 8 | reserved = 0 |
 | 32 | … | records: `u32 key_len`, `u32 value_len`, key bytes, value bytes |
-| end − 16 | 8 | trailer magic `KVNSEND1` |
+| end − 16 | 8 | trailer magic `KVASEND1` |
 | end − 8 | 8 | checksum: SipHash-2-4-128 with a 16-byte all-zero key, **low** 64-bit word, over every byte before the trailer |
 
 The server verifies the file before storing anything, in this order: size,
@@ -218,11 +218,11 @@ must never leave a partial file where the server looks. The .NET
 *i* has `i mod 301` value bytes and byte *j* is `(i·131 + j·7) mod 256`, is:
 
 ```
-4b564e534e415031 01000000 00000000 0300000000000000 0000000000000000
+4b5641534e415031 01000000 00000000 0300000000000000 0000000000000000
 06000000 00000000 736e61702d30
 06000000 01000000 736e61702d31 83
 06000000 02000000 736e61702d32 060d
-4b564e53454e4431 2d587aca1228a35d
+4b564153454e4431 0a633ad6a4e06994
 ```
 
 The server-side tool (`server/tests/integration/mksnap`) and the .NET writer

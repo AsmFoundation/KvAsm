@@ -1,10 +1,10 @@
 /*
- * test_abi.c — the C mirror (kvnode_abi.h) must match the NASM layouts.
+ * test_abi.c — the C mirror (kvasm_abi.h) must match the NASM layouts.
  *
  * A mismatch here would make every other test (and the server's C-facing
  * callers) read the wrong fields, so this test runs first.
  */
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 #include "test_common.h"
 
 /** Entry point. @return 0 when every layout fact matches. */

@@ -38,11 +38,11 @@
     "dirty": true
   },
   "images": {
-    "kvnode": {
-      "image": "kvnode:adr0011",
+    "kvasm": {
+      "image": "kvasm:adr0011",
       "id": "sha256:b2900782814d6fa9043dcaebf91f609ed986eca622886fcce5d2fbbcf3160b22",
       "digests": [
-        "kvnode@sha256:b2900782814d6fa9043dcaebf91f609ed986eca622886fcce5d2fbbcf3160b22"
+        "kvasm@sha256:b2900782814d6fa9043dcaebf91f609ed986eca622886fcce5d2fbbcf3160b22"
       ]
     },
     "redis": {
@@ -83,10 +83,10 @@
       ]
     },
     "kvbench": {
-      "image": "kvnode-kvbench:dev",
+      "image": "kvasm-kvbench:dev",
       "id": "sha256:952a6003559218bdb17f3b6ac3995904815278647064a4aca8cb7064e43cdf86",
       "digests": [
-        "kvnode-kvbench@sha256:952a6003559218bdb17f3b6ac3995904815278647064a4aca8cb7064e43cdf86"
+        "kvasm-kvbench@sha256:952a6003559218bdb17f3b6ac3995904815278647064a4aca8cb7064e43cdf86"
       ]
     },
     "memtier": {
@@ -98,20 +98,20 @@
       ]
     },
     "h2load": {
-      "image": "kvnode-toolchain:latest",
+      "image": "kvasm-toolchain:latest",
       "id": "sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d",
       "digests": [
-        "kvnode-toolchain@sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d"
+        "kvasm-toolchain@sha256:324b0723c1dafd6ac410d9e8a3d428f3e61da90237ed9e235d63ce61be2ad31d"
       ]
     }
   },
   "systems": {
-    "kvnode": {
-      "title": "KvNode (kvnode:adr0011)",
-      "image": "kvnode:adr0011",
+    "kvasm": {
+      "title": "KvAsm (kvasm:adr0011)",
+      "image": "kvasm:adr0011",
       "protocol": "grpc",
-      "notes": "gRPC over h2c; one worker thread per core (KVNODE_WORKERS).",
-      "build": "docker build --target runtime -t kvnode:adr0011 . (repository root)"
+      "notes": "gRPC over h2c; one worker thread per core (KVASM_WORKERS).",
+      "build": "docker build --target runtime -t kvasm:adr0011 . (repository root)"
     },
     "redis": {
       "title": "Redis 8.10.2",
@@ -155,7 +155,7 @@
       "title": "Writes at 4 cores",
       "question": "E2's 100% SET and 50% GET cells: how do writes compare with every other store?",
       "systems": [
-        "kvnode",
+        "kvasm",
         "redis",
         "valkey",
         "dragonfly",

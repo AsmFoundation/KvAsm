@@ -1,11 +1,11 @@
 # Native HTTP/2 engine, final — N1-N3, 2026-09-26
 
-The measurement behind the published 1-core claim: KvNode's native HTTP/2
+The measurement behind the published 1-core claim: KvAsm's native HTTP/2
 engine ([ADR 0007](../../../docs/adr/0007-native-http2-engine.md)) against
 nghttp2, Redis and Valkey. The full report is in [REPORT.md](REPORT.md);
 the raw records are in `raw.jsonl`.
 
-**What was measured.** The `kvnode:0.1.0` image of the commit that adds the
+**What was measured.** The `kvasm:0.1.0` image of the commit that adds the
 engine, with everything in it:
 
 - the header-block cache and O(1) stream-map removal (as in
@@ -14,8 +14,8 @@ engine, with everything in it:
 - huge pages for the store's table (prefaulted).
 
 The Docker build that produced the image ran every test, including h2spec
-146/146 and the fuzzer. Each KvNode system names its engine explicitly
-(`KVNODE_H2_ENGINE=native` or `nghttp2`), so the result does not depend on
+146/146 and the fuzzer. Each KvAsm system names its engine explicitly
+(`KVASM_H2_ENGINE=native` or `nghttp2`), so the result does not depend on
 the default (which is `native`).
 
 **Host:** outside load was a median of 7.0, 8.0 and 6.6 logical CPUs for
@@ -41,7 +41,7 @@ where 4 cores reached 7.80M GET/s (3.06× nghttp2).
 
 **Reading.**
 
-- On one core KvNode now serves more GETs than Redis and Valkey, with less
+- On one core KvAsm now serves more GETs than Redis and Valkey, with less
   CPU per request and lower median latency.
 - For a pure no-op, a gRPC health check (HTTP/2 frames, HPACK, protobuf)
   now costs the same as a RESP `PING`.

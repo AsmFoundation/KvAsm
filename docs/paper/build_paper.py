@@ -1,4 +1,4 @@
-"""Build the KvNode case-study paper: its figures (PNG) and the Word document (.docx).
+"""Build the KvAsm case-study paper: its figures (PNG) and the Word document (.docx).
 
 The paper's text lives in ``paper.md``, a small Markdown dialect that stays readable as
 plain text; this script turns it into an academically styled ``.docx`` with python-docx
@@ -54,14 +54,14 @@ REPO = HERE.parent.parent
 FIG_DIR = HERE / "figures"
 DATA_DIR = HERE / "data"
 SOURCE = HERE / "paper.md"
-OUTPUT = HERE / "KvNode-agentic-assembly-paper.docx"
+OUTPUT = HERE / "KvAsm-agentic-assembly-paper.docx"
 
 #: The revision the paper describes. Later commits (this paper among them) must not
 #: change the counts it quotes, so every git-derived fact is taken at this revision.
 STUDY_REVISION = "6871e31"
 
 #: Short running head printed on every page after the first.
-RUNNING_HEAD = "Measured, Not Argued — agentic development of KvNode in x86-64 assembly"
+RUNNING_HEAD = "Measured, Not Argued — agentic development of KvAsm in x86-64 assembly"
 
 # --------------------------------------------------------------------------------------
 # Visual system (validated with the dataviz skill's palette validator, light mode on a
@@ -85,7 +85,7 @@ DPI = 220
 
 #: The six compared systems in the order every table and chart uses, so each keeps
 #: its color everywhere (color follows the entity, never its rank).
-SYSTEMS = ["KvNode", "Redis", "Valkey", "Dragonfly", "Garnet", "Memcached"]
+SYSTEMS = ["KvAsm", "Redis", "Valkey", "Dragonfly", "Garnet", "Memcached"]
 SYSTEM_COLOR = dict(zip(SYSTEMS, SERIES))
 #: Marker shapes repeat the color encoding for grayscale print and color-vision deficiency.
 SYSTEM_MARKER = dict(zip(SYSTEMS, ["o", "s", "^", "D", "v", "p"]))
@@ -179,7 +179,7 @@ def hours_since_start(iso: str) -> float:
 
 
 def object_code_bytes() -> int:
-    """Total executable bytes in KvNode's assembled objects (the binary itself excluded).
+    """Total executable bytes in KvAsm's assembled objects (the binary itself excluded).
 
     Returns:
         Sum of the ``text`` totals of every ``obj/*.o`` entry in ``elf_sizes.json``.
@@ -189,15 +189,31 @@ def object_code_bytes() -> int:
 
 
 def benchmark_run_records() -> int:
-    """Count benchmark runs committed as raw JSON lines under ``benchmarks/results``.
+    """Count benchmark runs committed as raw JSON lines under ``benchmarks/results``, as of
+    :data:`STUDY_REVISION`.
+
+    The count is read from git at the study revision, like the commit count, and never
+    from the working tree: benchmark sessions committed after the study add runs, and
+    counting them would make the paper's stated total (and this build) fail for reasons
+    that have nothing to do with the paper.
 
     Returns:
-        Number of non-empty lines across every ``*.jsonl`` file (one line = one run).
+        Number of lines with any non-whitespace character across every ``*.jsonl`` file
+        under ``benchmarks/results`` at the study revision (one line = one run).
+
+    Raises:
+        subprocess.CalledProcessError: If git fails: the study revision is missing (a
+            shallow clone), or no file under ``benchmarks/results`` has a non-blank line at
+            that revision (``git grep`` exits 1 when nothing matches).
     """
+    out = git("grep", "-c", "-E", "[^[:space:]]", STUDY_REVISION, "--", "benchmarks/results")
     total = 0
-    for path in sorted((REPO / "benchmarks" / "results").rglob("*.jsonl")):
-        with path.open(encoding="utf-8") as fh:
-            total += sum(1 for line in fh if line.strip())
+    for line in out.splitlines():
+        # Each line is "<revision>:<path>:<count>". Only raw run records count; the
+        # results folders also hold logs, reports and scripts.
+        location, _, count = line.rpartition(":")
+        if location.endswith(".jsonl"):
+            total += int(count)
     return total
 
 
@@ -439,7 +455,7 @@ def diagram_axes(width_in: float, height_in: float, xmax: float = 100.0):
 # ======================================================================================
 
 def fig1_architecture() -> Path:
-    """Figure 1: KvNode's process structure (clients, kernel, workers, shared store).
+    """Figure 1: KvAsm's process structure (clients, kernel, workers, shared store).
 
     Returns:
         Path of the written PNG.
@@ -456,13 +472,13 @@ def fig1_architecture() -> Path:
     ax.add_patch(FancyBboxPatch((34.0, 0.8), 65.2, ymax - 1.6,
                                 boxstyle="round,pad=0,rounding_size=1.6", facecolor="none",
                                 edgecolor=SERIES[0], linewidth=1.0, zorder=1))
-    ax.text(35.4, ymax - 3.0, "kvnode process  ·  x86-64 assembly  ·  static-PIE, FROM scratch, non-root",
+    ax.text(35.4, ymax - 3.0, "kvasm process  ·  x86-64 assembly  ·  static-PIE, FROM scratch, non-root",
             ha="left", va="center", fontsize=6.5, color=INK, fontweight="semibold")
 
     diagram_box(ax, 36.0, 40.6, 38.6, 8.2,
                 "main thread\nsettings → port probe → SipHash key → store → snapshot\n"
                 "→ workers → sigwaitinfo; graceful drain on SIGTERM", size=5.9)
-    diagram_box(ax, 80.0, 40.6, 17.4, 8.2, "snapshot file\nKVNSNAP1, verified", size=6.2)
+    diagram_box(ax, 80.0, 40.6, 17.4, 8.2, "snapshot file\nKVASNAP1, verified", size=6.2)
     # The gap between the boxes is sized so the "startup" label fits without touching.
     arrow(ax, (80.0, 44.0), (74.6, 44.0))
     ax.text(77.3, 45.0, "startup", ha="center", va="bottom", fontsize=5.6, color=INK2)
@@ -647,14 +663,14 @@ def fig3_decisions() -> Path:
 
 # Published medians (benchmarks/results/2026-09-27-standard/README.md and REPORT.md).
 S1_GETS_M = [8.84, 2.88, 3.20, 2.40, 3.86, 3.01]           # 4 cores, 10 blocks
-S1_RATIO = [None, 3.07, 2.76, 3.68, 2.29, 2.94]             # KvNode ÷ system
-N1_GETS_M = [1.76, 1.40, 1.42]                              # 1 core: KvNode, Redis, Valkey
+S1_RATIO = [None, 3.07, 2.76, 3.68, 2.29, 2.94]             # KvAsm ÷ system
+N1_GETS_M = [1.76, 1.40, 1.42]                              # 1 core: KvAsm, Redis, Valkey
 N1_RATIO = [None, 1.26, 1.24]
 N1_CPU_NS = [576, 722, 710]
 E5_NOOP_NS = [472, 479, 525, 541, 774, 1837]                # 1 core, all six systems
 E7_IN_FLIGHT = [1, 16, 64, 256, 1024]
 E7_GETS = {                                                 # 4 cores, ops/s
-    "KvNode": [35e3, 314e3, 714e3, 2.94e6, 9.11e6],
+    "KvAsm": [35e3, 314e3, 714e3, 2.94e6, 9.11e6],
     "Redis": [19e3, 175e3, 297e3, 1.05e6, 2.91e6],
     "Valkey": [35e3, 275e3, 426e3, 1.56e6, 3.42e6],
     "Dragonfly": [21e3, 235e3, 423e3, 1.07e6, 2.50e6],
@@ -665,11 +681,11 @@ E7_GETS = {                                                 # 4 cores, ops/s
 
 def _emphasis_bars(ax, names: list[str], values: list[float], labels: list[str],
                    ymax: float, yticks: list[float], fmt) -> None:
-    """Draw an emphasis bar chart: KvNode in the accent hue, every rival in gray.
+    """Draw an emphasis bar chart: KvAsm in the accent hue, every rival in gray.
 
     Args:
         ax: Target axes (its layout must already be final; see :func:`rounded_bar`).
-        names: Category names, KvNode first.
+        names: Category names, KvAsm first.
         values: Bar heights.
         labels: Text placed above each bar (may contain a second line).
         ymax: Upper y limit.
@@ -685,15 +701,15 @@ def _emphasis_bars(ax, names: list[str], values: list[float], labels: list[str],
     hairline_grid(ax, "y")
     ax.spines["left"].set_visible(False)
     for i, (name, value, label) in enumerate(zip(names, values, labels)):
-        color = SERIES[0] if name == "KvNode" else MUTED
+        color = SERIES[0] if name == "KvAsm" else MUTED
         rounded_bar(ax, 0, i - 0.29, 0.58, value, color)
         ax.text(i, value + ymax * 0.02, label, ha="center", va="bottom", fontsize=6.6,
-                color=INK if name == "KvNode" else INK2,
-                fontweight="semibold" if name == "KvNode" else "normal", linespacing=1.15)
+                color=INK if name == "KvAsm" else INK2,
+                fontweight="semibold" if name == "KvAsm" else "normal", linespacing=1.15)
 
 
 def fig4_throughput() -> Path:
-    """Figure 4: headline throughput and per-request CPU, KvNode emphasized.
+    """Figure 4: headline throughput and per-request CPU, KvAsm emphasized.
 
     Returns:
         Path of the written PNG.
@@ -743,8 +759,8 @@ def fig5_concurrency() -> Path:
         ax.plot(E7_IN_FLIGHT, ys, color=SYSTEM_COLOR[name], linewidth=1.4,
                 solid_capstyle="round", solid_joinstyle="round", marker=SYSTEM_MARKER[name],
                 markersize=4.6, markerfacecolor=SYSTEM_COLOR[name], markeredgecolor=SURFACE,
-                markeredgewidth=0.9, label=name, zorder=3 if name == "KvNode" else 2)
-    ax.annotate("KvNode 9.11 M", (1024, 9.11e6), xytext=(7, 0), textcoords="offset points",
+                markeredgewidth=0.9, label=name, zorder=3 if name == "KvAsm" else 2)
+    ax.annotate("KvAsm 9.11 M", (1024, 9.11e6), xytext=(7, 0), textcoords="offset points",
                 ha="left", va="center", fontsize=6.8, color=INK, fontweight="semibold")
     ax.xaxis.set_major_locator(FixedLocator(E7_IN_FLIGHT))
     ax.xaxis.set_minor_locator(NullLocator())
@@ -788,7 +804,7 @@ def fig6_breakdown() -> Path:
     # (label candidates, longest first; the first that fits inside its segment is used)
     segs = {
         1: [(("kernel  485", "485"), 485, MUTED), (("nghttp2  672", "672"), 672, SERIES[1]),
-            (("KvNode  222", "222"), 222, SERIES[0]), (("47",), 47, SERIES[2])],
+            (("KvAsm  222", "222"), 222, SERIES[0]), (("47",), 47, SERIES[2])],
         0: [(("kernel  ≈ 490", "≈ 490"), 490, MUTED),
             (("user space  ≈ 140", "≈ 140"), 140, SERIES[0])],
     }
@@ -814,7 +830,7 @@ def fig6_breakdown() -> Path:
         a.text(x + 18, ypos, total, ha="left", va="center", fontsize=6.6, color=INK,
                fontweight="semibold")
     handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in (MUTED, SERIES[1], SERIES[0], SERIES[2])]
-    a.legend(handles, ["kernel", "nghttp2", "KvNode assembly", "libc"], loc="upper right",
+    a.legend(handles, ["kernel", "nghttp2", "KvAsm assembly", "libc"], loc="upper right",
              bbox_to_anchor=(1.0, -0.38), ncol=4, fontsize=6.5, handlelength=1.0,
              handleheight=0.8, columnspacing=1.0, labelcolor=INK2)
 
@@ -1554,7 +1570,7 @@ def column_widths(header: list[str], rows: list[list[str]], total_cm: float) -> 
     """Distribute the text width over columns: a floor per column, the rest by content.
 
     Every column first gets a floor wide enough for its longest header word (a header
-    such as "KvNode" must never break mid-word), then the remaining width is shared in
+    such as "KvAsm" must never break mid-word), then the remaining width is shared in
     proportion to each column's longest cell, softened by a power of 0.75 so one long
     prose column cannot starve the numeric ones.
 

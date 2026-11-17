@@ -1,10 +1,10 @@
 % Measured, Not Argued: An LLM Coding Agent Builds an x86-64 Assembly Key-Value Server That Outperforms Redis on Reads
 % A case study of Claude Code (Claude Opus 5.5) reimplementing HTTP/2, HPACK, gRPC, Protocol Buffers and CRC-32C in assembly
 % Eli Belash
-% KvNode project · Technical report · 1 October 2026
+% KvAsm project · Technical report · 1 October 2026
 
 ::: abstract
-Assembly language is widely regarded as the least productive and least reviewable way to build software, and evaluations of large-language-model (LLM) coding agents have concentrated on high-level languages and short, self-contained tasks. We report a case study at the opposite extreme: a production-shaped network server written in x86-64 assembly by an agentic coding system, Claude Code running Claude Opus 5.5, under the direction of a single developer. Starting from an empty directory on 25 September 2026, the agent produced KvNode, a gRPC key-value server whose 16,798 lines of NASM assemble to 40 KB of machine code. The assembly includes the server's own HTTP/2 engine and HPACK decoder, gRPC and Protocol Buffers codecs with client- and server-streaming calls, a lock-free bucketized cuckoo store with quiescent-state reclamation, and CRC-32C by carry-less multiplication. Around it the agent built a .NET client, a multi-layer test suite, a cross-system benchmark harness and ten architecture decision records. The developer contributed 36 distinct prompts (about 1,150 words) and no code; the agent made 4,453 tool calls across ten sessions and created all 28 commits within five days. Development followed a measured-design loop: every performance hypothesis was profiled, built against rival implementations where the choice was contested, and accepted or rejected by paired, blocked A/B experiments with exact sign tests. The native HTTP/2 engine passes all 146 h2spec conformance cases (the nghttp2 library it replaced passes 138) and doubled per-core throughput. In a 747-run comparison on an Intel i9-13900K, KvNode served 8.84 million GET requests per second on four cores, 2.29–3.68× the throughput of Redis 8.10.2, Valkey 9.1.2, Dragonfly 2.0.0, Garnet 2.1.8 and Memcached 1.6.45 and ahead of each in all ten paired blocks. On one core it reached 1.26× Redis, with a per-request floor equal to a Redis PING. It is behind on write-only workloads (0.87× Redis, 0.60× Garnet) and on 16 KiB values. We describe the practices that made agentic assembly development tractable — differential oracles, conformance suites, fuzzing, mutation-checked regression tests and measurement hygiene on a shared host — the defects they caught, and the threats to validity of a single-developer, single-machine case study.
+Assembly language is widely regarded as the least productive and least reviewable way to build software, and evaluations of large-language-model (LLM) coding agents have concentrated on high-level languages and short, self-contained tasks. We report a case study at the opposite extreme: a production-shaped network server written in x86-64 assembly by an agentic coding system, Claude Code running Claude Opus 5.5, under the direction of a single developer. Starting from an empty directory on 25 September 2026, the agent produced KvAsm, a gRPC key-value server whose 16,798 lines of NASM assemble to 40 KB of machine code. The assembly includes the server's own HTTP/2 engine and HPACK decoder, gRPC and Protocol Buffers codecs with client- and server-streaming calls, a lock-free bucketized cuckoo store with quiescent-state reclamation, and CRC-32C by carry-less multiplication. Around it the agent built a .NET client, a multi-layer test suite, a cross-system benchmark harness and ten architecture decision records. The developer contributed 36 distinct prompts (about 1,150 words) and no code; the agent made 4,453 tool calls across ten sessions and created all 28 commits within five days. Development followed a measured-design loop: every performance hypothesis was profiled, built against rival implementations where the choice was contested, and accepted or rejected by paired, blocked A/B experiments with exact sign tests. The native HTTP/2 engine passes all 146 h2spec conformance cases (the nghttp2 library it replaced passes 138) and doubled per-core throughput. In a 747-run comparison on an Intel i9-13900K, KvAsm served 8.84 million GET requests per second on four cores, 2.29–3.68× the throughput of Redis 8.10.2, Valkey 9.1.2, Dragonfly 2.0.0, Garnet 2.1.8 and Memcached 1.6.45 and ahead of each in all ten paired blocks. On one core it reached 1.26× Redis, with a per-request floor equal to a Redis PING. It is behind on write-only workloads (0.87× Redis, 0.60× Garnet) and on 16 KiB values. We describe the practices that made agentic assembly development tractable — differential oracles, conformance suites, fuzzing, mutation-checked regression tests and measurement hygiene on a shared host — the defects they caught, and the threats to validity of a single-developer, single-machine case study.
 :::
 
 **Keywords:** LLM coding agents; agentic software engineering; assembly language; key-value stores; HTTP/2; gRPC; performance engineering; benchmarking methodology
@@ -15,7 +15,7 @@ In-memory key-value servers are among the most heavily optimized programs in pro
 
 LLM coding agents change that cost. Agentic systems now plan, edit, build, test and measure software through tools, over hours or days [1, 24, 57]. Their evaluation, however, has concentrated on high-level languages and on tasks with short horizons: resolving a repository issue [24], improving one function's performance [51] or writing one kernel [43]. Machine learning has produced faster assembly before — AlphaDev discovered sorting routines that were merged into LLVM's C++ standard library [31] — but for small, isolated routines under an automatic objective, not for whole systems.
 
-This paper reports a case study at the other extreme. One developer directed Claude Code [1], running the Claude Opus 5.5 model, to build a gRPC key-value server in x86-64 assembly. Starting from an empty directory on 25 September 2026, the agent produced **KvNode**: 16,798 lines of NASM that assemble to 40 KB of machine code. They include the server's own HTTP/2 engine and HPACK decoder, which replaced the nghttp2 library the server first used, gRPC and Protocol Buffers codecs with client- and server-streaming calls, a lock-free bucketized cuckoo store with quiescent-state-based reclamation, and CRC-32C by carry-less multiplication. Around the server the agent built a .NET client, a multi-layer test suite, a load generator with a statistical harness for comparison against five production systems, and ten architecture decision records (ADRs) [41]. The developer typed 36 distinct prompts, about 1,150 words in total, and no code.
+This paper reports a case study at the other extreme. One developer directed Claude Code [1], running the Claude Opus 5.5 model, to build a gRPC key-value server in x86-64 assembly. Starting from an empty directory on 25 September 2026, the agent produced **KvAsm**: 16,798 lines of NASM that assemble to 40 KB of machine code. They include the server's own HTTP/2 engine and HPACK decoder, which replaced the nghttp2 library the server first used, gRPC and Protocol Buffers codecs with client- and server-streaming calls, a lock-free bucketized cuckoo store with quiescent-state-based reclamation, and CRC-32C by carry-less multiplication. Around the server the agent built a .NET client, a multi-layer test suite, a load generator with a statistical harness for comparison against five production systems, and ten architecture decision records (ADRs) [41]. The developer typed 36 distinct prompts, about 1,150 words in total, and no code.
 
 The resulting server is fast. On four cores of an Intel i9-13900K it served 8.84 million GET requests per second: 2.29–3.68× the throughput of Redis 8.10.2, Valkey 9.1.2, Dragonfly 2.0.0, Garnet 2.1.8 and Memcached 1.6.45, and ahead of each in all ten paired blocks of the experiment. On one core it reached 1.26× Redis. Its per-request floor, a gRPC health check carried over HTTP/2, costs as much server CPU as a Redis `PING`. It is also measurably behind on writes and on 16 KiB values; §5.7 reports those results as fully as the favorable ones.
 
@@ -28,13 +28,13 @@ We organize the study around four research questions:
 
 Our contributions are:
 
-1. **An artifact and an existence proof.** KvNode is a gRPC key-value server written in x86-64 assembly by an agent. It passes all 146 h2spec HTTP/2 conformance cases and outperforms five production servers on read throughput (§3, §5). The repository contains every benchmark run as raw data (3,481 recorded runs), every script and every decision record.
+1. **An artifact and an existence proof.** KvAsm is a gRPC key-value server written in x86-64 assembly by an agent. It passes all 146 h2spec HTTP/2 conformance cases and outperforms five production servers on read throughput (§3, §5). The repository contains every benchmark run as raw data (3,481 recorded runs), every script and every decision record.
 2. **A measured-design method for agentic systems work.** Every performance hypothesis is profiled, built (against rival implementations where the choice is contested), and accepted or rejected by paired, blocked A/B experiments with exact sign tests (§4.3).
 3. **A verification stack for agent-written assembly:** ABI-pinning tests, reference models, differential oracles, conformance suites, independent-stack interoperability, fuzzing and mutation-checked regression tests, together with the defects it caught (§4.4–4.5).
 4. **A quantitative account of the human–agent division of labor** over ten sessions, 4,453 tool calls and 28 commits (§4.2, §5.8).
 5. **An analysis of limits and threats to validity,** including the conflict of interest inherent in an agent reporting on its own work (§6).
 
-Section 2 reviews background and related work. Section 3 describes KvNode's design, Section 4 the development method and Section 5 the evaluation. Section 6 discusses lessons, limits and threats to validity, and Section 7 outlines future work.
+Section 2 reviews background and related work. Section 3 describes KvAsm's design, Section 4 the development method and Section 5 the evaluation. Section 6 discusses lessons, limits and threats to validity, and Section 7 outlines future work.
 
 # 2 Background and Related Work
 
@@ -42,7 +42,7 @@ Section 2 reviews background and related work. Section 3 describes KvNode's desi
 
 Redis [46] popularized the in-memory data-structure server. It executes commands on one thread and can offload socket I/O to helper threads; Valkey [56], a Linux Foundation fork of Redis, reworked that I/O threading. Dragonfly [11] partitions the keyspace across threads in a shared-nothing design, in the thread-per-core tradition of Seastar [49], and uses io_uring where available. Garnet [34], from Microsoft Research, is a multi-threaded .NET server built on the Tsavorite store, a descendant of FASTER [6]. Memcached [33] is the long-standing multi-threaded cache.
 
-Research systems have shown how far specialized designs can go. MemC3 [13] introduced optimistic concurrent cuckoo hashing with tag-filtered buckets, libcuckoo [28] extended it with fine-grained locking, MICA [30] co-designed partitioning with the network path, and RAMCloud [42] pursued microsecond latency with kernel bypass. Dataplane operating systems and user-level stacks such as IX [3] and mTCP [23], and RPC systems such as eRPC [25], show that the kernel network path and RPC framing dominate per-request cost at these rates. KvNode deliberately stays within the standard Linux socket API and Docker's default seccomp profile, which blocks io_uring [35]: every gain it reports comes from user-space work per request.
+Research systems have shown how far specialized designs can go. MemC3 [13] introduced optimistic concurrent cuckoo hashing with tag-filtered buckets, libcuckoo [28] extended it with fine-grained locking, MICA [30] co-designed partitioning with the network path, and RAMCloud [42] pursued microsecond latency with kernel bypass. Dataplane operating systems and user-level stacks such as IX [3] and mTCP [23], and RPC systems such as eRPC [25], show that the kernel network path and RPC framing dominate per-request cost at these rates. KvAsm deliberately stays within the standard Linux socket API and Docker's default seccomp profile, which blocks io_uring [35]: every gain it reports comes from user-space work per request.
 
 ## 2.2 HTTP/2, HPACK and gRPC
 
@@ -50,7 +50,7 @@ gRPC [19] carries each call over an HTTP/2 stream [54]. A call is a HEADERS fram
 
 ## 2.3 Low-level building blocks
 
-KvNode's store builds on cuckoo hashing [44] in its bucketized, tag-filtered form [13, 28]. Keys are hashed with SipHash [2], a keyed pseudo-random function that defeats hash-flooding attacks. Lock-free readers use sequence locks [4], whose correctness on x86 rests on its total-store-order memory model [50], and memory that readers may still hold is freed by read-copy-update-style, quiescent-state-based reclamation [21, 32]. The GET path applies group prefetching, which overlaps the cache misses of independent lookups [8, 27]. Checksums use the Castagnoli CRC-32C polynomial [5, 48], computed by folding with carry-less multiplication [18]. Practitioner references on x86 performance [12, 15, 22] seeded the agent's optimization catalog (§4.1).
+KvAsm's store builds on cuckoo hashing [44] in its bucketized, tag-filtered form [13, 28]. Keys are hashed with SipHash [2], a keyed pseudo-random function that defeats hash-flooding attacks. Lock-free readers use sequence locks [4], whose correctness on x86 rests on its total-store-order memory model [50], and memory that readers may still hold is freed by read-copy-update-style, quiescent-state-based reclamation [21, 32]. The GET path applies group prefetching, which overlaps the cache misses of independent lookups [8, 27]. Checksums use the Castagnoli CRC-32C polynomial [5, 48], computed by folding with carry-less multiplication [18]. Practitioner references on x86 performance [12, 15, 22] seeded the agent's optimization catalog (§4.1).
 
 ## 2.4 LLMs for code and for low-level performance
 
@@ -58,9 +58,9 @@ Code-generating language models were first evaluated on function synthesis [7, 2
 
 ## 2.5 Benchmarking methodology
 
-Fair comparison of servers is notoriously hard. Measurement setups can bias results without any visible error [36], and statistically rigorous evaluation requires repetitions and appropriate tests [16, 26]. Closed-loop load generators hide queueing delay unless latency is measured from intended send times (coordinated omission), which HDR histograms record with bounded error [53]. Workload definitions such as YCSB's scrambled Zipfian distribution [9] make results comparable across systems. KvNode's harness (§5.1) adopts these practices and adds paired, blocked designs suited to a shared, noisy host.
+Fair comparison of servers is notoriously hard. Measurement setups can bias results without any visible error [36], and statistically rigorous evaluation requires repetitions and appropriate tests [16, 26]. Closed-loop load generators hide queueing delay unless latency is measured from intended send times (coordinated omission), which HDR histograms record with bounded error [53]. Workload definitions such as YCSB's scrambled Zipfian distribution [9] make results comparable across systems. KvAsm's harness (§5.1) adopts these practices and adds paired, blocked designs suited to a shared, noisy host.
 
-# 3 KvNode: Design of an Assembly gRPC Server
+# 3 KvAsm: Design of an Assembly gRPC Server
 
 ## 3.1 Requirements
 
@@ -86,7 +86,7 @@ The event loop has two phases (ADR 0009). A worker first reads and processes eve
 
 The table is an array of 2^k^ buckets of 64 bytes. Each bucket is one cache line holding a version word, six 8-bit tags and six pointers to immutable records. A key's SipHash-2-4-128 digest [2] selects its first bucket and an 8-bit tag; the second bucket is the first XORed with a hash of the tag. A lookup touches at most two buckets. By default one SSE2 comparison matches the tags of both buckets, twelve slots, at once (Listing 1), and any tag hit is confirmed by an exact byte comparison of the key. SSE2 belongs to the x86-64 baseline, so the "no SIMD requirement" rule holds; a SWAR path that compares six tags in one 64-bit operation remains selectable.
 
-![Figure 1. KvNode's process structure. The kernel spreads connections over per-worker SO_REUSEPORT listeners; each worker runs a two-phase epoll loop, the native HTTP/2 engine (highlighted) and the gRPC/Protocol Buffers layer, all in assembly. Every worker reads the shared store without locks; writers serialize on one futex mutex.](figures/fig1_architecture.png)
+![Figure 1. KvAsm's process structure. The kernel spreads connections over per-worker SO_REUSEPORT listeners; each worker runs a two-phase epoll loop, the native HTTP/2 engine (highlighted) and the gRPC/Protocol Buffers layer, all in assembly. Every worker reads the shared store without locks; writers serialize on one futex mutex.](figures/fig1_architecture.png)
 
 Listing: Listing 1. The SSE2 two-bucket tag scan of `kv_cuckoo_get_sse2` in `cuckoo.asm` (excerpt; comments as in the source). Both bucket versions are read before the tags; a set bit in r11d marks a candidate slot in bucket 1 (bits 0–5) or bucket 2 (bits 8–13).
 ```nasm
@@ -123,7 +123,7 @@ The table is sized once from the configured capacity, at most about 83% full, an
 
 ## 3.4 A native HTTP/2 engine in assembly
 
-KvNode first used nghttp2 through its sans-I/O API, as ADR 0002 recommended: a production HTTP/2 library seemed safer than putting "the riskiest, most attack-exposed code in the least reviewable language." Profiling overturned that trade-off. At one core, 672 of the 1,427 ns of server time per request were spent inside nghttp2: header and Huffman decoding, its stream hash map, and a full encoder for response headers that never change. Redis spent 720 ns per request in total (ADR 0007). The agent therefore wrote a server-side HTTP/2 engine specialized for what KvNode serves (`h2n.asm`, 3,422 lines) and an HPACK decoder (`hpack.asm`, 1,110 lines). Once the engine was proven, it removed nghttp2 from the server entirely (ADR 0008).
+KvAsm first used nghttp2 through its sans-I/O API, as ADR 0002 recommended: a production HTTP/2 library seemed safer than putting "the riskiest, most attack-exposed code in the least reviewable language." Profiling overturned that trade-off. At one core, 672 of the 1,427 ns of server time per request were spent inside nghttp2: header and Huffman decoding, its stream hash map, and a full encoder for response headers that never change. Redis spent 720 ns per request in total (ADR 0007). The agent therefore wrote a server-side HTTP/2 engine specialized for what KvAsm serves (`h2n.asm`, 3,422 lines) and an HPACK decoder (`hpack.asm`, 1,110 lines). Once the engine was proven, it removed nghttp2 from the server entirely (ADR 0008).
 
 The engine's speed comes from specialization rather than from instruction-level tricks:
 
@@ -165,7 +165,7 @@ fold_k1024: FOLD_K 1087
 
 The checksum is fused with the copy the bytes need anyway and has four implementations, selected at startup: carry-less folding over eight 128-bit lanes with VPCLMULQDQ and AVX2, the same with PCLMULQDQ [18], the SSE4.2 `crc32` instruction, and slicing-by-8 tables. Fused with a 16 KiB copy in cache they reach about 88, 45, 15 and 3.2 GB/s. NASM's preprocessor computes both the lookup tables and the folding constants at assembly time (Listing 2), so no generated constants are checked in, and two `crc32` instructions finish the folded block instead of a Barrett reduction. Uploads of 64 KiB and more write their records with non-temporal stores, which skip the read-for-ownership of cold destination lines; that copy runs 2.4× faster.
 
-Table 2 summarizes the protocols and formats that KvNode implements in assembly and how each is verified.
+Table 2 summarizes the protocols and formats that KvAsm implements in assembly and how each is verified.
 
 Table: Table 2. Protocols and formats implemented in assembly, and their verification.
 | Protocol or format | Specification | Implementation | Verification |
@@ -177,13 +177,13 @@ Table: Table 2. Protocols and formats implemented in assembly, and their verific
 | CRC-32C (Castagnoli) | RFC 3720 [48] | `crc32c.asm`, four paths | every length 0–600 at 16 alignments against a bitwise reference |
 | SipHash-2-4-128 | Aumasson and Bernstein [2] | `siphash.asm` | reference vectors in C and .NET |
 | HTTP error semantics (405 with `allow`, 415 with `accept`) | RFC 9110 [14] | `grpc.asm` | end-to-end suite; h2spec |
-| Snapshot file `KVNSNAP1` | `docs/PROTOCOL.md` | `snapshot.asm` | 15 rejection cases; byte-exact vector shared with the .NET writer |
+| Snapshot file `KVASNAP1` | `docs/PROTOCOL.md` | `snapshot.asm` | 15 rejection cases; byte-exact vector shared with the .NET writer |
 
 ## 3.7 Footprint
 
 Table 3 lists the modules. The server is 15,086 lines of assembly in 18 source files plus 956 lines of include files; with the two bake-off rivals the repository holds 16,798 lines of NASM. The 17 assembled objects contain 40,131 bytes of machine code and 30 KB of read-only tables, chiefly the HPACK Huffman automaton and the CRC tables. The server links one library, glibc, statically. The static, position-independent executable is about 1.1–1.2 MB, almost all of it glibc, and ships in a `FROM scratch` container image of about 1.6 MB that runs as a non-root user on a read-only file system.
 
-Table: Table 3. KvNode's assembly modules at revision 6871e31: lines of NASM source and bytes of executable code in each assembled object.
+Table: Table 3. KvAsm's assembly modules at revision 6871e31: lines of NASM source and bytes of executable code in each assembled object.
 | Module | Role | Lines | Code bytes |
 |---|---|--:|--:|
 | `h2n.asm` | HTTP/2 engine: frames, stream states and map, flow control, precomputed responses, flood defenses | 3,422 | 8,864 |
@@ -213,7 +213,7 @@ Three kinds of persistent knowledge carried context across sessions and across t
 
 - **The repository.** ADRs, a protocol specification, an operations guide, and commit messages unusually rich in evidence (160 KB over 28 commits) that record each change's motivation, measurements and verification.
 - **Project memory.** Notes that Claude Code keeps across sessions, in which the agent recorded facts not derivable from the code, such as the host's measurement hazards and their workarounds.
-- **A project skill.** `asm-perf-cookbook` (687 lines) catalogs x86-64, assembly and Linux optimization techniques. Each entry carries a status for KvNode (applied with its measured effect, kept within noise, candidate, or rejected with the reason). The skill is explicitly framed as "a lead of ideas, never the limit of what to try."
+- **A project skill.** `asm-perf-cookbook` (687 lines) catalogs x86-64, assembly and Linux optimization techniques. Each entry carries a status for KvAsm (applied with its measured effect, kept within noise, candidate, or rejected with the reason). The skill is explicitly framed as "a lead of ideas, never the limit of what to try."
 
 The work spread over ten sessions, up to four of them active at once. The streaming feature was developed in an isolated git worktree and merged when complete.
 
@@ -274,7 +274,7 @@ Table: Table 5. Verification layers for the assembly server.
 | Conformance | h2spec 2.6.0 | 146/146, empty failure baseline |
 | End to end | the real server over loopback through an independent HTTP/2 client: every status and limit, pipelining, cancellation, drain, idle timeouts, a 469-transfer streaming matrix, requests split at every byte, 1-byte windows, torn-value detection | 9 phases per build |
 | Fuzzing | garbage, mutated requests, frame soups, HPACK soups, truncation, random write splits; liveness and memory bounds; then the full suite on the same server | 3,000 connections per build; soaks of 20,000 and 3 × 20,000 |
-| Independent interoperability | the .NET client on grpc-dotnet's HTTP/2 stack, which shares no code with nghttp2 or KvNode, against the real container, including a fault-injecting TCP proxy | 378 tests on .NET 8 and .NET 10 |
+| Independent interoperability | the .NET client on grpc-dotnet's HTTP/2 stack, which shares no code with nghttp2 or KvAsm, against the real container, including a fault-injecting TCP proxy | 378 tests on .NET 8 and .NET 10 |
 | Mutation checks | each new regression test run against a deliberately broken build to prove it fails | e.g. reclamation ignoring pins; budgets never returned; flush budget removed |
 
 ## 4.5 Defects caught
@@ -314,23 +314,23 @@ The agent itself was a second source of interference. Several sessions shared th
 
 Table 7 lists the compared systems: the latest stable release of each on the test date, pinned by image digest. All servers ran without persistence, TLS or authentication, and with eviction impossible, on `--cpuset-cpus 0..N-1`. Redis and Valkey used I/O threads and Dragonfly io_uring (the host's Docker daemon allowed it). Each system's thread count was tuned per core budget in a separate experiment (E0).
 
-The load generator, kvbench, is one C program that drives every protocol — RESP2, the memcached meta protocol, and gRPC over HTTP/2 through nghttp2's client — with the same threads, connections, request depth, workload generator, timing and histograms. It validates every response byte by byte; any error, miss or wrong value invalidates the run. It ran on vCPUs 16–31, joined the server's network namespace and connected over loopback. In a client-validation experiment (E8), kvbench matched or beat redis-benchmark and memtier_benchmark against Redis (1.03–1.06×) and drove KvNode 1.58× faster than h2load, so the comparison handicaps no system.
+The load generator, kvbench, is one C program that drives every protocol — RESP2, the memcached meta protocol, and gRPC over HTTP/2 through nghttp2's client — with the same threads, connections, request depth, workload generator, timing and histograms. It validates every response byte by byte; any error, miss or wrong value invalidates the run. It ran on vCPUs 16–31, joined the server's network namespace and connected over loopback. In a client-validation experiment (E8), kvbench matched or beat redis-benchmark and memtier_benchmark against Redis (1.03–1.06×) and drove KvAsm 1.58× faster than h2load, so the comparison handicaps no system.
 
-Table: Table 7. Systems compared (session of 27 September 2026, KvNode revision a0264f7).
+Table: Table 7. Systems compared (session of 27 September 2026, KvAsm revision a0264f7).
 | System | Version | Architecture | Protocol |
 |---|---|---|---|
-| KvNode | 0.1.0 (a0264f7) | x86-64 assembly; thread-per-core workers over one shared store with lock-free reads | gRPC over HTTP/2 (h2c) |
+| KvAsm | 0.1.0 (a0264f7) | x86-64 assembly; thread-per-core workers over one shared store with lock-free reads | gRPC over HTTP/2 (h2c) |
 | Redis | 8.10.2 | single-threaded command execution, I/O threads | RESP2 |
 | Valkey | 9.1.2 | Redis fork with reworked I/O threading | RESP2 |
 | Dragonfly | 2.0.0 | shared-nothing, multi-threaded, io_uring | RESP2 |
 | Garnet | 2.1.8 | multi-threaded .NET server, Tsavorite store | RESP2 |
 | Memcached | 1.6.45 | multi-threaded cache | meta protocol |
 
-The standard workload is 100% GET over 1,000,000 preloaded 16-byte keys with 100-byte values, chosen uniformly, with 64 connections × 16 requests in flight. Each run starts a fresh server, preloads every key, warms up for 5 s and measures for 10 s. Repetitions form blocks: within a block every system runs once, in seeded random order, so slow drift affects all systems of a block alike. KvNode is compared with each system by the ratio of medians, the range of within-block ratios and an exact two-sided sign test; with six blocks, p < 0.05 requires all six to agree. The session analyzed here comprised 747 runs, all valid. Its stability experiment (S1) repeated the four-core cell ten times per system on a quiet host. The testbed was an Intel i9-13900K under Docker Desktop 27.3.1 on WSL2 (Linux 5.15).
+The standard workload is 100% GET over 1,000,000 preloaded 16-byte keys with 100-byte values, chosen uniformly, with 64 connections × 16 requests in flight. Each run starts a fresh server, preloads every key, warms up for 5 s and measures for 10 s. Repetitions form blocks: within a block every system runs once, in seeded random order, so slow drift affects all systems of a block alike. KvAsm is compared with each system by the ratio of medians, the range of within-block ratios and an exact two-sided sign test; with six blocks, p < 0.05 requires all six to agree. The session analyzed here comprised 747 runs, all valid. Its stability experiment (S1) repeated the four-core cell ten times per system on a quiet host. The testbed was an Intel i9-13900K under Docker Desktop 27.3.1 on WSL2 (Linux 5.15).
 
 ## 5.2 RQ1: Conformance and robustness
 
-The native HTTP/2 engine passes all 146 h2spec 2.6.0 cases. nghttp2 1.70 linked into the same server passed 138: seven of its failures follow from upstream's removal of closed-stream tracking and priority validation in version 1.65, and one is shared by every nghttp2 release (ADR 0002). The HPACK decoder decodes 30,000 random header lists from nghttp2's encoder, 194,660 fields, identically to nghttp2. Every build fuzzes the HTTP/2 input path over 3,000 connections and then runs the full suite on the fuzzed server. A 20,000-connection soak left the server alive with resident memory growing from 988 to 1,080 KiB, and three further 20,000-connection soaks that included Upload and Download soups grew it by about 1 MB and left no record pinned. The .NET client, whose HTTP/2 stack (grpc-dotnet) shares no code with KvNode or nghttp2, passes 378 tests on two target frameworks against the real container, including transfers through a proxy that resets, hangs and throttles connections.
+The native HTTP/2 engine passes all 146 h2spec 2.6.0 cases. nghttp2 1.70 linked into the same server passed 138: seven of its failures follow from upstream's removal of closed-stream tracking and priority validation in version 1.65, and one is shared by every nghttp2 release (ADR 0002). The HPACK decoder decodes 30,000 random header lists from nghttp2's encoder, 194,660 fields, identically to nghttp2. Every build fuzzes the HTTP/2 input path over 3,000 connections and then runs the full suite on the fuzzed server. A 20,000-connection soak left the server alive with resident memory growing from 988 to 1,080 KiB, and three further 20,000-connection soaks that included Upload and Download soups grew it by about 1 MB and left no record pinned. The .NET client, whose HTTP/2 stack (grpc-dotnet) shares no code with KvAsm or nghttp2, passes 378 tests on two target frameworks against the real container, including transfers through a proxy that resets, hangs and throttles connections.
 
 RQ1 is answered affirmatively: the agent built a conformant, hardened protocol stack in assembly, and it is the server's only HTTP/2 implementation.
 
@@ -338,30 +338,30 @@ RQ1 is answered affirmatively: the agent built a conformant, hardened protocol s
 
 Figure 4 and Table 8 summarize the headline results.
 
-![Figure 4. Headline comparison (medians). (a) GET throughput on four cores, S1, ten paired blocks; labels give the median and KvNode's multiple over each system. (b) GET throughput on one core, N1, six paired blocks, against the two servers whose command execution is single-threaded. (c) Server CPU per GET on one core. (d) Server CPU per no-op round trip on one core (E5: a gRPC health check, a RESP PING or a memcached mn). Lower is better in (c) and (d).](figures/fig4_throughput.png)
+![Figure 4. Headline comparison (medians). (a) GET throughput on four cores, S1, ten paired blocks; labels give the median and KvAsm's multiple over each system. (b) GET throughput on one core, N1, six paired blocks, against the two servers whose command execution is single-threaded. (c) Server CPU per GET on one core. (d) Server CPU per no-op round trip on one core (E5: a gRPC health check, a RESP PING or a memcached mn). Lower is better in (c) and (d).](figures/fig4_throughput.png)
 
-Table: Table 8. Headline results: medians, then KvNode ÷ system paired by block (S1: 10 blocks; N1: 6 blocks) with the range of within-block ratios.
-| Experiment | KvNode | Redis | Valkey | Dragonfly | Garnet | Memcached |
+Table: Table 8. Headline results: medians, then KvAsm ÷ system paired by block (S1: 10 blocks; N1: 6 blocks) with the range of within-block ratios.
+| Experiment | KvAsm | Redis | Valkey | Dragonfly | Garnet | Memcached |
 |---|--:|--:|--:|--:|--:|--:|
 | S1: GET/s, 4 cores | **8.84 M** | 2.88 M | 3.20 M | 2.40 M | 3.86 M | 3.01 M |
-| KvNode ÷ system | — | 3.07× | 2.76× | 3.68× | 2.29× | 2.94× |
+| KvAsm ÷ system | — | 3.07× | 2.76× | 3.68× | 2.29× | 2.94× |
 | range over blocks | | 2.76–3.84 | 2.52–2.97 | 3.40–4.25 | 2.09–2.47 | 2.73–3.21 |
 | N1: GET/s, 1 core | **1.76 M** | 1.40 M | 1.42 M | — | — | — |
-| KvNode ÷ system | — | 1.26× | 1.24× | — | — | — |
+| KvAsm ÷ system | — | 1.26× | 1.24× | — | — | — |
 | range over blocks | | 1.22–1.38 | 1.20–1.28 | | | |
 | N1: server CPU per GET | **576 ns** | 722 ns | 710 ns | — | — | — |
 | E5: CPU per no-op, 1 core | **472 ns** | 479 ns | 525 ns | 541 ns | 774 ns | 1,837 ns |
 
-On four cores (S1) KvNode served 8.84 M GET/s. It was ahead of every system in all ten blocks (sign test p = 0.002 for each comparison): by 2.29× over the strongest competitor, Garnet, and by 3.07× over Redis. Its between-run coefficient of variation was 4.2%. On one core (N1), against the two servers whose command execution is single-threaded, KvNode reached 1.26× Redis and 1.24× Valkey in all six blocks (p = 0.031), using 576 ns of server CPU per GET against 722 and 710 ns. The per-request floor (E5), a no-op round trip, was 472 ns of server CPU for KvNode's gRPC health check and 479 ns for a Redis `PING`. Carrying a request over HTTP/2 and gRPC now costs KvNode no more server CPU than the far simpler RESP costs Redis. With nghttp2, the same floor had been 1,086 ns.
+On four cores (S1) KvAsm served 8.84 M GET/s. It was ahead of every system in all ten blocks (sign test p = 0.002 for each comparison): by 2.29× over the strongest competitor, Garnet, and by 3.07× over Redis. Its between-run coefficient of variation was 4.2%. On one core (N1), against the two servers whose command execution is single-threaded, KvAsm reached 1.26× Redis and 1.24× Valkey in all six blocks (p = 0.031), using 576 ns of server CPU per GET against 722 and 710 ns. The per-request floor (E5), a no-op round trip, was 472 ns of server CPU for KvAsm's gRPC health check and 479 ns for a Redis `PING`. Carrying a request over HTTP/2 and gRPC now costs KvAsm no more server CPU than the far simpler RESP costs Redis. With nghttp2, the same floor had been 1,086 ns.
 
-Four-core throughput is a lower bound for KvNode. kvbench's gRPC client tops out near 9.3 million requests per second on its 16 vCPUs; in S1 the client was 80% busy while KvNode's cores were 96% busy, and at eight cores KvNode's cells are client-bound (§5.7). In a scaling experiment from one to eight cores, run mostly while outside load kept 11–18 logical CPUs busy, KvNode led every system at every core budget in every block, with one exception: Garnet at eight cores (1.21×, 5 of 6 blocks).
+Four-core throughput is a lower bound for KvAsm. kvbench's gRPC client tops out near 9.3 million requests per second on its 16 vCPUs; in S1 the client was 80% busy while KvAsm's cores were 96% busy, and at eight cores KvAsm's cells are client-bound (§5.7). In a scaling experiment from one to eight cores, run mostly while outside load kept 11–18 logical CPUs busy, KvAsm led every system at every core budget in every block, with one exception: Garnet at eight cores (1.21×, 5 of 6 blocks).
 
 ## 5.4 RQ2: Breadth — mixes, latency, concurrency and value size
 
-Table 9 extends the comparison to read/write mixes, unpipelined requests and larger values. KvNode leads every read-heavy workload, including the skewed one (Zipf 0.99). It ties Garnet at 50% writes and is behind Garnet, Redis and Dragonfly on pure writes (§5.7). Without pipelining (256 connections with one request each) it serves 815 k requests/s, 1.34× the next system, with the lowest median latency (274 µs). With 1 KiB values it leads by 1.77–3.66×. With 16 KiB values it is behind Garnet and Memcached by half.
+Table 9 extends the comparison to read/write mixes, unpipelined requests and larger values. KvAsm leads every read-heavy workload, including the skewed one (Zipf 0.99). It ties Garnet at 50% writes and is behind Garnet, Redis and Dragonfly on pure writes (§5.7). Without pipelining (256 connections with one request each) it serves 815 k requests/s, 1.34× the next system, with the lowest median latency (274 µs). With 1 KiB values it leads by 1.77–3.66×. With 16 KiB values it is behind Garnet and Memcached by half.
 
 Table: Table 9. Further workloads on four cores (medians of 6 blocks, or 3 for the value sizes; the best result in each row is in bold).
-| Workload | KvNode | Redis | Valkey | Dragonfly | Garnet | Memcached |
+| Workload | KvAsm | Redis | Valkey | Dragonfly | Garnet | Memcached |
 |---|--:|--:|--:|--:|--:|--:|
 | 90% GET | **7.66 M** | 2.88 M | 3.01 M | 2.43 M | 3.96 M | 2.95 M |
 | 90% GET, Zipf 0.99 | **7.87 M** | 2.98 M | 3.09 M | 2.57 M | 4.19 M | 4.13 M |
@@ -371,14 +371,14 @@ Table: Table 9. Further workloads on four cores (medians of 6 blocks, or 3 for t
 | 1 KiB values | **5.59 M** | 1.91 M | 1.85 M | 1.53 M | 3.16 M | 2.47 M |
 | 16 KiB values | 481 k | 461 k | 273 k | 444 k | 972 k | **995 k** |
 
-Figure 5 sweeps concurrency. With one request in flight, throughput is one over the round-trip time: KvNode's 24.7 µs round trip is level with Valkey, Garnet and Memcached and about half of Redis's and Dragonfly's 48 µs. At 16 in flight Memcached is ahead (0.90×). From 64 in flight upward KvNode leads every system, reaching 9.11 M GET/s at 1,024 in flight, 2.23× Garnet.
+Figure 5 sweeps concurrency. With one request in flight, throughput is one over the round-trip time: KvAsm's 24.7 µs round trip is level with Valkey, Garnet and Memcached and about half of Redis's and Dragonfly's 48 µs. At 16 in flight Memcached is ahead (0.90×). From 64 in flight upward KvAsm leads every system, reaching 9.11 M GET/s at 1,024 in flight, 2.23× Garnet.
 
-Under open-loop load at identical offered rates (Table 10), with latency measured from intended send times, KvNode's 99th percentile stays at or below 0.44 ms up to 1.25 M requests/s. Only Valkey's is lower; Garnet's tail grows to 93 ms at the highest rate. At the lowest rate KvNode's median (101 µs) is slightly above Valkey's (93 µs) and Memcached's (97 µs). Every system kept up with every offered load. With three runs per cell, these figures are estimates.
+Under open-loop load at identical offered rates (Table 10), with latency measured from intended send times, KvAsm's 99th percentile stays at or below 0.44 ms up to 1.25 M requests/s. Only Valkey's is lower; Garnet's tail grows to 93 ms at the highest rate. At the lowest rate KvAsm's median (101 µs) is slightly above Valkey's (93 µs) and Memcached's (97 µs). Every system kept up with every offered load. With three runs per cell, these figures are estimates.
 
 Table: Table 10. Open-loop latency on four cores at identical offered loads (µs; Poisson arrivals; no coordinated omission; medians of 3 runs).
 | System | p50, 418 k/s | p99, 418 k/s | p50, 836 k/s | p99, 836 k/s | p50, 1.25 M/s | p99, 1.25 M/s |
 |---|--:|--:|--:|--:|--:|--:|
-| KvNode | 101 | 375 | 117 | 444 | 111 | 428 |
+| KvAsm | 101 | 375 | 117 | 444 | 111 | 428 |
 | Redis | 222 | 651 | 317 | 889 | 379 | 913 |
 | Valkey | **93** | **253** | 142 | **358** | 173 | **395** |
 | Dragonfly | 171 | 848 | 387 | 1,516 | 553 | 2,343 |
@@ -387,16 +387,16 @@ Table: Table 10. Open-loop latency on four cores at identical offered loads (µs
 
 ![Figure 5. Concurrency sweep on four cores, 100% GET (requests in flight = connections × depth; both axes logarithmic; medians of 3 runs). Marker shapes repeat the color encoding for grayscale printing.](figures/fig5_concurrency.png)
 
-KvNode's memory use is ordinary: about 180 bytes per key for 16-byte keys and 100-byte values including its table (Redis 174, Valkey 173, Dragonfly 157, Memcached 196, Garnet 285), the least of all six systems at 16 KiB values, and about 9 KiB per idle connection.
+KvAsm's memory use is ordinary: about 180 bytes per key for 16-byte keys and 100-byte values including its table (Redis 174, Valkey 173, Dragonfly 157, Memcached 196, Garnet 285), the least of all six systems at 16 KiB values, and about 9 KiB per idle connection.
 
 ## 5.5 RQ2: Where the advantage comes from
 
-Figure 6 locates the gain. With nghttp2, a request cost 1,427 ns of server time on one core: about 485 ns in the kernel, 672 ns in nghttp2, 222 ns in KvNode's own assembly and 47 ns in libc. After the native engine, a request cost about 620–650 ns, of which 75–79% was the kernel. The kernel's time barely moved; user space fell from about 940 ns to about 140 ns. `strace` shows the minimum possible system-call pattern for this workload: one `read` and one `sendto` per 16 requests, the same pattern Redis has. Of the remaining user-space instructions (1,425 per GET, counted exactly), HTTP/2 frame parsing (20%) and SipHash (18%) are the largest items, and parsing, response framing and stream bookkeeping together take half. The store lookup is 11% of the instructions but most of the remaining user time, as memory stalls that the batched prefetching already overlaps. Alone, a batched lookup costs 43.5 ns at 1 M keys: about 12 ns of SipHash, 9 ns of computation and 23 ns of memory.
+Figure 6 locates the gain. With nghttp2, a request cost 1,427 ns of server time on one core: about 485 ns in the kernel, 672 ns in nghttp2, 222 ns in KvAsm's own assembly and 47 ns in libc. After the native engine, a request cost about 620–650 ns, of which 75–79% was the kernel. The kernel's time barely moved; user space fell from about 940 ns to about 140 ns. `strace` shows the minimum possible system-call pattern for this workload: one `read` and one `sendto` per 16 requests, the same pattern Redis has. Of the remaining user-space instructions (1,425 per GET, counted exactly), HTTP/2 frame parsing (20%) and SipHash (18%) are the largest items, and parsing, response framing and stream bookkeeping together take half. The store lookup is 11% of the instructions but most of the remaining user time, as memory stalls that the batched prefetching already overlaps. Alone, a batched lookup costs 43.5 ns at 1 M keys: about 12 ns of SipHash, 9 ns of computation and 23 ns of memory.
 
-Three measured decisions account for most of KvNode's lead (Figure 3). The native HTTP/2 engine doubled throughput per core (2.03× at one core, 1.96–2.07× at two and four). Batched GETs with two-stage prefetching added 28% at four cores and 35% at one. The two-phase event loop added 12% with the harness's four connections per client thread, and 26% with eight. Table 11 shows the combined effect between two full benchmark sessions one day apart. KvNode's own throughput rose up to 3.3× while the other systems moved by about ±10%. The exception, 16 KiB values, is a regression (§5.7).
+Three measured decisions account for most of KvAsm's lead (Figure 3). The native HTTP/2 engine doubled throughput per core (2.03× at one core, 1.96–2.07× at two and four). Batched GETs with two-stage prefetching added 28% at four cores and 35% at one. The two-phase event loop added 12% with the harness's four connections per client thread, and 26% with eight. Table 11 shows the combined effect between two full benchmark sessions one day apart. KvAsm's own throughput rose up to 3.3× while the other systems moved by about ±10%. The exception, 16 KiB values, is a regression (§5.7).
 
-Table: Table 11. KvNode's change between two full sessions: the nghttp2 build (26 September, 8cb0fef) and the final server (27 September, a0264f7). The last column bounds the other five systems' change between the same sessions, i.e. the host's drift.
-| Cell | nghttp2 build | final build | KvNode change | Other systems' change |
+Table: Table 11. KvAsm's change between two full sessions: the nghttp2 build (26 September, 8cb0fef) and the final server (27 September, a0264f7). The last column bounds the other five systems' change between the same sessions, i.e. the host's drift.
+| Cell | nghttp2 build | final build | KvAsm change | Other systems' change |
 |---|--:|--:|--:|--:|
 | 4 cores, 100% GET (S1) | 2.93 M | 8.84 M | **3.02×** | −6% to 0% |
 | 90% GET | 2.75 M | 7.66 M | 2.79× | 0% to +10% |
@@ -408,18 +408,18 @@ Table: Table 11. KvNode's change between two full sessions: the nghttp2 build (2
 | 16 KiB values | 691 k | 481 k | **0.70×** | −8% to −5% |
 | 1,024 in flight | 2.77 M | 9.11 M | 3.29× | +3% to +8% |
 
-![Figure 6. Where a GET's server cost goes on one core. (a) Server time per request before and after the native HTTP/2 engine (perf CPU-clock profiles under the standard load). Before: kernel 485, nghttp2 672, KvNode 222 and libc 47 ns. After: about 620–650 ns, of which the kernel is 75–79%; the blue segment is then all user space, KvNode and libc together, and the split is approximate. (b) User-space instructions per GET in the final server, counted exactly with Callgrind; every attribution except SipHash's is approximate.](figures/fig6_breakdown.png)
+![Figure 6. Where a GET's server cost goes on one core. (a) Server time per request before and after the native HTTP/2 engine (perf CPU-clock profiles under the standard load). Before: kernel 485, nghttp2 672, KvAsm 222 and libc 47 ns. After: about 620–650 ns, of which the kernel is 75–79%; the blue segment is then all user space, KvAsm and libc together, and the split is approximate. (b) User-space instructions per GET in the final server, counted exactly with Callgrind; every attribution except SipHash's is approximate.](figures/fig6_breakdown.png)
 
 ## 5.6 Streaming transfers
 
 Upload and Download were measured with paired, concurrent A/B runs on pinned cores (ADR 0010). One server core accepts about 11 GB/s of 1 MiB uploads and serves about 6 GB/s of 1 MiB downloads over loopback. Upload moves bytes 2–3× faster than a unary Put of the same value, because it copies once instead of buffering and then copying. A performance pass driven by profiles found that one `crc32` dependency chain was 49% of an upload worker's CPU. Folding CRC, non-temporal record stores and 256 KiB reads then raised uploads by 2.30×, 1.70× and 1.56× (64 KiB, 1 MiB and 16 MiB values) and downloads by 1.22–1.28×, with GET throughput unchanged (1.000×). The .NET client, which had become the bottleneck, received the same folding CRC, an allocation-free codec, a 16 MiB HTTP/2 receive window and four connections per client. One client then moved 3.89× more upload bandwidth (1.83 → 7.23 GB/s) and 2.47× more download bandwidth, with 98% less allocation per download.
 
-## 5.7 RQ4: Where KvNode falls short
+## 5.7 RQ4: Where KvAsm falls short
 
 - **Writes.** Pure SET throughput on four cores is 2.23 M/s: 0.87× Redis (five of six blocks; clear after adjustment for outside load), 0.90× Dragonfly and 0.60× Garnet, though ahead of Valkey (1.26×) and Memcached (1.45×). Every write passes one futex mutex (ADR 0003) and executes at dispatch, outside the GET prefetch pipeline. A SET costs 1.26× a GET's instructions but about 4× its time, because its cache misses are not overlapped. A store-level prototype of write batching cut a replace from 433 to 126 ns, but it is not implemented.
-- **Large values.** At 16 KiB, KvNode serves 481 k GET/s, half of Garnet's and Memcached's and 30% below its own nghttp2 build. This regression was caught by the benchmark suite, not by any test, because no performance gate exists. It has not been bisected; the recorded hypotheses are a second DATA frame for messages just over the 16,384-byte default frame size, flow-control windows, and the two-phase loop's buffering.
-- **Scale beyond four cores.** It cannot be measured on this host. The gRPC client needs about 2.8× the server's CPU per request and saturates near 9.3 M requests/s. With eight server vCPUs KvNode reached 9.72 M GET/s while its cores were only 69% busy and the client 97% busy. Giving the client 24 vCPUs instead of 16 made the run 12% slower, because the CPU's 24 physical cores were already occupied. Eight-core figures are floors; a second machine is required.
-- **Scope.** KvNode offers exact-key Get, Put and Delete, streaming transfers and a health service. It has no persistence, TLS, authentication, replication, expiry, IPv6 listener or rich data types. Redis-compatible servers do much more, and their richer protocols cost them per request. Persistence, Export/Watch streams and key indexes exist only as proposals backed by prototype measurements.
+- **Large values.** At 16 KiB, KvAsm serves 481 k GET/s, half of Garnet's and Memcached's and 30% below its own nghttp2 build. This regression was caught by the benchmark suite, not by any test, because no performance gate exists. It has not been bisected; the recorded hypotheses are a second DATA frame for messages just over the 16,384-byte default frame size, flow-control windows, and the two-phase loop's buffering.
+- **Scale beyond four cores.** It cannot be measured on this host. The gRPC client needs about 2.8× the server's CPU per request and saturates near 9.3 M requests/s. With eight server vCPUs KvAsm reached 9.72 M GET/s while its cores were only 69% busy and the client 97% busy. Giving the client 24 vCPUs instead of 16 made the run 12% slower, because the CPU's 24 physical cores were already occupied. Eight-core figures are floors; a second machine is required.
+- **Scope.** KvAsm offers exact-key Get, Put and Delete, streaming transfers and a health service. It has no persistence, TLS, authentication, replication, expiry, IPv6 listener or rich data types. Redis-compatible servers do much more, and their richer protocols cost them per request. Persistence, Export/Watch streams and key indexes exist only as proposals backed by prototype measurements.
 - **Testbed.** One virtualized machine over loopback. There is no NIC, so per-request protocol overhead weighs more than it would across a network, which penalizes gRPC most. Waking co-located clients cost up to 48% of a server core under WSL2's virtualization before the two-phase loop reduced it.
 
 ## 5.8 RQ3: Development effort
@@ -458,7 +458,7 @@ Writing instructions was not the hard part. The defects recorded in the history 
 
 ## 6.2 Why the result is fast, and whether assembly was necessary
 
-The evidence attributes KvNode's lead mainly to three design decisions: specializing the HTTP/2 layer (2.03× per core over the same server with nghttp2), overlapping memory latency across a batch of GETs (1.28–1.35×) and flushing once per event batch (1.12–1.26×). None of them requires assembly. All of them require owning the whole request path and being willing to replace a general-purpose library with a specialized one. Assembly made some things easier: there is no runtime, and memory layout, cache-line placement, register use in hot loops and assembly-time constant generation are under exact control. It made nothing measurably harder for the agent. The study cannot, however, separate the contribution of the language from that of specialization; a C or Rust implementation of the same design might perform similarly. What it does show is that, for an agent, writing in assembly no longer carries the productivity and verification penalty that has kept it out of whole-system work.
+The evidence attributes KvAsm's lead mainly to three design decisions: specializing the HTTP/2 layer (2.03× per core over the same server with nghttp2), overlapping memory latency across a batch of GETs (1.28–1.35×) and flushing once per event batch (1.12–1.26×). None of them requires assembly. All of them require owning the whole request path and being willing to replace a general-purpose library with a specialized one. Assembly made some things easier: there is no runtime, and memory layout, cache-line placement, register use in hot loops and assembly-time constant generation are under exact control. It made nothing measurably harder for the agent. The study cannot, however, separate the contribution of the language from that of specialization; a C or Rust implementation of the same design might perform similarly. What it does show is that, for an agent, writing in assembly no longer carries the productivity and verification penalty that has kept it out of whole-system work.
 
 ## 6.3 The human's role
 
@@ -466,7 +466,7 @@ The human set direction with few words, and the agent supplied options, evidence
 
 ## 6.4 Failure modes and risks
 
-- **Defects.** The agent introduced the defects of Table 6; verification caught them but did not prevent them. KvNode has had no external security review, and its memory safety rests on tests and fuzzing rather than on a type system or a formal proof.
+- **Defects.** The agent introduced the defects of Table 6; verification caught them but did not prevent them. KvAsm has had no external security review, and its memory safety rests on tests and fuzzing rather than on a type system or a formal proof.
 - **Overconfident claims.** The record contains an incorrect timing statement in a commit message (corrected by erratum), an inflated absolute lookup cost in an ADR (corrected) and a wrong prediction about the benchmark client (disproved by measurement).
 - **Undetected regressions.** The 16 KiB regression passed every functional test.
 - **Environment.** Build processes stuck in uninterruptible sleep in the Docker VM, a transient compiler crash and parallel sessions contaminating each other's measurements were all detected and handled, at a cost in time.
@@ -476,7 +476,7 @@ The human set direction with few words, and the agent supplied options, evidence
 
 **Internal validity.** The host was shared, virtualized and hybrid (performance and efficiency cores). We mitigated this with outside-load measurement and adjustment, blocked and paired designs, an in-VM watcher and concurrent A/B runs. Absolute numbers across sessions are unreliable, because the hypervisor places vCPUs on different core types from session to session, so we quote within-session paired ratios.
 
-**Construct validity.** GET throughput with 100-byte values is KvNode's best case. We therefore also report mixes, writes, value sizes, open-loop latency and the no-op floor. The protocols differ, and gRPC costs more bytes and client CPU per request than RESP; that cost is real for users and is not factored out.
+**Construct validity.** GET throughput with 100-byte values is KvAsm's best case. We therefore also report mixes, writes, value sizes, open-loop latency and the no-op floor. The protocols differ, and gRPC costs more bytes and client CPU per request than RESP; that cost is real for users and is not factored out.
 
 **External validity.** One developer, one project, one model version, one machine and one workload class (small-object, exact-key access). The results may not transfer to other domains, to other agents or to developers with less systems experience to steer them.
 
@@ -497,15 +497,15 @@ The measured leads are recorded in the repository with their evidence:
 
 # 8 Conclusion
 
-We asked whether an LLM coding agent can build, in assembly, a networked system that holds its own against the state of the art. In this case study it did. In under five days, directed by about 1,150 words of human input, Claude Code with Claude Opus 5.5 produced a gRPC key-value server whose own HTTP/2 engine passes every h2spec case. On four cores it serves 2.3–3.7× the read throughput of Redis, Valkey, Dragonfly, Garnet and Memcached. The result came not from writing assembly as such but from a loop the agent kept throughout: measure, build rivals, verify against independent oracles, decide by paired statistics and record the evidence. The same loop exposed where KvNode is behind — writes, large values, unmeasured scale — and those results are part of the contribution. For this agent, assembly was no barrier; measurement was the method.
+We asked whether an LLM coding agent can build, in assembly, a networked system that holds its own against the state of the art. In this case study it did. In under five days, directed by about 1,150 words of human input, Claude Code with Claude Opus 5.5 produced a gRPC key-value server whose own HTTP/2 engine passes every h2spec case. On four cores it serves 2.3–3.7× the read throughput of Redis, Valkey, Dragonfly, Garnet and Memcached. The result came not from writing assembly as such but from a loop the agent kept throughout: measure, build rivals, verify against independent oracles, decide by paired statistics and record the evidence. The same loop exposed where KvAsm is behind — writes, large values, unmeasured scale — and those results are part of the contribution. For this agent, assembly was no barrier; measurement was the method.
 
 # Acknowledgments and AI-use statement
 
-KvNode's code, tests, benchmarks and documentation were written by Claude Code (Claude Opus 5.5, Anthropic) under the direction of the author, who set the requirements, performance bars and decisions. This report was drafted by the same agent from the repository's records at the author's request. Every quantitative claim cites a committed artifact.
+KvAsm's code, tests, benchmarks and documentation were written by Claude Code (Claude Opus 5.5, Anthropic) under the direction of the author, who set the requirements, performance bars and decisions. This report was drafted by the same agent from the repository's records at the author's request. Every quantitative claim cites a committed artifact.
 
 # Data availability
 
-Everything cited is in the KvNode repository. Benchmark sessions, with every run as raw JSON and their analysis scripts, are under `benchmarks/results/`. Methodology is in `benchmarks/METHODOLOGY.md`, decision records in `docs/adr/` and proposals in `docs/proposals/`. The scripts and data behind this paper's process statistics are in `docs/paper/tools/` and `docs/paper/data/`; the session transcripts themselves are not published.
+Everything cited is in the KvAsm repository. Benchmark sessions, with every run as raw JSON and their analysis scripts, are under `benchmarks/results/`. Methodology is in `benchmarks/METHODOLOGY.md`, decision records in `docs/adr/` and proposals in `docs/proposals/`. The scripts and data behind this paper's process statistics are in `docs/paper/tools/` and `docs/paper/data/`; the session transcripts themselves are not published.
 
 # References
 
@@ -574,9 +574,9 @@ Everything cited is in the KvNode repository. Benchmark sessions, with every run
 The server image runs every server test layer while it builds. The standard benchmark profile takes about 4.5 hours and can be resumed; this paper's figures and document are regenerated from the repository by one script.
 
 ```text
-docker build --target runtime   -t kvnode:0.1.0 .        # builds the server and runs its tests
-docker build --target kvbench   -t kvnode-kvbench:dev .  # the benchmark client
-docker build --target toolchain -t kvnode-toolchain .
+docker build --target runtime   -t kvasm:0.1.0 .         # builds the server and runs its tests
+docker build --target kvbench   -t kvasm-kvbench:dev .   # the benchmark client
+docker build --target toolchain -t kvasm-toolchain .
 docker build -t kvbench/garnet:2.1.8 https://github.com/microsoft/garnet.git#v2.1.8
 python benchmarks/run.py --profile standard              # about 4.5 hours
 python benchmarks/analyze.py benchmarks/results/<session>

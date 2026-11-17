@@ -1,10 +1,10 @@
-KvNode
+KvAsm
 Copyright 2026 Eli Belash
 
 This product is licensed under the Apache License, Version 2.0 (see the
 LICENSE file).
 
-The KvNode server binary and container image statically link third-party
+The KvAsm server binary and container image statically link third-party
 libraries:
 
   - the GNU C Library (glibc), licensed under the GNU Lesser General Public
@@ -14,5 +14,5 @@ libraries:
     Exception, version 3.1.
 
 THIRD_PARTY_NOTICES.md lists every third-party component, how to obtain
-its source code, and how to relink KvNode against a modified glibc. The
-container image carries these license texts under /usr/share/doc/kvnode/.
+its source code, and how to relink KvAsm against a modified glibc. The
+container image carries these license texts under /usr/share/doc/kvasm/.

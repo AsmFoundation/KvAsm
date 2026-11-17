@@ -1,28 +1,28 @@
-# KvNode.Client for .NET
+# KvAsm.Client for .NET
 
-The .NET client for [KvNode](https://github.com/Nucs/KvNode), the gRPC
+The .NET client for [KvAsm](https://github.com/AsmFoundation/KvAsm), the gRPC
 key-value server written in x86-64 assembly. Targets .NET 8 (LTS) and
 .NET 10.
 
 ## Install
 
 ```sh
-dotnet add package KvNode.Client
-docker run --rm -p 50051:50051 ghcr.io/nucs/kvnode:0.2.0   # a server to talk to
+dotnet add package KvAsm.Client
+docker run --rm -p 50051:50051 ghcr.io/asmfoundation/kvasm:0.3.0  # a server to talk to
 ```
 
 Client and server are released together under one version number, and
-both speak the `kvnode.v1` protocol
-([docs/PROTOCOL.md](https://github.com/Nucs/KvNode/blob/main/docs/PROTOCOL.md)).
+both speak the `kvasm.v1` protocol
+([docs/PROTOCOL.md](https://github.com/AsmFoundation/KvAsm/blob/main/docs/PROTOCOL.md)).
 
 ## Usage
 
 ```csharp
-using KvNode.Client;
+using KvAsm.Client;
 
 // One long-lived client per server: it multiplexes all calls over HTTP/2
 // (4 connections by default, taken in turn).
-using var kv = new KvNodeClient(new Uri("http://kvnode:50051"));
+using var kv = new KvAsmClient(new Uri("http://kvasm:50051"));
 
 await kv.PutAsync("greeting", "hello");                    // true = created
 string? text = await kv.GetStringAsync("greeting");         // null when missing
@@ -37,8 +37,8 @@ bool serving = await kv.IsServingAsync();                   // grpc.health.v1
 
 ### Large values: Upload and Download
 
-Values above `KVNODE_MAX_VALUE_BYTES` (1 MiB by default), up to
-`KVNODE_MAX_UPLOAD_BYTES` (64 MiB by default), move as streams of chunks,
+Values above `KVASM_MAX_VALUE_BYTES` (1 MiB by default), up to
+`KVASM_MAX_UPLOAD_BYTES` (64 MiB by default), move as streams of chunks,
 each end checking the CRC-32C of the bytes:
 
 ```csharp
@@ -77,7 +77,7 @@ uint mine = Crc32C.Compute(bytes);                                  // == up.Crc
 - **Stalls:** a transfer that makes no progress for `TransferIdleTimeout`
   (30 s) fails with `DEADLINE_EXCEEDED`, however long it has run; the
   whole transfer is bounded by `TransferTimeout` (10 minutes).
-- `GetAsync` of a value above the server's `KVNODE_MAX_VALUE_BYTES` fails
+- `GetAsync` of a value above the server's `KVASM_MAX_VALUE_BYTES` fails
   with `RESOURCE_EXHAUSTED` ("read it with Download").
 - **No garbage per chunk:** Upload refills one message object for the whole
   call and serializes it straight into gRPC's write buffer; Download parses
@@ -108,11 +108,11 @@ uint mine = Crc32C.Compute(bytes);                                  // == up.Crc
 ### Options
 
 ```csharp
-var options = new KvNodeClientOptions
+var options = new KvAsmClientOptions
 {
-    MaxKeyBytes = 1024,             // mirror KVNODE_MAX_KEY_BYTES
-    MaxValueBytes = 4 * 1024 * 1024,// mirror KVNODE_MAX_VALUE_BYTES
-    MaxUploadBytes = 64 << 20,      // mirror KVNODE_MAX_UPLOAD_BYTES (also caps DownloadAsync in memory)
+    MaxKeyBytes = 1024,             // mirror KVASM_MAX_KEY_BYTES
+    MaxValueBytes = 4 * 1024 * 1024,// mirror KVASM_MAX_VALUE_BYTES
+    MaxUploadBytes = 64 << 20,      // mirror KVASM_MAX_UPLOAD_BYTES (also caps DownloadAsync in memory)
     Timeout = TimeSpan.FromSeconds(2),                  // unary calls
     TransferTimeout = TimeSpan.FromMinutes(10),         // a whole upload/download
     TransferIdleTimeout = TimeSpan.FromSeconds(30),     // no chunk moved for this long: fail
@@ -123,12 +123,12 @@ var options = new KvNodeClientOptions
     ReadAttempts = 3,               // Get/Download/health retried on UNAVAILABLE; Put/Delete/Upload never
     CompactLongKeys = true,         // the contract; keep it on in every client
 };
-using var kv = new KvNodeClient(new Uri("http://kvnode:50051"), options);
+using var kv = new KvAsmClient(new Uri("http://kvasm:50051"), options);
 ```
 
 To bring your own channel (TLS, interceptors), start from
-`KvNodeClient.CreateChannelOptions(options)` and pass the channel to the
-`KvNodeClient(ChannelBase, options)` constructor. The client does not
+`KvAsmClient.CreateChannelOptions(options)` and pass the channel to the
+`KvAsmClient(ChannelBase, options)` constructor. The client does not
 dispose a channel it did not create.
 
 ### Errors
@@ -138,7 +138,7 @@ dispose a channel it did not create.
   limits (`ArgumentOutOfRangeException`).
 - Server and transport errors are `Grpc.Core.RpcException` — every one,
   including a connection that breaks in the middle of an upload. The status
-  codes are listed in [docs/PROTOCOL.md](https://github.com/Nucs/KvNode/blob/main/docs/PROTOCOL.md#status-codes);
+  codes are listed in [docs/PROTOCOL.md](https://github.com/AsmFoundation/KvAsm/blob/main/docs/PROTOCOL.md#status-codes);
   for example, `RESOURCE_EXHAUSTED` means the store is full, `DATA_LOSS`
   that transferred bytes failed their checksum. Cancellation is `CANCELLED`
   for every call.
@@ -154,7 +154,7 @@ as-is.
 
 ## Snapshots
 
-Build a data file for `KVNODE_SNAPSHOT`:
+Build a data file for `KVASM_SNAPSHOT`:
 
 ```csharp
 // Unknown count: streams to a temporary file, then atomically replaces the target.
@@ -174,8 +174,8 @@ SipHash-2-4-128 checksum the server verifies.
 ## Tests
 
 ```sh
-docker build --target runtime -t kvnode:0.2.0 ../..   # the image under test
-dotnet test --solution KvNode.Client.slnx
+docker build --target runtime -t kvasm:0.3.0 ../..    # the image under test
+dotnet test --solution KvAsm.Client.slnx
 ```
 
 - Unit tests: all 64 SipHash reference vectors, key compaction, the
@@ -185,13 +185,13 @@ dotnet test --solution KvNode.Client.slnx
   streaming codecs (byte-identical to the generated messages, payloads cut
   into random buffer segments, unknown fields, malformed input, pool reuse)
   and the transfer options.
-- Benchmark: `bench/KvNode.Client.Bench` measures Upload/Download
+- Benchmark: `bench/KvAsm.Client.Bench` measures Upload/Download
   throughput, client CPU, bytes allocated per transfer and GC counts
   against a running server (see its header; the A/B drivers are in
   benchmarks/results/2026-09-30-streaming).
 - Integration tests: Testcontainers starts the real image. They run
-  without Docker too, but are then skipped. Set `KVNODE_REQUIRE_DOCKER=1`
-  to fail instead (use it in CI), and `KVNODE_IMAGE` to test another tag.
+  without Docker too, but are then skipped. Set `KVASM_REQUIRE_DOCKER=1`
+  to fail instead (use it in CI), and `KVASM_IMAGE` to test another tag.
   Upload/Download are tested across sizes and chunkings, streams, ranges,
   refusals (also through the raw generated client), cancellation, one
   version per download, concurrency; through `FaultProxy`, a TCP proxy
@@ -201,5 +201,5 @@ dotnet test --solution KvNode.Client.slnx
 
 ## License
 
-Apache-2.0, like the rest of KvNode
-([LICENSE](https://github.com/Nucs/KvNode/blob/main/LICENSE)).
+Apache-2.0, like the rest of KvAsm
+([LICENSE](https://github.com/AsmFoundation/KvAsm/blob/main/LICENSE)).

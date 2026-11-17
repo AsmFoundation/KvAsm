@@ -1,13 +1,13 @@
 # =============================================================================
-# Release — publishes one version of KvNode when a tag vX.Y.Z is pushed:
+# Release — publishes one version of KvAsm when a tag vX.Y.Z is pushed:
 #   1. versions  the tag, the server's VERSION_STR (server/src/main.asm), the
 #                client's <Version> and a CHANGELOG.md section must all name
 #                the same version, or nothing is published;
 #   2. test      the whole CI workflow (ci.yml) on the tagged commit;
-#   3. image     ghcr.io/<owner>/kvnode:<version>, :<major.minor> and :latest,
+#   3. image     ghcr.io/<owner>/kvasm:<version>, :<major.minor> and :latest,
 #                linux/amd64 only (the server is x86-64 assembly), with OCI
 #                labels, an SBOM and max-mode provenance attestations;
-#   4. nuget     KvNode.Client <version> (+ .snupkg symbols) to nuget.org,
+#   4. nuget     KvAsm.Client <version> (+ .snupkg symbols) to nuget.org,
 #                through nuget.org trusted publishing (no stored API key);
 #   5. release   a GitHub release whose notes are the CHANGELOG section,
 #                with the packages attached.
@@ -17,8 +17,8 @@
 # image push overwrites the tags with the same, reproducibly built content.
 #
 # Needs from the repository, all set up on 2026-11-15:
-#   - the nuget.org trusted publishing policy "KvNode" (owner elibelash,
-#     packages KvNode.*, repository Nucs/KvNode, workflow release.yml,
+#   - the nuget.org trusted publishing policy "KvAsm" (owner elibelash,
+#     packages KvAsm.*, repository AsmFoundation/KvAsm, workflow release.yml,
 #     environment nuget). nuget.org trades this job's GitHub OIDC token for a
 #     one-hour API key, so no long-lived key exists anywhere;
 #   - the GitHub environment "nuget", restricted to tags v*.*.*, so a branch
@@ -62,10 +62,10 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           server="$(sed -n 's/^%define VERSION_STR[[:space:]]*"\(.*\)"$/\1/p' server/src/main.asm)"
-          client="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' client/dotnet/src/KvNode.Client/KvNode.Client.csproj)"
+          client="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' client/dotnet/src/KvAsm.Client/KvAsm.Client.csproj)"
           echo "tag=$tag server=$server client=$client"
           if [ "$tag" != "$server" ] || [ "$tag" != "$client" ]; then
-            echo "::error::tag v$tag, server VERSION_STR '$server' and KvNode.Client <Version> '$client' must be equal"
+            echo "::error::tag v$tag, server VERSION_STR '$server' and KvAsm.Client <Version> '$client' must be equal"
             exit 1
           fi
           if ! grep -q "^## \[$tag\]" CHANGELOG.md; then
@@ -96,7 +96,7 @@ jobs:
       # Registry paths must be lowercase; the owner's name may not be.
       - name: Image name
         id: name
-        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/kvnode" >> "$GITHUB_OUTPUT"
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/kvasm" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -120,7 +120,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
           labels: |
-            org.opencontainers.image.title=KvNode
+            org.opencontainers.image.title=KvAsm
             org.opencontainers.image.description=gRPC key-value server written in x86-64 assembly
             org.opencontainers.image.licenses=Apache-2.0
 
@@ -140,10 +140,10 @@ jobs:
           annotations: ${{ steps.meta.outputs.annotations }}
           provenance: mode=max
           sbom: true
-          cache-from: type=gha,scope=kvnode
+          cache-from: type=gha,scope=kvasm
 
   nuget:
-    name: KvNode.Client to nuget.org
+    name: KvAsm.Client to nuget.org
     needs: [versions, test]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -174,7 +174,7 @@ jobs:
       # the pdb to this commit on GitHub.
       - name: Pack
         working-directory: client/dotnet
-        run: dotnet pack src/KvNode.Client/KvNode.Client.csproj --configuration Release --output "$RUNNER_TEMP/packages"
+        run: dotnet pack src/KvAsm.Client/KvAsm.Client.csproj --configuration Release --output "$RUNNER_TEMP/packages"
 
       - name: Keep the packages for the GitHub release
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -196,7 +196,7 @@ jobs:
 
       # Trusted publishing: GitHub's OIDC token for this job (repository,
       # workflow, environment, ref) becomes a nuget.org API key that expires
-      # within an hour and can push only what the policy allows (KvNode.*).
+      # within an hour and can push only what the policy allows (KvAsm.*).
       - name: Log in to nuget.org (trusted publishing)
         id: login
         uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
@@ -252,6 +252,6 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "KvNode $VERSION" \
+            --title "KvAsm $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \
             "$RUNNER_TEMP"/packages/*

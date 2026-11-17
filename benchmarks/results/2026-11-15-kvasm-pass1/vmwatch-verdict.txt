@@ -1,0 +1,20 @@
+45 runs; 29 clean, 16 flagged, 0 without monitor coverage
+  E0: side-vCPU busy per run window (interior mean), median 0.332, max 6.846 vCPU
+  E1: side-vCPU busy per run window (interior mean), median 0.087, max 0.564 vCPU
+  E2: side-vCPU busy per run window (interior mean), median 0.075, max 0.111 vCPU
+  FLAG E0/kvasm/c2/t1/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 2973 ms; dev container 780 ms; side vCPUs 0.36 busy (window mean)
+  FLAG E0/kvasm/c4/t4/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 93 ms
+  FLAG E0/kvasm/c8/t8/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 11282 ms; dev container 25939 ms; dev container 40451 ms; side vCPUs 3.81 busy (window mean)
+  FLAG E0/kvasm/c2/t2/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 40514 ms; dev container 41109 ms; dev container 41115 ms; idle-declared containers 76 ms; side vCPUs 6.85 busy (window mean)
+  FLAG E0/kvasm/c4/t3/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 17953 ms; dev container 28021 ms; dev container 6554 ms; side vCPUs 2.60 busy (window mean)
+  FLAG E0/kvasm/c8/t7/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): dev container 11931 ms; dev container 14582 ms; dev container 311 ms; side vCPUs 2.12 busy (window mean)
+  FLAG E0/kvasm/c8/t8/get100-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 1287 ms; dev container 2185 ms; dev container 49 ms; side vCPUs 0.45 busy (window mean)
+  FLAG E0/kvasm/c8/t7/get100-v100-k1000000-uni-c64d16/r1 (block 1, ok): dev container 15729 ms; dev container 2934 ms; side vCPUs 0.67 busy (window mean)
+  FLAG E0/kvasm/c4/t3/get100-v100-k1000000-uni-c64d16/r1 (block 1, ok): side vCPUs 0.33 busy (window mean)
+  FLAG E0/kvasm/c8/t8/get100-v100-k1000000-uni-c64d16/r2 (block 2, ok): side vCPUs 0.41 busy (window mean)
+  FLAG E1/kvasm/c4/t4/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): idle-declared containers 23 ms
+  FLAG E1/kvasm/c8/t8/get100-v100-k1000000-uni-c64d16/r2 (block 2, ok): side vCPUs 0.56 busy (window mean)
+  FLAG E1/kvasm/c2/t2/get100-v100-k1000000-uni-c64d16/r2 (block 2, ok): idle-declared containers 21 ms
+  FLAG E1/kvasm/c4/t4/get100-v100-k1000000-uni-c64d16/r2 (block 2, ok): side vCPUs 0.29 busy (window mean)
+  FLAG E1/kvasm/c8/t8/get100-v100-k1000000-uni-c64d16/r3 (block 3, ok): side vCPUs 0.38 busy (window mean)
+  FLAG E1/kvasm/c8/t8/get100-v100-k1000000-uni-c64d16/r4 (block 4, ok): side vCPUs 0.29 busy (window mean)

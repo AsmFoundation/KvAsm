@@ -1,0 +1,166 @@
+// KvAsm gRPC contract, version 1.
+//
+// Transport: HTTP/2 cleartext (h2c, prior knowledge) on the server port
+// (default 50051). Get, Put and Delete are unary; Upload is client streaming
+// and Download server streaming, for values too large for one message (up to
+// KVASM_MAX_UPLOAD_BYTES, default 64 MiB) or ranges of them.
+//
+// Keys are opaque bytes compared EXACTLY: two different keys can never be
+// confused, whatever their hashes. Limits are enforced by the server and are
+// configurable (defaults: key 1..1024 bytes, value 0..1 MiB through Put and
+// Get, 0..64 MiB through Upload and Download).
+//
+// Client contract for long keys (docs/PROTOCOL.md): official clients send a
+// key longer than 64 bytes as the 65 bytes 0xFF || SHA-512(key). The server
+// stores whatever key it receives; clients sharing a server must agree on
+// this rule (it is on by default) or a long key is stored under two names.
+//
+// Checksums are CRC-32C (Castagnoli, reflected polynomial 0x82F63B78, the
+// iSCSI/SSE4.2 one) of the value bytes, standard pre- and post-inversion:
+// crc32c("123456789") = 0xE3069283.
+//
+// The server also implements the standard grpc.health.v1.Health/Check
+// (service "" or "kvasm.v1.KvAsm": SERVING; NOT_SERVING while draining).
+//
+// Status codes:
+//   OK                  the call executed (Get of a missing key is OK with found=false)
+//   INVALID_ARGUMENT    empty/oversized key, oversized value, malformed message;
+//                       Upload: a rule of UploadRequest broken (see there)
+//   NOT_FOUND           Download of a missing key; health check for a service
+//                       other than the above
+//   OUT_OF_RANGE        Download offset beyond the end of the value
+//   RESOURCE_EXHAUSTED  store at key capacity or memory limit; request too large;
+//                       Get of a value above KVASM_MAX_VALUE_BYTES (read it with
+//                       Download); Upload beyond the connection's budget
+//                       (KVASM_CONN_BUFFER_MB) for uploads in progress
+//   DATA_LOSS           Upload whose crc32c does not match the bytes received
+//                       (nothing was stored)
+//   UNIMPLEMENTED       unknown method, or a message compressed with a codec
+//                       other than identity (grpc-accept-encoding says which)
+//   INTERNAL            protocol violations (more than one request message,
+//                       compressed flag without a grpc-encoding, an undefined
+//                       message flag, an Upload stream ending inside a
+//                       message), out of memory
+syntax = "proto3";
+
+package kvasm.v1;
+
+option csharp_namespace = "KvAsm.Client.V1";
+
+service KvAsm {
+  // Returns the current value of a key.
+  rpc Get(GetRequest) returns (GetResponse);
+  // Creates or replaces the value of a key.
+  rpc Put(PutRequest) returns (PutResponse);
+  // Removes a key.
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  // Creates or replaces the value of a key from a stream of chunks. The
+  // value becomes visible atomically when the request stream ends and
+  // every check passed — readers see the old value or the new one, never a
+  // part — and nothing is stored when anything fails or the call is
+  // cancelled. The server copies each chunk straight into the final record
+  // as it arrives: memory is the value's size, reserved (and checked
+  // against the limits) as soon as total_size is known. A refusal is
+  // answered at once, while the client may still be sending; the server
+  // then resets the rest of the request stream (NO_ERROR).
+  rpc Upload(stream UploadRequest) returns (UploadResponse);
+  // Returns a value, or a byte range of it, as a stream of chunks. One call
+  // reads one version: a value replaced or deleted during the call is still
+  // read whole as it was when the call started. Responses follow the
+  // client's flow control (a slow reader slows the call; it does not grow
+  // the server's memory).
+  rpc Download(DownloadRequest) returns (stream DownloadResponse);
+}
+
+message GetRequest {
+  bytes key = 1;
+}
+
+message GetResponse {
+  // False when the key does not exist; value is then empty.
+  bool found = 1;
+  bytes value = 2;
+}
+
+message PutRequest {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+message PutResponse {
+  // True when the key did not exist before this call.
+  bool created = 1;
+}
+
+message DeleteRequest {
+  bytes key = 1;
+}
+
+message DeleteResponse {
+  // True when the key existed and was removed.
+  bool deleted = 1;
+}
+
+// One message of an Upload request stream. The rules (each violation is
+// INVALID_ARGUMENT unless noted, and stores nothing):
+//   * the FIRST message carries key and total_size (a repeated one there
+//     replaces the earlier, as protobuf merges), before any data;
+//   * no later message carries key or total_size;
+//   * the data fields of all messages, in order, are exactly total_size
+//     bytes: a byte beyond it is refused as it arrives, fewer when the
+//     stream ends are refused then;
+//   * crc32c is optional and at most once, in any message; a mismatch is
+//     DATA_LOSS;
+//   * the stream must end between messages (INTERNAL otherwise).
+// Chunk sizes are free: messages may be empty, data fields may be empty;
+// 64 KiB..1 MiB chunks are efficient.
+message UploadRequest {
+  // First message only: the key (the same limits as Put).
+  bytes key = 1;
+  // First message only, required: the value's exact length in bytes,
+  // 0..KVASM_MAX_UPLOAD_BYTES (a larger one is refused before any data).
+  optional uint64 total_size = 2;
+  // The next chunk of the value.
+  bytes data = 3;
+  // CRC-32C of the whole value, when the client wants the server to verify
+  // it before storing anything.
+  optional fixed32 crc32c = 4;
+}
+
+message UploadResponse {
+  // True when the key did not exist before this call.
+  bool created = 1;
+  // CRC-32C of the value as stored (0 is omitted on the wire, and is also
+  // the checksum of the empty value). A client that sent no crc32c can
+  // compare it with its own to verify the transfer end to end.
+  fixed32 crc32c = 2;
+}
+
+message DownloadRequest {
+  // The key (the same limits as Get).
+  bytes key = 1;
+  // First byte of the range. Past the end of the value: OUT_OF_RANGE; at
+  // the end: an empty range.
+  uint64 offset = 2;
+  // Bytes to return from offset; absent: to the end. A length reaching past
+  // the end is cut at the end (not an error).
+  optional uint64 length = 3;
+  // Data bytes per response message; 0 means 64 KiB, above 1 MiB means
+  // 1 MiB. Every message but the last carries exactly this many.
+  uint32 chunk_size = 4;
+}
+
+// One message of a Download response stream: k = max(1, ceil(range /
+// chunk)) messages. The first carries total_size; every one carries a chunk
+// of the range (omitted when the range is empty); the last carries crc32c.
+// A single message carries all three when the range fits one chunk.
+message DownloadResponse {
+  // First message only: the size of the WHOLE value (not of the range), so
+  // a client can plan ranged reads.
+  optional uint64 total_size = 1;
+  // The next chunk of the requested range.
+  bytes data = 2;
+  // Last message only: CRC-32C of exactly the bytes of the range, computed
+  // by the server as it sent them. Its presence also marks the end.
+  optional fixed32 crc32c = 3;
+}

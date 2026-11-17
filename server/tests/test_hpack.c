@@ -22,7 +22,7 @@
  */
 #include <nghttp2/nghttp2.h>
 
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 #include "test_common.h"
 
 /* ---- hpack.asm (layout mirrored from include/hpack.inc) ---- */
@@ -401,7 +401,7 @@ static void test_oversize(void) {
   CHECK(kv_hpack_init(&d, g_pool, 256) == 0);
   nghttp2_nv three[3] = {
       {(uint8_t *)"x-big", (uint8_t *)big, 5, blen, NGHTTP2_NV_FLAG_NONE},
-      {(uint8_t *)":path", (uint8_t *)"/kvnode.v1.KvNode/Get", 5, 21, NGHTTP2_NV_FLAG_NONE},
+      {(uint8_t *)":path", (uint8_t *)"/kvasm.v1.KvAsm/Get", 5, 19, NGHTTP2_NV_FLAG_NONE},
       {(uint8_t *)"content-type", (uint8_t *)"application/grpc", 12, 16, NGHTTP2_NV_FLAG_NONE},
   };
   for (int round = 0; round < 2; round++) {
@@ -492,17 +492,17 @@ static void test_generation(void) {
 /** Meanings of names and values. */
 static void test_classify(void) {
 #define CL(n, v) kv_hpack_classify(n, strlen(n), v, strlen(v))
-  CHECK(CL(":path", "/kvnode.v1.KvNode/Get") == (HF_PATH | M_GET << 8));
-  CHECK(CL(":path", "/kvnode.v1.KvNode/Put") == (HF_PATH | M_PUT << 8));
-  CHECK(CL(":path", "/kvnode.v1.KvNode/Delete") == (HF_PATH | M_DELETE << 8));
+  CHECK(CL(":path", "/kvasm.v1.KvAsm/Get") == (HF_PATH | M_GET << 8));
+  CHECK(CL(":path", "/kvasm.v1.KvAsm/Put") == (HF_PATH | M_PUT << 8));
+  CHECK(CL(":path", "/kvasm.v1.KvAsm/Delete") == (HF_PATH | M_DELETE << 8));
   CHECK(CL(":path", "/grpc.health.v1.Health/Check") == (HF_PATH | M_HEALTH << 8));
-  CHECK(CL(":path", "/kvnode.v1.KvNode/Upload") == (HF_PATH | M_UPLOAD << 8));
-  CHECK(CL(":path", "/kvnode.v1.KvNode/Download") == (HF_PATH | M_DOWNLOAD << 8));
-  CHECK(CL(":path", "/kvnode.v1.KvNode/upload") == HF_PATH);      /* methods are case-sensitive */
-  CHECK(CL(":path", "/kvnode.v1.KvNode/Uploads") == HF_PATH);
-  CHECK(CL(":path", "/kvnode.v1.KvNode/Downloa") == HF_PATH);
-  CHECK(CL(":path", "/kvnode.v1.KvNode/Gets") == HF_PATH);
-  CHECK(CL(":path", "/kvnode.v1.KvNode/") == HF_PATH);
+  CHECK(CL(":path", "/kvasm.v1.KvAsm/Upload") == (HF_PATH | M_UPLOAD << 8));
+  CHECK(CL(":path", "/kvasm.v1.KvAsm/Download") == (HF_PATH | M_DOWNLOAD << 8));
+  CHECK(CL(":path", "/kvasm.v1.KvAsm/upload") == HF_PATH);      /* methods are case-sensitive */
+  CHECK(CL(":path", "/kvasm.v1.KvAsm/Uploads") == HF_PATH);
+  CHECK(CL(":path", "/kvasm.v1.KvAsm/Downloa") == HF_PATH);
+  CHECK(CL(":path", "/kvasm.v1.KvAsm/Gets") == HF_PATH);
+  CHECK(CL(":path", "/kvasm.v1.KvAsm/") == HF_PATH);
   CHECK(CL(":path", "") == (HF_PATH | VC_EMPTY << 8));
   CHECK(CL(":method", "POST") == (HF_METHOD | VC_POST << 8));
   CHECK(CL(":method", "HEAD") == (HF_METHOD | VC_HEAD << 8));
@@ -551,7 +551,7 @@ static void test_differential(void) {
   static const char *names[] = {":method", ":path", ":scheme", ":authority", "content-type", "te",
                                 "user-agent", "grpc-timeout", "grpc-encoding", "x-custom", "cookie",
                                 "accept", "cache-control", "set-cookie", "authorization"};
-  static const char *vals[] = {"POST", "/kvnode.v1.KvNode/Get", "http", "localhost:50051",
+  static const char *vals[] = {"POST", "/kvasm.v1.KvAsm/Get", "http", "localhost:50051",
                                "application/grpc", "trailers", "grpc-c++/1.60", "10S", "identity"};
   nghttp2_hd_deflater *def;
   CHECK(nghttp2_hd_deflate_new(&def, 4096) == 0);

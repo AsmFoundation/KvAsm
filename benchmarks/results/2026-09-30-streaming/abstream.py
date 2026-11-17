@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""abstream.py — concurrent paired A/B of two kvnode binaries on the streaming
+"""abstream.py — concurrent paired A/B of two kvasm binaries on the streaming
 calls (Upload, Download), measured with kvbench's streaming workloads.
 
-Usage (inside kvnode-dev):
+Usage (inside kvasm-dev):
   abstream.py OUT.jsonl BLOCKS CONFIG...
   CONFIG = WORKLOAD:VALUE_BYTES:CONNS:DEPTH[:CHUNK[:RATE]]
     WORKLOAD  upload | download | get (unary GETs of 100k preloaded keys:
@@ -15,7 +15,7 @@ Usage (inside kvnode-dev):
               transfers/s in total, which fixes the work so that server CPU
               per byte compares variants at equal load
   e.g. upload:1048576:4:1  download:65536:8:4  upload:1048576:4:1:0:3000
-Env: A_BIN, B_BIN (default /tmp/kvnode-A, /tmp/kvnode-B), KVB (kvbench),
+Env: A_BIN, B_BIN (default /tmp/kvasm-A, /tmp/kvasm-B), KVB (kvbench),
      WARMUP (2), DURATION (6), A_ENV / B_ENV (extra VAR=VALUE for one side).
 
 Method (as ab3.py of 2026-09-27, whose reasoning holds here): A and B run
@@ -48,7 +48,7 @@ import sys
 import time
 
 KVB = os.environ.get("KVB", "/src/.claude/worktrees/upload-download/benchmarks/kvbench/build/kvbench")
-BIN = {"A": os.environ.get("A_BIN", "/tmp/kvnode-A"), "B": os.environ.get("B_BIN", "/tmp/kvnode-B")}
+BIN = {"A": os.environ.get("A_BIN", "/tmp/kvasm-A"), "B": os.environ.get("B_BIN", "/tmp/kvasm-B")}
 EXTRA_ENV = {"A": os.environ.get("A_ENV", ""), "B": os.environ.get("B_ENV", "")}
 SLOTS = [("2", "16-23", 50211), ("6", "24-31", 50212)]  # (server vCPU, client vCPUs, port)
 WARMUP = float(os.environ.get("WARMUP", "2"))
@@ -59,8 +59,8 @@ RECORD_BYTES = 64 << 20
 def start(variant, cpu, port, log):
     """Starts one pinned server with the variant's binary and extra settings;
     returns its Popen once it logs "listening" (exits the run otherwise)."""
-    env = dict(os.environ, KVNODE_PORT=str(port), KVNODE_WORKERS="1", KVNODE_CAPACITY="100000",
-               KVNODE_MAX_UPLOAD_BYTES="67108864")
+    env = dict(os.environ, KVASM_PORT=str(port), KVASM_WORKERS="1", KVASM_CAPACITY="100000",
+               KVASM_MAX_UPLOAD_BYTES="67108864")
     for kv in EXTRA_ENV[variant].split():
         k, v = kv.split("=", 1)
         env[k] = v

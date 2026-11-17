@@ -32,10 +32,10 @@ candidate records in a second pass (ADR 0005).
 and matches all 12 slots with one `PCMPEQB` and `PMOVMSKB`. The record
 prefetch stage does the same.
 
-SSE2 belongs to the x86-64 baseline, so KvNode's rule of "no SIMD
+SSE2 belongs to the x86-64 baseline, so KvAsm's rule of "no SIMD
 requirement" still holds: every x86-64 CPU runs it.
 
-`KVNODE_SCAN=swar|sse2` selects the path at startup. A predictable branch
+`KVASM_SCAN=swar|sse2` selects the path at startup. A predictable branch
 on a read-only byte dispatches it. Writers always use SWAR.
 
 ### 2. Private L1/L2 record caches: built, measured, off by default
@@ -45,7 +45,7 @@ in front of the shared table:
 
 - Each entry holds the key's two hashes, the record pointer and a
   generation.
-- `KVNODE_CACHE_L1_BITS` and `KVNODE_CACHE_L2_BITS` size the levels. The
+- `KVASM_CACHE_L1_BITS` and `KVASM_CACHE_L2_BITS` size the levels. The
   default 0 means off.
 
 How cached pointers stay correct:

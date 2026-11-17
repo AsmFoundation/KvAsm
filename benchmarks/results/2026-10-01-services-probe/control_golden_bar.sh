@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-# control_golden_bar.sh — the control for this probe's bar, inside kvnode-dev:
-#   MSYS_NO_PATHCONV=1 docker exec kvnode-dev \
+# control_golden_bar.sh — the control for this probe's bar, inside kvasm-dev:
+#   MSYS_NO_PATHCONV=1 docker exec kvasm-dev \
 #     bash /src/benchmarks/results/2026-10-01-services-probe/control_golden_bar.sh
 #
 # Builds the committed golden probe exactly as its run.sh does (the pinned,

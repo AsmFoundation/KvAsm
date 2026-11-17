@@ -35,7 +35,7 @@
 #include <time.h>
 #include <x86intrin.h>
 
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 
 /* Offsets exported by benchabi.asm (same order). */
 enum {
@@ -185,7 +185,7 @@ int main(int argc, char **argv) {
   feed(conn, pre, (size_t)(p - pre));
 
   /* ---- the request's two frames ---- */
-  const char *path = ping ? "/grpc.health.v1.Health/Check" : "/kvnode.v1.KvNode/Get";
+  const char *path = ping ? "/grpc.health.v1.Health/Check" : "/kvasm.v1.KvAsm/Get";
   size_t plen = strlen(path);
   uint8_t msg[64];                           /* gRPC message: prefix + protobuf */
   size_t mlen;

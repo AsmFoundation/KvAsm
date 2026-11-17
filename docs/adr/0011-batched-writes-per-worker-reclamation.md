@@ -142,7 +142,7 @@ and bounded by the store.
     invalidates the line other workers' scans read.
 - **A worker's limbo** holds about one to two holds of records.
 - **Its cache holds up to 256 KiB of freed records.** These are not
-  counted by `KVNODE_MAX_MEMORY_MB`, like glibc's free memory.
+  counted by `KVASM_MAX_MEMORY_MB`, like glibc's free memory.
 
 ## Measurements
 
@@ -215,7 +215,7 @@ range 0.90–1.07), but it is not a win either.
   `benchmarks/results/2026-11-15-writes-w1`): indicative only.
   - Every run window overlapped other work in the VM, and a median 10.3
     CPUs were busy outside it.
-  - KvNode's writes came out ahead of all five on 100% SET, from 1.72×
+  - KvAsm's writes came out ahead of all five on 100% SET, from 1.72×
     Garnet (5/6 blocks) to 4.17× Memcached. On 50/50 it led all five,
     1.76–3.42×.
   - The quiet-host ratios of 2026-09-27 (0.87× Redis, 0.60× Garnet), times
@@ -262,7 +262,7 @@ range 0.90–1.07), but it is not a win either.
   counter remains: 7.2% of user time at 4 workers. In the final profile,
   58% of `kv_store_rec_alloc_local`'s samples land on the instruction
   after it.
-  - Exact `KVNODE_MAX_MEMORY_MB` checks need it.
+  - Exact `KVASM_MAX_MEMORY_MB` checks need it.
   - A per-slot credit scheme is a candidate: one LOCK XADD per many
     records, at the price of a limit that is exact only to the credit.
 - **Prefetching the next cache block.** Popping a block reads its link, a

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """pairs.py - paired, block-by-block comparisons that REPORT.md does not print.
 
-analyze.py pairs KvNode with every system inside E1-E7 and N1/N3, but gives
+analyze.py pairs KvAsm with every system inside E1-E7 and N1/N3, but gives
 S1 only per-system medians. S1 is this session's one quiet-host run of the
 4-core GET cell (E1's cell, ten blocks, run last), while E1 itself ran mostly
 under 13-25 CPUs of outside load. This script applies the report's own
 method to S1 - ratio of medians, [min-max of per-block ratios], exact
 two-sided sign test over blocks (METHODOLOGY.md section 7) - and adds the
-client/server saturation figures that decide whether KvNode's cells measure
+client/server saturation figures that decide whether KvAsm's cells measure
 the server or the load generator.
 
 Usage: python pairs.py [RAW.jsonl]   (default: raw.jsonl next to this file)
@@ -29,7 +29,7 @@ def sign_test(wins: int, n: int) -> float:
     """Exact two-sided sign test.
 
     Args:
-        wins: blocks in which KvNode's ratio exceeded 1.
+        wins: blocks in which KvAsm's ratio exceeded 1.
         n: blocks compared (ties, i.e. ratio exactly 1, never occur with
             continuous throughput and are not special-cased).
 
@@ -61,7 +61,7 @@ def load(raw: pathlib.Path) -> list[dict]:
 
 
 def paired(records: list[dict], experiment: str, cores: int, factor: float) -> None:
-    """Prints KvNode against every rival for one experiment's GET cell.
+    """Prints KvAsm against every rival for one experiment's GET cell.
 
     Args:
         records: valid records.
@@ -73,25 +73,25 @@ def paired(records: list[dict], experiment: str, cores: int, factor: float) -> N
     cell = [r for r in records if r["experiment"] == experiment and r["cores"] == cores]
     ops = {(r["system"], r["rep"]): r["kvbench"]["result"]["ops_per_sec"] for r in cell}
     blocks = sorted({r["rep"] for r in cell})
-    kv = [ops[("kvnode", b)] for b in blocks if ("kvnode", b) in ops]
+    kv = [ops[("kvasm", b)] for b in blocks if ("kvasm", b) in ops]
     loads = [r["host_load"]["mean"] for r in cell if r.get("host_load")]
     print(f"{experiment} {cores} cores: {len(blocks)} blocks, outside load median "
-          f"{statistics.median(loads):.1f} CPUs; KvNode median {statistics.median(kv) / 1e6:.2f} M")
+          f"{statistics.median(loads):.1f} CPUs; KvAsm median {statistics.median(kv) / 1e6:.2f} M")
     for rival in RIVALS:
         # Only blocks where both ran count: a missing run drops its block's
         # pair and nothing else (METHODOLOGY.md section 7).
-        both = [b for b in blocks if ("kvnode", b) in ops and (rival, b) in ops]
-        ratios = [ops[("kvnode", b)] / ops[(rival, b)] for b in both]
-        med_ratio = (statistics.median(ops[("kvnode", b)] for b in both)
+        both = [b for b in blocks if ("kvasm", b) in ops and (rival, b) in ops]
+        ratios = [ops[("kvasm", b)] / ops[(rival, b)] for b in both]
+        med_ratio = (statistics.median(ops[("kvasm", b)] for b in both)
                      / statistics.median(ops[(rival, b)] for b in both))
         wins = sum(x > 1 for x in ratios)
-        print(f"  KvNode / {rival:<9} {med_ratio:5.2f}x [{min(ratios):.2f}-{max(ratios):.2f}] "
+        print(f"  KvAsm / {rival:<9} {med_ratio:5.2f}x [{min(ratios):.2f}-{max(ratios):.2f}] "
               f"{wins}/{len(ratios)} blocks, sign p={sign_test(wins, len(ratios)):.3f}  "
               f"({rival} median {statistics.median(ops[(rival, b)] for b in both) / 1e6:.2f} M)")
     # Saturation: which side of the loopback was the limit? kvbench reports
     # its own CPU share of the 16 client vCPUs; the server's comes from its
     # cgroup (seconds of CPU over the 10-s window, clock-corrected).
-    for system in ("kvnode",):
+    for system in ("kvasm",):
         rs = [r["kvbench"]["result"] for r in cell if r["system"] == system]
         server = statistics.median(x["server_cpu_s"] / x["seconds"] / factor / cores for x in rs)
         client = statistics.median(x["client_cpu_util"] for x in rs)

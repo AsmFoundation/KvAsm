@@ -19,7 +19,7 @@ benchmark's no-op floor (E5, a gRPC health check) was about 1.5 µs of
 server CPU per round trip, so a core peaked around 650k requests/s before
 touching any data.
 
-KvNode 0.1.0 reached about 1.6–1.8M GET/s at 4 cores. A `perf` profile
+KvAsm 0.1.0 reached about 1.6–1.8M GET/s at 4 cores. A `perf` profile
 (cpu-clock, 1 core, the workload above) showed where the time went:
 
 - **Kernel: 31% of all CPU** (socket reads and writes, epoll).
@@ -29,7 +29,7 @@ KvNode 0.1.0 reached about 1.6–1.8M GET/s at 4 cores. A `perf` profile
     instruction loading a bucket's tag word was the hottest in the
     process;
   - `malloc`/`free` about 12%, from nghttp2's per-stream allocations and
-    KvNode's own Stream objects.
+    KvAsm's own Stream objects.
 
 With 1M keys the table and records far exceed the last-level cache, so
 nearly every GET takes two dependent misses: the bucket, then the record.
@@ -67,7 +67,7 @@ dozens of independent GETs.
   Blocks are bump-carved from 256 KiB chunks; larger requests fall through
   to `malloc`.
 - nghttp2 uses the pool through its `nghttp2_mem` hook
-  (`nghttp2_session_server_new3`), and KvNode's Streams and buffers use it
+  (`nghttp2_session_server_new3`), and KvAsm's Streams and buffers use it
   as well.
 - A session never leaves its worker (ADR 0003), so the pool needs no
   locks. All its chunks are freed when the worker exits.
@@ -85,7 +85,7 @@ cleared whenever its Stream is freed.
 Ablation with the four builds interleaved within each repetition, 8
 repetitions with Latin-square rotation of their order. Evidence, scripts
 and a second fixed-order run:
-[benchmarks/results/2026-09-26-kvnode-ablation](../../benchmarks/results/2026-09-26-kvnode-ablation/README.md).
+[benchmarks/results/2026-09-26-kvasm-ablation](../../benchmarks/results/2026-09-26-kvasm-ablation/README.md).
 
 | Cores | 0.1.0 | + stream cache | + pool | + batch & prefetch |
 |---|---|---|---|---|
@@ -137,7 +137,7 @@ Medians of 8 runs. "Paired" is the median over repetitions of each build
   a read that carries a single request sees no change. E3 (one request in
   flight per connection) and E4 (open-loop latency) measure the effect.
 - **Memory.** Batched Streams live until the end of their read, which
-  `KVNODE_MAX_STREAMS` already bounds per connection.
+  `KVASM_MAX_STREAMS` already bounds per connection.
 - **Safe reclamation.** The batch runs inside the same event-loop pass,
   before the worker announces a quiescent state. Record pointers read in
   pass 2 are therefore covered by QSBR (ADR 0003). Pass 1 only prefetches,

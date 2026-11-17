@@ -1,5 +1,5 @@
 ; =============================================================================
-; main.asm — KvNode process entry point.
+; main.asm — KvAsm process entry point.
 ;
 ; Startup (fail fast, in this order, before any client can connect):
 ;   1. ignore SIGPIPE (sockets also use MSG_NOSIGNAL; belt and braces)
@@ -14,13 +14,13 @@
 ;   7. create every worker (binding all listeners), then start them
 ; Shutdown: sigwaitinfo returns on SIGTERM/SIGINT (works as PID 1 in a
 ; container, where default signal actions are ignored); every worker drains
-; its connections within KVNODE_SHUTDOWN_GRACE_SEC, then the process exits 0.
+; its connections within KVASM_SHUTDOWN_GRACE_SEC, then the process exits 0.
 ; =============================================================================
 
 default rel
 bits 64
 
-%include "kvnode.inc"
+%include "kvasm.inc"
 %include "server.inc"
 %include "log.inc"                      ; LOGBUF_BYTES sizes main's log slot
 
@@ -31,9 +31,9 @@ bits 64
 %define SIG_IGN         1
 %define CLOCK_MONOTONIC 1
 ; The release version, logged in the "starting" line. It must equal the git
-; tag being released (vX.Y.Z) and KvNode.Client's <Version>:
+; tag being released (vX.Y.Z) and KvAsm.Client's <Version>:
 ; .github/workflows/release.yml refuses to publish when they differ.
-%define VERSION_STR     "0.2.0"
+%define VERSION_STR     "0.3.0"
 
 extern signal
 extern sigemptyset
@@ -115,14 +115,14 @@ v_pclmul:   db "pclmul", 0
 v_vpclmul:  db "vpclmul", 0
 k_pinned:   db " pinned="
 k_deferred: db " deferred="
-m_f_crc:    db ' msg="invalid setting" name=KVNODE_CRC32C value='
+m_f_crc:    db ' msg="invalid setting" name=KVASM_CRC32C value='
 L_f_crc     equ $ - m_f_crc
 m_f_crc2:   db ' reason="this CPU lacks the instructions it needs"'
 L_f_crc2    equ $ - m_f_crc2
 k_hash:     db " hash="
 v_siphash:  db "siphash", 0
 v_aes:      db "aes", 0
-m_f_hash:   db ' msg="invalid setting" name=KVNODE_HASH value=aes reason="this CPU lacks AES-NI"'
+m_f_hash:   db ' msg="invalid setting" name=KVASM_HASH value=aes reason="this CPU lacks AES-NI"'
 L_f_hash    equ $ - m_f_hash
 m_listen:   db ' msg="listening" transport=h2c'
 L_listen    equ $ - m_listen
@@ -616,7 +616,7 @@ now_ms:
     ret
 
 ; =============================================================================
-; crc_mode_name — the KVNODE_CRC32C word naming a crc32c.asm mode. Internal.
+; crc_mode_name — the KVASM_CRC32C word naming a crc32c.asm mode. Internal.
 ; @param  edi  mode: 0 table, 1 sse42, 2 pclmul, 3 vpclmul
 ; @returns rax = its NUL-terminated name ("table" for anything else, which
 ;          kv_crc32c_set_mode never leaves in force).

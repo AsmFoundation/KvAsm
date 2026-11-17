@@ -34,7 +34,7 @@
  *     destroy frees what is still cached (checked under ASan-free builds by
  *     the accounting and by the absence of crashes).
  */
-#include "kvnode_abi.h"
+#include "kvasm_abi.h"
 #include "test_common.h"
 
 enum { NIDS = 20000, MAXV = 200 };

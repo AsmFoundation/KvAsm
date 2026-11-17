@@ -1,4 +1,4 @@
-# One KvNode core, profiled — and its memory (2026-09-26)
+# One KvAsm core, profiled — and its memory (2026-09-26)
 
 > **Update 2026-09-27:** the absolute times below were measured while ~20
 > of the host's 32 logical CPUs were busy outside the VM, which made every
@@ -46,8 +46,8 @@ dev container's PID namespace, because inside the dev container
 `perf_event_paranoid=2` hides kernel symbols:
 
 ```sh
-docker commit kvnode-dev kvnode-perf-helper:local      # the dev container has perf
-docker run --rm --privileged --pid=container:kvnode-dev -v "$PWD:/src" kvnode-perf-helper:local \
+docker commit kvasm-dev kvasm-perf-helper:local        # the dev container has perf
+docker run --rm --privileged --pid=container:kvasm-dev -v "$PWD:/src" kvasm-perf-helper:local \
   perf record -e cpu-clock -F 4999 -a -C 2 -o /src/server/build/prof.data -- sleep 12
 ```
 
@@ -98,18 +98,18 @@ kvbench as used by every published result.
 |---|---|---|
 | kernel: waking the client (`__wake_up_common_lock`, see below) | 48.5% | 282 |
 | kernel: TCP/IP loopback stack | 15.3% | 89 |
-| KvNode: store lookup | 11.2% | 65 |
-| KvNode: HTTP/2 (`h2n.asm`) | 6.1% | 36 |
+| KvAsm: store lookup | 11.2% | 65 |
+| KvAsm: HTTP/2 (`h2n.asm`) | 6.1% | 36 |
 | kernel: other (softirq entry, socket lookup, …) | 6.1% | 35 |
 | kernel: syscall entry/exit + VFS | 2.8% | 16 |
-| KvNode: gRPC + protobuf | 1.9% | 11 |
+| KvAsm: gRPC + protobuf | 1.9% | 11 |
 | kernel: user↔kernel copies | 1.9% | 11 |
 | glibc memcpy/memset | 1.7% | 10 |
 | kernel: slab/page allocation | 1.6% | 10 |
-| KvNode: event loop | 1.5% | 9 |
-| KvNode: pool | 1.0% | 6 |
+| KvAsm: event loop | 1.5% | 9 |
+| KvAsm: pool | 1.0% | 6 |
 
-**The top symbol is not KvNode's work.** `callgraph-wakeup.txt` shows the
+**The top symbol is not KvAsm's work.** `callgraph-wakeup.txt` shows the
 path: the server's `sendto` → `tcp_write_xmit` → `ip_finish_output2` →
 (loopback) `do_softirq` → `net_rx_action` → `tcp_v4_rcv` →
 `tcp_rcv_established` → `sock_def_readable` → `__wake_up_common_lock`.
@@ -132,18 +132,18 @@ client's machine instead.
 
 | Hotspot | Share | ns/GET |
 |---|---|---|
-| KvNode: store lookup | 24.5% | 93 |
+| KvAsm: store lookup | 24.5% | 93 |
 | kernel: TCP/IP loopback stack | 22.5% | 86 |
-| KvNode: HTTP/2 (`h2n.asm`) | 14.7% | 56 |
+| KvAsm: HTTP/2 (`h2n.asm`) | 14.7% | 56 |
 | kernel: other | 7.8% | 30 |
-| KvNode: gRPC + protobuf | 5.6% | 21 |
+| KvAsm: gRPC + protobuf | 5.6% | 21 |
 | glibc memcpy/memset (AVX2) | 5.3% | 20 |
 | kernel: syscall entry/exit + VFS | 4.3% | 16 |
 | kernel: user↔kernel copies | 3.8% | 15 |
 | kernel: scheduler/IRQ | 3.4% | 13 |
 | kernel: slab/page allocation | 3.0% | 11 |
-| KvNode: event loop | 2.7% | 10 |
-| KvNode: pool | 2.0% | 8 |
+| KvAsm: event loop | 2.7% | 10 |
+| KvAsm: pool | 2.0% | 8 |
 
 Top user symbols:
 

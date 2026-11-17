@@ -11,5 +11,5 @@
   N1: side-vCPU busy per run window (interior mean), median 0.017, max 0.120 vCPU
   N3: side-vCPU busy per run window (interior mean), median 0.015, max 0.112 vCPU
   S1: side-vCPU busy per run window (interior mean), median 0.029, max 0.118 vCPU
-  FLAG E0/kvnode/c8/t8/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): side vCPUs 0.51 busy (window mean)
-  FLAG E1/kvnode/c1/t1/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): side vCPUs 0.32 busy (window mean)
+  FLAG E0/kvasm/c8/t8/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): side vCPUs 0.51 busy (window mean)
+  FLAG E1/kvasm/c1/t1/get100-v100-k1000000-uni-c64d16/r0 (block 0, ok): side vCPUs 0.32 busy (window mean)
