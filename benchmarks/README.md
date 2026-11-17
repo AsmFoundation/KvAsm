@@ -478,6 +478,17 @@ python benchmarks/analyze.py benchmarks/results/<date>-standard   # writes REPOR
 - `--e4-rates 418000,836000,1254000` gives E4 explicit offered loads. A
   subset needs this to meet an earlier session's loads, because E4
   normally derives them from the slowest system's E1 median.
+- `--control-image kvasm:<tag>` runs an older KvAsm image in the same
+  blocks as the build under test, so a session on a host that has moved
+  can still be set against an earlier one (`transfer.py`, see the top of
+  this page).
+  - **Only images of 0.3.0 or later can be the control.** Since 0.3.0 the
+    harness speaks only the `kvasm.v1` routes and sets only `KVASM_*`
+    variables. An image built before the rename answers every request
+    with UNIMPLEMENTED and ignores the settings, because the rename kept
+    no compatibility.
+  - To pair against a pre-0.3.0 image such as the 2026-09-27 one, run the
+    harness from the last commit before the rename, `dd295a3`.
 - Keep the machine otherwise idle during a run. Builds and other heavy
   jobs share the CPUs and show up as noise.
 
