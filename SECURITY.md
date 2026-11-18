@@ -7,7 +7,8 @@ then released as a new patch version.
 
 | Version | Supported |
 |---|---|
-| 0.2.x | yes |
+| 0.3.x | yes |
+| 0.2.x | no (released as KvNode, before the rename to KvAsm: upgrade to 0.3.x) |
 | 0.1.0 | no (never released; the tag marks the first working server) |
 
 ## Reporting a vulnerability
