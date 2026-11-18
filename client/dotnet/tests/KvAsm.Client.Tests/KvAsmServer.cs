@@ -116,8 +116,10 @@ public sealed class KvAsmServer : IAsyncLifetime
 
         if (snapshot is not null)
         {
+            // FilePath.Of, not a bare string: since Testcontainers 4.17 the string overload is
+            // obsolete, and the tests build with warnings as errors (CS0618).
             builder = builder
-                .WithResourceMapping(snapshot, "/data/seed.kvs")
+                .WithResourceMapping(snapshot, FilePath.Of("/data/seed.kvs"))
                 .WithEnvironment("KVASM_SNAPSHOT", "/data/seed.kvs");
         }
 
