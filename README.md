@@ -124,7 +124,8 @@ docker run --rm -p 50051:50051 kvasm:0.3.0
 Talk to it from .NET 8 or 10 (`dotnet add package KvAsm.Client`), or from
 any language with gRPC tooling, using
 [`proto/kvasm/v1/kvasm.proto`](proto/kvasm/v1/kvasm.proto) and
-[docs/PROTOCOL.md](docs/PROTOCOL.md):
+[docs/PROTOCOL.md](docs/PROTOCOL.md). [`examples/`](examples/README.md)
+does that from Python and Go. From .NET:
 
 ```csharp
 using KvAsm.Client;
@@ -302,6 +303,7 @@ Store alone, single thread, 4M keys: 279 ns per dependent lookup, p99.9
 | [`proto/kvasm/v1/kvasm.proto`](proto/kvasm/v1/kvasm.proto) | the gRPC contract |
 | [`server/`](server) | NASM sources, native unit tests, bake-off, end-to-end suite (`make all test itest bench`) |
 | [`client/dotnet/`](client/dotnet) | .NET 8/10 client and snapshot writer, with unit and container tests |
+| [`examples/`](examples/README.md) | Python and Go programs that make every call over plain gRPC stubs; CI runs them against the image |
 | [`benchmarks/`](benchmarks/README.md) | comparison with other key-value stores: the kvbench client, the suite, methodology, committed results |
 | [`docs/`](docs) | [architecture](docs/ARCHITECTURE.md), [protocol and client contract](docs/PROTOCOL.md), [operations](docs/OPERATIONS.md), [decision records](docs/adr), [claims and their evidence](docs/CLAIMS.md) |
 | [`docs/proposals/`](docs/proposals/functions-plan.md) | designs measured but not implemented: the functions plan (58 functions, Export/Watch and key indexes among them) and store speedups |
@@ -333,7 +335,9 @@ Version 0.3.0 ([CHANGELOG](CHANGELOG.md)), published by the
 
 - **Clients:** .NET is done. Two more languages are planned. They must
   implement [docs/PROTOCOL.md](docs/PROTOCOL.md), including long-key
-  compaction and the snapshot conformance vector.
+  compaction and the snapshot conformance vector. Until then,
+  [`examples/`](examples/README.md) shows Python and Go over plain gRPC
+  stubs.
 - **New in 0.3.0:** batched writes with per-worker reclamation (ADR 0011),
   a GET request path 43% shorter in process, AES-NI key hashing, and
   replies of any length framed in place.

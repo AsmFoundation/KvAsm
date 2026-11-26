@@ -41,6 +41,13 @@ KVASM_REQUIRE_DOCKER=1 dotnet test --solution KvAsm.Client.slnx
 
 # The benchmark client (benchmarks/kvbench), with its unit tests.
 docker build --target kvbench -t kvasm-kvbench .
+
+# The example clients (examples/README.md) against the image. go generate
+# needs protoc 36.2 on PATH and must leave the committed stubs unchanged.
+docker run -d --rm --name kvasm-examples -p 50051:50051 kvasm:0.3.0
+(cd examples/python && pip install -r requirements.txt && python kvasm_example.py)
+(cd examples/go && go run . && go generate && git status --short .)
+docker stop kvasm-examples
 ```
 
 The .NET integration tests start the `kvasm:0.3.0` image through
@@ -67,7 +74,11 @@ review.
 4. **The HPACK differential test** (`test_hpack`) against nghttp2's decoder.
 5. **The .NET suite** with `KVASM_REQUIRE_DOCKER=1`, all 380 tests or
    more.
-6. **No warnings anywhere.** NASM runs with `-w+error`, C with `-Werror`,
+6. **The example clients.** The Python and Go programs in `examples/`
+   exit 0 against the image. `go generate` in `examples/go` reproduces the
+   committed stubs, so a change to `kvasm.proto` regenerates them in the
+   same commit.
+7. **No warnings anywhere.** NASM runs with `-w+error`, C with `-Werror`,
    and .NET with `TreatWarningsAsErrors`.
 
 **Regression tests must fail first.** A test written for a bug must fail

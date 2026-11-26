@@ -19,6 +19,14 @@ so every line can be checked against the code and the measurements.
   Studio's and Rider's package managers and a nuget.org link's preview show it
   instead of NuGet's default box (0.3.0's registration has no icon). Not
   released yet: it ships with the next version.
+- **Example clients in Python and Go** (`examples/`). They are programs over
+  plain gRPC stubs, on grpcio 1.85.4 and grpc-go 1.85.0, that make every call
+  once and check every answer. They follow the long-key rule and check
+  CRC-32C on both streaming calls. CI runs them against the image it builds
+  and checks that the committed Go stubs still match `kvasm.proto`
+  (protoc 36.2). Dependabot keeps their pins current. They are examples, not
+  the two planned clients: they leave out retries, local limit checks and
+  snapshots.
 
 ## [0.3.0] — 2026-11-17
 

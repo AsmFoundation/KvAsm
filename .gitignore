@@ -7,6 +7,12 @@
 /benchmarks/kvbench/build/
 __pycache__/
 
+# Example clients: the Python stubs are generated on the first run, and
+# `go generate` builds the protoc plugins into .bin. The Go stubs
+# (examples/go/kvasmpb) are committed on purpose: a Go build can't run protoc.
+/examples/python/gen/
+/examples/go/.bin/
+
 # .NET build outputs and IDE state.
 bin/
 obj/

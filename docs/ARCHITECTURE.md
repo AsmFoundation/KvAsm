@@ -297,6 +297,7 @@ flowchart LR
 | `server/src/log.asm` | one-`write` structured log lines |
 | `server/src/abi.asm` | struct layouts exported for the ABI tests |
 | `client/dotnet` | .NET client, snapshot writer, tests (Testcontainers) |
+| `examples/` | Python and Go programs over plain gRPC stubs, which CI runs against the image |
 
 ## Tests
 
@@ -307,6 +308,7 @@ flowchart LR
 | store levels | lookup variants per memory level (SWAR/SSE2, private caches), every answer verified | `make -C server bench-store` |
 | end to end | real server over loopback, driven by an independent HTTP/2 client (nghttp2's client API, its own CRC-32C): protocol and limits, pipelining, cancel, torn-value detection; Upload/Download: every refusal, a size × chunking × checksum matrix, every DATA split, cancels and resets at every stage, ranges, 1-byte windows, one version per download while the key changes, a streaming race; drain with in-flight unary and streaming calls; idle timeout against stalled, slow and frozen transfers; memory/budget/capacity limits and their release; fairness with one worker; snapshot source; startup refusals; h2spec 146/146 (empty baseline); fuzzing of the HTTP/2 input path (Upload and Download soups included) followed by the full suite on the same server; no pin may outlive its call (checked at every shutdown) | `make -C server itest` |
 | client | 64 SipHash vectors, compaction, byte-exact snapshot vs the server tool, CRC-32C vectors, and the real container via Testcontainers — including Upload/Download through a fault-injecting TCP proxy (resets mid-transfer, hung paths, slow links, refused connections) and a memory-limited server | `dotnet test --solution client/dotnet/KvAsm.Client.slnx` |
+| example clients | Python (grpcio) and Go (grpc-go) over plain stubs against the CI image: every call once, a long key sent compacted, CRC-32C on Upload and Download; the committed Go stubs, regenerated with protoc 36.2, must not change | CI ([examples/README.md](../examples/README.md)) |
 
 The Docker build runs the unit, bake-off and end-to-end layers. An image
 exists only if all of them pass.

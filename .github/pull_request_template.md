@@ -12,6 +12,8 @@
       (run from `client/dotnet`) passes
 - [ ] Protocol change (`h2n`, `hpack`, `grpc` or `proto`): fuzz soak
       `make itest FUZZ_ITERATIONS=100000 FUZZ_SEED=…` passed (seed: )
+- [ ] Contract change (`kvasm.proto`): the Go example's stubs regenerated
+      (`go generate` in `examples/go`) and committed
 - [ ] Bug fix: the new test fails when the fix is reverted (mutation check)
 - [ ] Performance change: paired A/B, ≥ 6 blocks, with the sign test, the
       outside load recorded, and the results committed under

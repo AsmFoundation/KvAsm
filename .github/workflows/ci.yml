@@ -15,6 +15,9 @@
 #   3. The .NET client suite (unit + Testcontainers integration tests)
 #      against the image from step 1, with Docker REQUIRED: a missing Docker
 #      fails the job instead of silently skipping the tests that matter.
+#   4. The example clients (examples/README.md), Python on grpcio and Go on
+#      grpc-go, against the same image, and a check that the committed Go
+#      stubs still match kvasm.proto.
 #
 # Supply chain: every action is pinned to a full commit SHA (the tag in the
 # comment is for humans; Dependabot updates both). The token is read-only.
@@ -102,3 +105,50 @@ jobs:
       - name: .NET client tests against the image built above
         working-directory: client/dotnet
         run: dotnet test --solution KvAsm.Client.slnx
+
+      # Each example makes every call once and exits non-zero on any answer
+      # that differs from the contract (it waits up to 10 s for the server to
+      # listen), so a change that breaks plain gRPC clients fails here and
+      # not in a user's program. The container runs until the job ends.
+      - name: Start the server for the example clients
+        run: docker run -d --rm --name kvasm-examples -p 50051:50051 kvasm:ci
+
+      # The runner's Python (3.12) in a venv; grpcio needs 3.10 or later.
+      - name: Python client example
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet -r examples/python/requirements.txt
+          "$RUNNER_TEMP/venv/bin/python" examples/python/kvasm_example.py localhost:50051
+
+      # go.mod has no toolchain line, so this installs the release its go
+      # line names: the example is proven on the minimum it declares.
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: examples/go/go.mod
+          cache-dependency-path: examples/go/go.sum
+
+      - name: Go client example
+        working-directory: examples/go
+        run: go run . localhost:50051
+
+      # The Go stubs are committed, because a Go build can't run protoc.
+      # Regenerating them with the protoc release generate.go names must
+      # reproduce them, so kvasm.proto and the stubs can't drift apart. The
+      # -I pattern ignores the header lines that only record a generator's
+      # version, so a Dependabot bump of protoc-gen-go fails here only when
+      # its output really changes. New files, which git diff doesn't show,
+      # fail the last line.
+      - name: Go stubs match kvasm.proto
+        working-directory: examples/go
+        env:
+          PROTOC_VERSION: "36.2"
+          PROTOC_SHA256: 121f6c7afe1d4d0e3ea6aab9432038599250134cbf4474cb1167d2c7decd4278
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/protoc.zip" \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          echo "${PROTOC_SHA256}  $RUNNER_TEMP/protoc.zip" | sha256sum --check --strict
+          unzip -q "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
+          PATH="$RUNNER_TEMP/protoc/bin:$PATH" go generate
+          git diff --exit-code -I '^//[[:space:]]+(-[[:space:]]+)?protoc(-gen-go(-grpc)?)?[[:space:]]+v[0-9.]+$' -- .
+          test -z "$(git ls-files --others --exclude-standard -- .)"

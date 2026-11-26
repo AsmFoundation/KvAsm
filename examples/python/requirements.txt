@@ -1,0 +1,3 @@
+# The Python example's packages, pinned (grpcio-tools brings protobuf and its own protoc).
+grpcio==1.85.4
+grpcio-tools==1.85.4

@@ -1,8 +1,8 @@
-# Keeps the pinned GitHub Actions (full commit SHAs, version in a comment)
-# and the .NET client's NuGet dependencies current. One pull request per
-# ecosystem per week: grouped updates keep the Grpc.* packages, which must
-# move in lockstep (Directory.Packages.props), in one change that CI tests
-# as a whole. The Dockerfile's base image is chosen through a build ARG
+# Keeps the pinned GitHub Actions (full commit SHAs, version in a comment),
+# the .NET client's NuGet dependencies and the example clients' Python and Go
+# pins current. One pull request per ecosystem per week: grouped updates keep
+# the Grpc.* packages, which must move in lockstep
+# (Directory.Packages.props), in one change that CI tests as a whole. The Dockerfile's base image is chosen through a build ARG
 # (DEBIAN_RELEASE), which Dependabot cannot follow; nghttp2 and h2spec are
 # pinned by SHA-256 and updated by hand.
 version: 2
@@ -21,4 +21,25 @@ updates:
       interval: weekly
     groups:
       nuget:
+        patterns: ["*"]
+
+  # The example clients' pins (examples/README.md). CI runs both examples
+  # against the server image, so an update that breaks one fails its own
+  # pull request. A Go update that changes the stubs' code, not just the
+  # version lines in their headers, also needs `go generate` in examples/go;
+  # CI's stub check says so.
+  - package-ecosystem: pip
+    directory: /examples/python
+    schedule:
+      interval: weekly
+    groups:
+      pip:
+        patterns: ["*"]
+
+  - package-ecosystem: gomod
+    directory: /examples/go
+    schedule:
+      interval: weekly
+    groups:
+      gomod:
         patterns: ["*"]
