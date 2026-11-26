@@ -12,6 +12,14 @@ so every line can be checked against the code and the measurements.
 
 ## [Unreleased]
 
+### Added
+
+- **A package icon for KvAsm.Client.** The package carries the AsmFoundation A
+  (`client/dotnet/icon.png`, 256 px) as its `PackageIcon`, so nuget.org, Visual
+  Studio's and Rider's package managers and a nuget.org link's preview show it
+  instead of NuGet's default box (0.3.0's registration has no icon). Not
+  released yet: it ships with the next version.
+
 ## [0.3.0] — 2026-11-17
 
 The project is renamed **KvAsm** and published by the

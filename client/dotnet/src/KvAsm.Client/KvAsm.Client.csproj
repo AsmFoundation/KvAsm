@@ -30,6 +30,9 @@
     <RepositoryType>git</RepositoryType>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <!-- The AsmFoundation A (client/dotnet/icon.png): nuget.org, the IDEs' package managers and a nuget.org
+         link's preview show it instead of NuGet's default box. -->
+    <PackageIcon>icon.png</PackageIcon>
     <PackageTags>kvasm;key-value;kv-store;grpc;http2;assembly;x86-64;crc32c;snapshot</PackageTags>
     <PackageReleaseNotes>https://github.com/AsmFoundation/KvAsm/blob/main/CHANGELOG.md</PackageReleaseNotes>
     <!-- Symbols go to nuget.org's symbol server as a .snupkg next to the
@@ -46,6 +49,7 @@
          of the package, as Apache-2.0 section 4(d) asks. -->
     <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
     <None Include="..\..\..\..\NOTICE" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="..\..\icon.png" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 
   <ItemGroup>
